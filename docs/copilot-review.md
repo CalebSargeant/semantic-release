@@ -177,8 +177,33 @@ banner is rendered from the user's private billing state and has no
 programmatic signal on the PR (no review, no comment, no check-run, no
 timeline event), so the gate cannot detect the rate limit on its own.
 
-Release Runner ships an opt-in workaround: a `/copilot-quota` endpoint on
-the broker worker that the gate consults before failing.
+Release Runner handles this with two layers, in order of preference.
+
+### Layer 1 — Copilot's own decline notice (zero-config)
+
+When Copilot is explicitly requested as a reviewer on a PR but its
+premium-request quota is exhausted, it posts a real review on the head
+commit whose body explains the decline, for example:
+
+```text
+Copilot was unable to review this pull request because the user who
+requested the review has reached their quota limit.
+```
+
+This review has `state: COMMENTED` and a fresh `commit_id`, so without
+detection the strict gate would silently accept it as a real Copilot
+review. The gate detects the decline wording (`"unable to review"` +
+`"quota"`, `"monthly limit for premium request"`, `"reached your quota"`
+— case-insensitive) and finishes as `success` with a `::warning::`
+annotation that includes the original decline text. No configuration
+required; this fires automatically whenever Copilot leaves the decline
+review.
+
+### Layer 2 — broker-worker quota endpoint (opt-in)
+
+When Copilot is **not** requested as a reviewer (so no decline notice
+exists) but the user is still rate-limited, the gate can consult a
+`/copilot-quota` endpoint on the broker worker.
 
 ```yaml
 - uses: magmamoose/release-runner@v1

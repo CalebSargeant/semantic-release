@@ -381,3 +381,111 @@ run_policy() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::"* ]]
 }
+
+@test "body-pattern: bypasses with warning when Copilot posts a quota decline review" {
+  # The exact wording observed on release-runner PR #39: Copilot was
+  # requested as a reviewer, the user's quota was exhausted, Copilot
+  # posted a real review on the head commit with this body.
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T22:17:19Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "body": "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit."
+    }
+  ]'
+
+  run "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"Copilot declined to review"* ]]
+  [[ "$output" == *"quota"* ]]
+  # Crucially: must NOT report "Copilot reviewed this pull request after the
+  # latest commit." — that's the false-positive we're fixing.
+  [[ "$output" != *"Copilot reviewed this pull request after the latest commit"* ]]
+}
+
+@test "body-pattern: matches case-insensitively" {
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T22:17:19Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "body": "COPILOT WAS UNABLE TO REVIEW because the QUOTA is gone."
+    }
+  ]'
+
+  run "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+}
+
+@test "body-pattern: matches the UI banner verbatim wording" {
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T22:17:19Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "body": "You have reached your monthly limit for premium requests for Copilot code review."
+    }
+  ]'
+
+  run "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+}
+
+@test "body-pattern: real Copilot review with code feedback still passes as success" {
+  # A real review body must not accidentally trip the quota-decline
+  # detector, even if it mentions tangentially related words. The
+  # detector requires both "unable to review" AND "quota", or one of
+  # the more specific banner phrases.
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T10:15:00Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "body": "Looks good overall. Consider extracting the parser into its own module — it would be hard to review changes if it grows further."
+    }
+  ]'
+
+  run "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Copilot reviewed this pull request after the latest commit."* ]]
+  [[ "$output" != *"Copilot declined to review"* ]]
+}
+
+@test "body-pattern: short-circuits the worker quota check" {
+  # When Copilot's own body says quota-decline, we should never need to
+  # consult the worker. The curl mock would emit a noisy stderr if it
+  # were invoked with no fixture configured; here we set it explicitly
+  # to a "false" response to prove the worker is NOT consulted.
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T22:17:19Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "body": "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit."
+    }
+  ]'
+
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":false,"source":"default"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Copilot declined to review"* ]]
+  # If the worker had been consulted and the gate fell through to its
+  # `false` verdict, the output would say "Copilot has not reviewed".
+  [[ "$output" != *"Copilot has not reviewed this pull request yet"* ]]
+}

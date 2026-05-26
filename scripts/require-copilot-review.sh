@@ -366,6 +366,36 @@ maybe_pass_for_quota() {
 
 warn() { echo "::warning::[copilot-review] $*"; }
 
+# Detect Copilot's own "I can't review because I'm rate-limited" notice.
+#
+# When Copilot is requested as a reviewer but its premium-request quota is
+# exhausted, it does not silently skip — it posts a real PR review (state
+# COMMENTED) on the current head commit with a body explaining the decline.
+# That review otherwise satisfies the freshness check, so the strict gate
+# would silently treat it as a real review. Detect the decline wording and
+# treat the gate as bypassed-by-quota instead.
+#
+# Patterns are case-insensitive substring matches. Kept conservative so
+# normal review bodies don't accidentally trigger:
+#   - "unable to review" + "quota"           → Copilot's current wording
+#   - "monthly limit for premium request"    → UI banner echo
+#   - "reached (your|their) quota"           → variant wording
+is_copilot_quota_decline_body() {
+  local body="$1"
+  local lower
+  lower="$(printf '%s' "${body}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${lower}" == *"unable to review"* ]] && [[ "${lower}" == *"quota"* ]]; then
+    return 0
+  fi
+  if [[ "${lower}" == *"monthly limit for premium request"* ]]; then
+    return 0
+  fi
+  if [[ "${lower}" == *"reached your quota"* ]] || [[ "${lower}" == *"reached their quota"* ]]; then
+    return 0
+  fi
+  return 1
+}
+
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${OWNER:?OWNER is required}"
 : "${REPO:?REPO is required}"
@@ -519,9 +549,23 @@ if [ -n "${VALID_REVIEW}" ]; then
   REVIEW_LOGIN="$(echo "${VALID_REVIEW}" | jq -r '.user.login // "unknown"')"
   REVIEW_SUBMITTED_AT="$(echo "${VALID_REVIEW}" | jq -r '.submitted_at // "unknown"')"
   REVIEW_COMMIT_ID="$(echo "${VALID_REVIEW}" | jq -r '.commit_id // empty')"
+  REVIEW_BODY="$(echo "${VALID_REVIEW}" | jq -r '.body // ""')"
   REVIEW_COMMIT_DETAIL=""
   if [ -n "${REVIEW_COMMIT_ID}" ]; then
     REVIEW_COMMIT_DETAIL=" Review commit: $(short_sha "${REVIEW_COMMIT_ID}")."
+  fi
+
+  # When Copilot was requested but couldn't actually review (quota
+  # exhausted), it posts a fresh review whose body explains the decline.
+  # Don't silently treat that as a real review — bypass the gate with a
+  # ::warning:: so the autonomous flow continues but the rate-limit is
+  # visible. The body-pattern signal is free (uses the review payload we
+  # already fetched) and short-circuits the worker check below.
+  if is_copilot_quota_decline_body "${REVIEW_BODY}"; then
+    warn "Copilot declined to review PR #${PR_NUMBER} due to quota: ${REVIEW_BODY}"
+    finish "success" 0 \
+      "Copilot review bypassed — Copilot declined (quota)" \
+      "Copilot review gate passed gracefully: Copilot was requested as reviewer but declined the review because the requester's quota is exhausted. Decline notice from ${REVIEW_LOGIN} at ${REVIEW_SUBMITTED_AT}: ${REVIEW_BODY}"
   fi
 
   finish "success" 0 \
