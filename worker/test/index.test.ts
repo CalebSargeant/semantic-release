@@ -260,8 +260,12 @@ function makeKv() {
       async delete(key: string) {
         store.delete(key);
       },
-      async list() {
-        return { keys: [...store.keys()].map((name) => ({ name })) };
+      async list(options?: { prefix?: string; cursor?: string }) {
+        const prefix = options?.prefix ?? "";
+        const keys = [...store.keys()]
+          .filter((name) => name.startsWith(prefix))
+          .map((name) => ({ name }));
+        return { keys, list_complete: true };
       },
       async getWithMetadata(_key: string) {
         return { value: null, metadata: null };
@@ -549,5 +553,410 @@ describe("copilot-quota endpoint", () => {
       env
     );
     expect(response.status).toBe(404);
+  });
+});
+
+// ─── /webhook + scheduled refresh + metrics fallback ─────────────────────────
+
+import { handleScheduledRefresh } from "../src/index";
+
+async function hmac(secret: string, body: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(body)
+  );
+  return (
+    "sha256=" +
+    Array.from(new Uint8Array(mac))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+function webhookRequest(
+  body: Record<string, unknown>,
+  event: string,
+  signatureHeader: string
+): Request {
+  return new Request("https://broker.example.com/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": event,
+      "x-hub-signature-256": signatureHeader
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+describe("copilot-quota /webhook", () => {
+  it("rejects requests when no webhook secret is configured", async () => {
+    const response = await handleRequest(
+      webhookRequest({}, "ping", "sha256=abc"),
+      env
+    );
+    expect(response.status).toBe(503);
+    expect(await readJson(response)).toEqual({ error: "webhook_disabled" });
+  });
+
+  it("rejects requests with an invalid HMAC signature", async () => {
+    const response = await handleRequest(
+      webhookRequest({ zen: "hi" }, "ping", "sha256=deadbeef"),
+      { ...env, GITHUB_WEBHOOK_SECRET: "shh" }
+    );
+    expect(response.status).toBe(401);
+    expect(await readJson(response)).toEqual({ error: "invalid_signature" });
+  });
+
+  it("ignores events other than pull_request / pull_request_review", async () => {
+    const body = JSON.stringify({ zen: "hi" });
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      new Request("https://broker.example.com/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "ping",
+          "x-hub-signature-256": sig
+        },
+        body
+      }),
+      { ...env, GITHUB_WEBHOOK_SECRET: "shh" }
+    );
+    expect(response.status).toBe(200);
+    const out = await readJson(response);
+    expect(out.ok).toBe(true);
+    expect(out.ignored).toBe("ping");
+  });
+
+  it("records a Copilot review_requested event in KV", async () => {
+    const { kv, store } = makeKv();
+    const payload = {
+      action: "review_requested",
+      repository: { owner: { login: "octo-org" } },
+      requested_reviewer: { login: "copilot-pull-request-reviewer[bot]" }
+    };
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      new Request("https://broker.example.com/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request",
+          "x-hub-signature-256": sig
+        },
+        body
+      }),
+      {
+        ...env,
+        GITHUB_WEBHOOK_SECRET: "shh",
+        COPILOT_QUOTA_KV: kv
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      owner: "octo-org",
+      touched: true
+    });
+    expect(store.has("copilot-quota:webhook:octo-org")).toBe(true);
+    const stored = JSON.parse(
+      store.get("copilot-quota:webhook:octo-org")!.value
+    );
+    expect(stored.last_request_at).toBeTruthy();
+    expect(stored.recent_request_count).toBe(1);
+  });
+
+  it("clears the backlog when Copilot submits a review", async () => {
+    const { kv, store } = makeKv();
+    store.set("copilot-quota:webhook:octo-org", {
+      value: JSON.stringify({
+        last_request_at: "2026-05-26T10:00:00.000Z",
+        recent_request_count: 3
+      })
+    });
+    const payload = {
+      action: "submitted",
+      repository: { owner: { login: "octo-org" } },
+      review: { user: { login: "copilot-pull-request-reviewer[bot]" } }
+    };
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      new Request("https://broker.example.com/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request_review",
+          "x-hub-signature-256": sig
+        },
+        body
+      }),
+      {
+        ...env,
+        GITHUB_WEBHOOK_SECRET: "shh",
+        COPILOT_QUOTA_KV: kv
+      }
+    );
+    expect(response.status).toBe(200);
+    const stored = JSON.parse(
+      store.get("copilot-quota:webhook:octo-org")!.value
+    );
+    expect(stored.recent_request_count).toBe(0);
+    expect(stored.last_review_at).toBeTruthy();
+  });
+
+  it("ignores non-Copilot review submissions", async () => {
+    const { kv, store } = makeKv();
+    const payload = {
+      action: "submitted",
+      repository: { owner: { login: "octo-org" } },
+      review: { user: { login: "human-reviewer" } }
+    };
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    await handleRequest(
+      new Request("https://broker.example.com/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request_review",
+          "x-hub-signature-256": sig
+        },
+        body
+      }),
+      {
+        ...env,
+        GITHUB_WEBHOOK_SECRET: "shh",
+        COPILOT_QUOTA_KV: kv
+      }
+    );
+    expect(store.has("copilot-quota:webhook:octo-org")).toBe(false);
+  });
+});
+
+describe("copilot-quota webhook signal in resolution chain", () => {
+  it("returns rate_limited:true when webhook shows requests outpacing reviews past the threshold", async () => {
+    const { kv, store } = makeKv();
+    // last_request_at is 45 min ago; last_review_at is 2 hours ago
+    store.set("copilot-quota:webhook:octo-org", {
+      value: JSON.stringify({
+        last_request_at: "2026-05-26T11:15:00.000Z",
+        last_review_at: "2026-05-26T10:00:00.000Z",
+        recent_request_count: 5
+      })
+    });
+    const { deps: injected } = deps({
+      githubResponses: [
+        new Response("{}", { status: 404 }), // org installation
+        new Response("{}", { status: 404 })  // user installation
+      ],
+      // hardcode "now" to 12:00, so last_request_at is 45 min stale and
+      // gap from last_review_at is 2h
+    });
+    // Override the injected `now` to a fixed value past the gap.
+    injected.now = () => new Date("2026-05-26T12:00:00.000Z");
+
+    const response = await handleRequest(
+      quotaGet("octo-org"),
+      { ...env, COPILOT_QUOTA_KV: kv },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(true);
+    expect(body.source).toBe("github-webhook");
+  });
+
+  it("returns rate_limited:false when last review is recent", async () => {
+    const { kv, store } = makeKv();
+    store.set("copilot-quota:webhook:octo-org", {
+      value: JSON.stringify({
+        last_request_at: "2026-05-26T11:00:00.000Z",
+        last_review_at: "2026-05-26T11:30:00.000Z",
+        recent_request_count: 0
+      })
+    });
+    const { deps: injected } = deps({
+      githubResponses: [
+        new Response("{}", { status: 404 }),
+        new Response("{}", { status: 404 })
+      ]
+    });
+    injected.now = () => new Date("2026-05-26T12:00:00.000Z");
+
+    const response = await handleRequest(
+      quotaGet("octo-org"),
+      { ...env, COPILOT_QUOTA_KV: kv },
+      injected
+    );
+
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(false);
+    expect(body.source).toBe("default");
+  });
+
+  it("doesn't fire the webhook signal when request is newer than the configured gap", async () => {
+    const { kv, store } = makeKv();
+    store.set("copilot-quota:webhook:octo-org", {
+      value: JSON.stringify({
+        last_request_at: "2026-05-26T11:50:00.000Z",
+        last_review_at: "2026-05-26T10:00:00.000Z",
+        recent_request_count: 1
+      })
+    });
+    const { deps: injected } = deps({
+      githubResponses: [
+        new Response("{}", { status: 404 }),
+        new Response("{}", { status: 404 })
+      ]
+    });
+    injected.now = () => new Date("2026-05-26T12:00:00.000Z");
+
+    const response = await handleRequest(
+      quotaGet("octo-org"),
+      { ...env, COPILOT_QUOTA_KV: kv },
+      injected
+    );
+
+    const body = await readJson(response);
+    // request was 10 min ago, less than the 30 min default gap
+    expect(body.rate_limited).toBe(false);
+  });
+});
+
+describe("copilot-quota Copilot Metrics API fallback", () => {
+  it("flags rate-limited when Copilot activity dropped from non-zero to zero", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        // Billing chain
+        Response.json({ id: 99 }),                                            // org install
+        Response.json({ token: "ghs_x", expires_at: "2026-05-26T13:00:00Z" }),// install token
+        Response.json({ usageItems: [] }),                                    // org billing (no copilot data)
+        // Metrics chain
+        Response.json({ id: 99 }),                                            // org install (re-mint installation lookup)
+        Response.json({ token: "ghs_x", expires_at: "2026-05-26T13:00:00Z" }),
+        Response.json([
+          { date: "2026-05-24", total_engaged_users: 10 },
+          { date: "2026-05-25", total_engaged_users: 0 }
+        ])
+      ]
+    });
+
+    const response = await handleRequest(
+      quotaGet("octo-org"),
+      env,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(true);
+    expect(body.source).toBe("github-copilot-metrics");
+  });
+
+  it("doesn't fire metrics signal when latest day still shows activity", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 99 }),
+        Response.json({ token: "ghs_x", expires_at: "2026-05-26T13:00:00Z" }),
+        Response.json({ usageItems: [] }),
+        Response.json({ id: 99 }),
+        Response.json({ token: "ghs_x", expires_at: "2026-05-26T13:00:00Z" }),
+        Response.json([
+          { date: "2026-05-24", total_engaged_users: 10 },
+          { date: "2026-05-25", total_engaged_users: 8 }
+        ])
+      ]
+    });
+
+    const response = await handleRequest(
+      quotaGet("octo-org"),
+      env,
+      injected
+    );
+
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(false);
+  });
+});
+
+describe("scheduled cron refresh", () => {
+  it("does nothing when KV is unbound", async () => {
+    // No throw, no fetch calls.
+    await expect(
+      handleScheduledRefresh(env, {
+        verifyOidcToken: async () => ({ repository: "octo-org/octo-repo" }),
+        createGitHubAppJwt: async () => "app.jwt",
+        fetch: async () => {
+          throw new Error("should not be called");
+        },
+        now: () => new Date("2026-05-26T12:00:00.000Z")
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("refreshes billing cache for owners present in KV", async () => {
+    const { kv, store } = makeKv();
+    // Seed a webhook record so the cron has something to iterate.
+    store.set("copilot-quota:webhook:octo-org", {
+      value: JSON.stringify({
+        last_request_at: "2026-05-26T11:00:00.000Z"
+      })
+    });
+
+    const fetchCalls: string[] = [];
+    await handleScheduledRefresh(
+      { ...env, COPILOT_QUOTA_KV: kv },
+      {
+        verifyOidcToken: async () => ({ repository: "octo-org/octo-repo" }),
+        createGitHubAppJwt: async () => "app.jwt",
+        fetch: async (input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          fetchCalls.push(url);
+          if (url.includes("/orgs/octo-org/installation")) {
+            return Response.json({ id: 88 });
+          }
+          if (url.includes("/access_tokens")) {
+            return Response.json({
+              token: "ghs_y",
+              expires_at: "2026-05-26T13:00:00Z"
+            });
+          }
+          if (url.includes("/orgs/octo-org/settings/billing/usage")) {
+            return Response.json({
+              usageItems: [
+                {
+                  product: "Copilot",
+                  sku: "Copilot Premium Requests",
+                  remaining: 0,
+                  includedQuantity: 500,
+                  quantity: 500
+                }
+              ]
+            });
+          }
+          return new Response("{}", { status: 404 });
+        },
+        now: () => new Date("2026-05-26T12:00:00.000Z")
+      }
+    );
+
+    expect(fetchCalls.some((u) => u.includes("billing/usage"))).toBe(true);
+    expect(store.has("copilot-quota:billing:octo-org")).toBe(true);
+    const cached = JSON.parse(
+      store.get("copilot-quota:billing:octo-org")!.value
+    );
+    expect(cached.rate_limited).toBe(true);
   });
 });

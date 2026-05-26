@@ -11,12 +11,19 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
-  }
-  // KV namespace backing the /copilot-quota endpoint is added by deployers,
-  // not committed here. The endpoint degrades gracefully (returns
-  // rate_limited: false) when the binding is absent. To enable:
+  },
+  // KV namespace backing /copilot-quota (manual override + billing/metrics
+  // cache + webhook signal). Add the IDs locally; not committed here so
+  // the endpoint degrades gracefully when KV is absent.
   //   wrangler kv namespace create COPILOT_QUOTA_KV
   //   wrangler kv namespace create COPILOT_QUOTA_KV --preview
-  // Then add the returned ids under "kv_namespaces" in this file using the
-  // binding name COPILOT_QUOTA_KV.
+  // Binding name MUST be COPILOT_QUOTA_KV — env.COPILOT_QUOTA_KV is read.
+  //
+  // Cron trigger: every 15 minutes refresh the billing cache for owners
+  // we've already seen (manual override, webhook event, or prior cache).
+  // This keeps `GET /copilot-quota` fast and offloads billing-API hits
+  // from the action's hot path. Skipped when COPILOT_QUOTA_KV is absent.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
 }

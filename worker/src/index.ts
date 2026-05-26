@@ -27,10 +27,12 @@ export type BrokerEnv = Env & {
   OIDC_AUDIENCE?: string;
   ALLOWED_REPOSITORIES?: string;
   TOKEN_PERMISSIONS?: string;
-  // /copilot-quota
+  // /copilot-quota + /webhook
   COPILOT_QUOTA_KV?: KVNamespace;
   COPILOT_QUOTA_OVERRIDE_SECRET?: string;
   COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
+  GITHUB_WEBHOOK_SECRET?: string;
+  COPILOT_WEBHOOK_REVIEW_GAP_SECONDS?: string;
 };
 
 interface TokenRequest {
@@ -81,6 +83,13 @@ const defaultDependencies: Dependencies = {
 export default {
   fetch(request: Request, env: BrokerEnv): Promise<Response> {
     return handleRequest(request, env);
+  },
+  scheduled(
+    _controller: ScheduledController,
+    env: BrokerEnv,
+    ctx: ExecutionContext
+  ): void {
+    ctx.waitUntil(handleScheduledRefresh(env, defaultDependencies));
   }
 } satisfies ExportedHandler<BrokerEnv>;
 
@@ -101,6 +110,8 @@ export async function handleRequest(
         return await handleTokenRequest(request, env, dependencies);
       case "/copilot-quota":
         return await handleCopilotQuotaRequest(request, env, dependencies, url);
+      case "/webhook":
+        return await handleWebhookRequest(request, env, dependencies);
       default:
         return jsonError(404, "not_found");
     }
@@ -187,7 +198,12 @@ async function handleTokenRequest(
 interface CopilotQuotaState {
   rate_limited: boolean;
   resets_at?: string;
-  source: "manual" | "github-billing-api" | "default";
+  source:
+    | "manual"
+    | "github-billing-api"
+    | "github-webhook"
+    | "github-copilot-metrics"
+    | "default";
   checked_at: string;
   detail?: string;
 }
@@ -237,11 +253,36 @@ async function handleCopilotQuotaGet(
   // 2. Auto-detect via GitHub Billing API. Best-effort; we'd rather
   // misreport false than make the worker noisy on every PR. The action
   // treats `rate_limited: false` as "no signal, stay strict" anyway.
-  const auto = await tryBillingApiLookup(env, dependencies, owner, now).catch(
+  const billing = await tryBillingApiLookup(env, dependencies, owner, now).catch(
     () => null
   );
-  if (auto) {
-    return json({ ...auto } as unknown as Record<string, unknown>, 200);
+  if (billing && billing.rate_limited) {
+    return json({ ...billing } as unknown as Record<string, unknown>, 200);
+  }
+
+  // 3. Webhook-derived heuristic. If our event stream shows requests
+  // outpacing deliveries, Copilot is likely rate-limited even when the
+  // Billing API hasn't caught up (or isn't available).
+  const webhook = await webhookSignalForOwner(env, owner, now).catch(() => null);
+  if (webhook) {
+    return json({ ...webhook } as unknown as Record<string, unknown>, 200);
+  }
+
+  // 4. Copilot Metrics API as a softer fallback — useful when the App
+  // has copilot:read but not billing:read, or when the billing endpoints
+  // don't yet expose premium-request quotas for this account type.
+  const metrics = await tryMetricsApiLookup(env, dependencies, owner, now).catch(
+    () => null
+  );
+  if (metrics && metrics.rate_limited) {
+    return json({ ...metrics } as unknown as Record<string, unknown>, 200);
+  }
+
+  // 5. If billing returned "Copilot data present but not exhausted",
+  // surface that rather than the default "no signal" — it's a stronger
+  // negative result.
+  if (billing) {
+    return json({ ...billing } as unknown as Record<string, unknown>, 200);
   }
 
   const fallback: CopilotQuotaState = {
@@ -574,6 +615,440 @@ function nextUtcMonthBoundary(now: Date): Date {
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0)
   );
+}
+
+// ─── /webhook ────────────────────────────────────────────────────────────────
+// Receives GitHub webhook deliveries for the release-runner App. We verify
+// HMAC-SHA256 against GITHUB_WEBHOOK_SECRET, then accumulate per-owner
+// Copilot review request/delivery timestamps in KV. The /copilot-quota GET
+// path reads these as a third signal in its resolution chain.
+
+const COPILOT_LOGIN_PATTERN = /copilot/i;
+const DEFAULT_COPILOT_WEBHOOK_REVIEW_GAP_SECONDS = 30 * 60; // 30 minutes
+const WEBHOOK_RETENTION_TTL_SECONDS = 24 * 60 * 60; // 24h is plenty for the heuristic
+
+interface CopilotWebhookRecord {
+  last_request_at?: string;
+  last_review_at?: string;
+  recent_request_count?: number;
+}
+
+async function handleWebhookRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonError(405, "method_not_allowed");
+  }
+
+  const secret = env.GITHUB_WEBHOOK_SECRET;
+  if (!secret || secret.trim() === "") {
+    return jsonError(503, "webhook_disabled");
+  }
+
+  const signature = request.headers.get("x-hub-signature-256") ?? "";
+  const event = request.headers.get("x-github-event") ?? "";
+  const rawBody = await request.text();
+
+  if (!(await verifyWebhookSignature(secret, rawBody, signature))) {
+    return jsonError(401, "invalid_signature");
+  }
+
+  // Only the events we care about; everything else is acknowledged so
+  // GitHub stops retrying, but doesn't touch state.
+  if (event !== "pull_request" && event !== "pull_request_review") {
+    return json({ ok: true, ignored: event }, 200);
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return jsonError(400, "invalid_json");
+  }
+  if (!isRecord(payload)) {
+    return jsonError(400, "invalid_request");
+  }
+
+  const owner = extractOwnerFromWebhook(payload);
+  if (!owner) {
+    return json({ ok: true, no_owner: true }, 200);
+  }
+
+  if (!env.COPILOT_QUOTA_KV) {
+    // Nowhere to persist the signal — acknowledge the delivery so
+    // GitHub doesn't keep retrying.
+    return json({ ok: true, kv: "absent" }, 200);
+  }
+
+  const now = dependencies.now();
+  let touched = false;
+
+  if (event === "pull_request") {
+    const action = asString(payload.action);
+    if (action === "review_requested" && isCopilotReviewerEvent(payload)) {
+      await bumpWebhookRecord(env.COPILOT_QUOTA_KV, owner, now, "request");
+      touched = true;
+    }
+  } else if (event === "pull_request_review") {
+    const action = asString(payload.action);
+    if (action === "submitted" && isCopilotReviewSubmission(payload)) {
+      await bumpWebhookRecord(env.COPILOT_QUOTA_KV, owner, now, "review");
+      touched = true;
+    }
+  }
+
+  return json({ ok: true, owner, touched }, 200);
+}
+
+function extractOwnerFromWebhook(payload: Record<string, unknown>): string | null {
+  // Both pull_request and pull_request_review events carry the same
+  // repository.owner.login structure.
+  const repo = payload.repository;
+  if (!isRecord(repo)) return null;
+  const ownerObj = repo.owner;
+  if (!isRecord(ownerObj)) return null;
+  const login = asString(ownerObj.login);
+  if (!login) return null;
+  try {
+    assertOwnerName(login);
+  } catch {
+    return null;
+  }
+  return login;
+}
+
+function isCopilotReviewerEvent(payload: Record<string, unknown>): boolean {
+  const reviewer = payload.requested_reviewer;
+  if (isRecord(reviewer)) {
+    const login = asString(reviewer.login);
+    if (login && COPILOT_LOGIN_PATTERN.test(login)) return true;
+  }
+  // Some payload shapes embed the array of all reviewers; the
+  // most recently requested one is normally on `requested_reviewer`
+  // but we accept either source as a positive.
+  const pr = payload.pull_request;
+  if (isRecord(pr) && Array.isArray(pr.requested_reviewers)) {
+    for (const entry of pr.requested_reviewers) {
+      if (isRecord(entry)) {
+        const login = asString(entry.login);
+        if (login && COPILOT_LOGIN_PATTERN.test(login)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isCopilotReviewSubmission(payload: Record<string, unknown>): boolean {
+  const review = payload.review;
+  if (!isRecord(review)) return false;
+  const user = review.user;
+  if (!isRecord(user)) return false;
+  const login = asString(user.login);
+  return !!login && COPILOT_LOGIN_PATTERN.test(login);
+}
+
+async function bumpWebhookRecord(
+  kv: KVNamespace,
+  owner: string,
+  now: Date,
+  kind: "request" | "review"
+): Promise<void> {
+  const key = webhookKey(owner);
+  const existing = (await readWebhookRecord(kv, owner)) ?? {};
+  const updated: CopilotWebhookRecord = {
+    ...existing
+  };
+  if (kind === "request") {
+    updated.last_request_at = now.toISOString();
+    updated.recent_request_count = (existing.recent_request_count ?? 0) + 1;
+  } else {
+    updated.last_review_at = now.toISOString();
+    // A delivered review clears the backlog signal — Copilot is alive.
+    updated.recent_request_count = 0;
+  }
+  await kv.put(key, JSON.stringify(updated), {
+    expirationTtl: WEBHOOK_RETENTION_TTL_SECONDS
+  });
+}
+
+async function readWebhookRecord(
+  kv: KVNamespace,
+  owner: string
+): Promise<CopilotWebhookRecord | null> {
+  const raw = await kv.get(webhookKey(owner));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (isRecord(parsed)) return parsed as CopilotWebhookRecord;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function webhookKey(owner: string): string {
+  return `copilot-quota:webhook:${owner.toLowerCase()}`;
+}
+
+async function verifyWebhookSignature(
+  secret: string,
+  body: string,
+  signatureHeader: string
+): Promise<boolean> {
+  if (!signatureHeader.startsWith("sha256=")) return false;
+  const provided = signatureHeader.slice("sha256=".length);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  const expected = Array.from(new Uint8Array(mac))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return constantTimeEquals(provided, expected);
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+async function webhookSignalForOwner(
+  env: BrokerEnv,
+  owner: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  if (!env.COPILOT_QUOTA_KV) return null;
+  const record = await readWebhookRecord(env.COPILOT_QUOTA_KV, owner);
+  if (!record) return null;
+
+  const gapSeconds = Math.max(
+    60,
+    Number(env.COPILOT_WEBHOOK_REVIEW_GAP_SECONDS) ||
+      DEFAULT_COPILOT_WEBHOOK_REVIEW_GAP_SECONDS
+  );
+
+  const lastRequestAt = record.last_request_at
+    ? new Date(record.last_request_at)
+    : null;
+  const lastReviewAt = record.last_review_at
+    ? new Date(record.last_review_at)
+    : null;
+
+  // No outstanding requests at all — no negative signal to share.
+  if (!lastRequestAt || Number.isNaN(lastRequestAt.getTime())) return null;
+
+  // A recent Copilot review delivery shows the service is responsive.
+  if (lastReviewAt && !Number.isNaN(lastReviewAt.getTime())) {
+    if (lastReviewAt.getTime() >= lastRequestAt.getTime() - 60 * 1000) {
+      return null;
+    }
+  }
+
+  const requestAgeSeconds = (now.getTime() - lastRequestAt.getTime()) / 1000;
+  // Newly-pending request — give Copilot a beat before crying "rate-limited".
+  if (requestAgeSeconds < gapSeconds) return null;
+
+  return {
+    rate_limited: true,
+    source: "github-webhook",
+    checked_at: now.toISOString(),
+    detail:
+      `Copilot review last requested at ${record.last_request_at}; ` +
+      `last delivered review at ${record.last_review_at ?? "never"}. ` +
+      `Gap exceeds ${gapSeconds}s threshold.`
+  };
+}
+
+// ─── Cron-driven refresh ─────────────────────────────────────────────────────
+// Iterates owners that have any record in KV (manual, billing cache, or
+// webhook signal) and refreshes the billing/metrics view. Owners we've
+// never heard of are out of scope — we don't enumerate all installations
+// because Apps installed on millions of orgs would blow Worker CPU
+// limits. The first GET for an owner seeds the cache; cron keeps it warm.
+
+const SCHEDULED_REFRESH_LIMIT = 50;
+
+export async function handleScheduledRefresh(
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<void> {
+  if (!env.COPILOT_QUOTA_KV) return;
+  const seen = new Set<string>();
+  const owners: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page: KVNamespaceListResult<unknown, string> =
+      await env.COPILOT_QUOTA_KV.list({ prefix: "copilot-quota:", cursor });
+    for (const key of page.keys) {
+      // key.name looks like copilot-quota:<kind>:<owner>
+      const parts = key.name.split(":");
+      if (parts.length < 3) continue;
+      const owner = parts.slice(2).join(":");
+      if (!owner) continue;
+      try {
+        assertOwnerName(owner);
+      } catch {
+        continue;
+      }
+      if (seen.has(owner)) continue;
+      seen.add(owner);
+      owners.push(owner);
+      if (owners.length >= SCHEDULED_REFRESH_LIMIT) break;
+    }
+    if (owners.length >= SCHEDULED_REFRESH_LIMIT) break;
+    cursor = "list_complete" in page && page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+
+  const now = dependencies.now();
+  for (const owner of owners) {
+    try {
+      const fresh = await performBillingApiLookup(env, dependencies, owner, now);
+      if (fresh && env.COPILOT_QUOTA_KV) {
+        const ttl = Math.max(
+          60,
+          Number(env.COPILOT_QUOTA_CACHE_TTL_SECONDS) ||
+            COPILOT_QUOTA_DEFAULT_CACHE_TTL_SECONDS
+        );
+        await env.COPILOT_QUOTA_KV.put(
+          billingCacheKey(owner),
+          JSON.stringify(fresh),
+          { expirationTtl: ttl }
+        );
+      }
+    } catch {
+      // Skip individual failures; cron will try again next tick.
+    }
+  }
+}
+
+// ─── Copilot Metrics API fallback ────────────────────────────────────────────
+// When billing usage doesn't reveal an exhausted quota, fall through to
+// the metrics reports. Heuristic: if the owner has had recent Copilot
+// PR review request webhook events AND the metrics show zero Copilot
+// review activity for the last day, infer rate-limited.
+
+async function tryMetricsApiLookup(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  owner: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  const appId = env.GITHUB_APP_ID;
+  const privateKey = env.GITHUB_APP_PRIVATE_KEY;
+  if (!appId || !privateKey) return null;
+
+  let appJwt: string;
+  try {
+    appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
+  } catch {
+    return null;
+  }
+
+  const installationId = await findInstallationIdForOwner(
+    dependencies.fetch,
+    appJwt,
+    owner
+  );
+  if (installationId === null) return null;
+
+  const tokenResponse = await dependencies.fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: githubHeaders(appJwt)
+    }
+  );
+  if (!tokenResponse.ok) return null;
+  const tokenBody = (await tokenResponse.json()) as { token?: string };
+  if (!tokenBody.token) return null;
+
+  const endpoints = [
+    `https://api.github.com/orgs/${encodeURIComponent(owner)}/copilot/metrics`,
+    `https://api.github.com/users/${encodeURIComponent(owner)}/copilot/metrics`
+  ];
+
+  for (const endpoint of endpoints) {
+    const response = await dependencies.fetch(endpoint, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${tokenBody.token}`,
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        "User-Agent": "release-runner-broker"
+      }
+    });
+    if (response.status === 404) continue;
+    if (!response.ok) continue;
+
+    const body = (await response.json()) as unknown;
+    const verdict = interpretMetricsResponse(body, now);
+    if (verdict) return verdict;
+  }
+  return null;
+}
+
+function interpretMetricsResponse(
+  body: unknown,
+  now: Date
+): CopilotQuotaState | null {
+  // The metrics API returns a daily report array. We look for the most
+  // recent day's `copilot_ide_code_completions` / `copilot_dotcom_chat`
+  // / `copilot_dotcom_pull_requests` blocks. If `total_engaged_users` is
+  // zero (or the block is missing) for the latest day AND the second-
+  // most-recent day shows non-zero activity, treat as a sudden drop —
+  // potential rate limit. This is a weak signal on its own, so we mark
+  // it as `metrics-heuristic` so the action knows to weigh it.
+  if (!Array.isArray(body) || body.length === 0) return null;
+  const sorted = [...body]
+    .filter((entry) => isRecord(entry) && typeof entry.date === "string")
+    .sort((a, b) =>
+      String((a as Record<string, unknown>).date).localeCompare(
+        String((b as Record<string, unknown>).date)
+      )
+    );
+  if (sorted.length < 2) return null;
+
+  const latest = sorted[sorted.length - 1] as Record<string, unknown>;
+  const prior = sorted[sorted.length - 2] as Record<string, unknown>;
+
+  const latestActive = totalEngagedUsers(latest);
+  const priorActive = totalEngagedUsers(prior);
+
+  if (latestActive > 0 || priorActive === 0) return null;
+
+  return {
+    rate_limited: true,
+    source: "github-copilot-metrics",
+    checked_at: now.toISOString(),
+    detail:
+      `Copilot metrics show 0 engaged users on ${String(latest.date)} ` +
+      `after ${priorActive} on ${String(prior.date)}.`
+  };
+}
+
+function totalEngagedUsers(day: Record<string, unknown>): number {
+  const direct = Number(day.total_engaged_users ?? day.totalEngagedUsers);
+  if (Number.isFinite(direct)) return direct;
+  // Sum across feature blocks (completions, chat, PR review, etc.).
+  let total = 0;
+  for (const value of Object.values(day)) {
+    if (isRecord(value)) {
+      const sub = Number(
+        value.total_engaged_users ?? value.totalEngagedUsers ?? 0
+      );
+      if (Number.isFinite(sub)) total += sub;
+    }
+  }
+  return total;
 }
 
 async function readTokenRequest(request: Request): Promise<TokenRequest> {
