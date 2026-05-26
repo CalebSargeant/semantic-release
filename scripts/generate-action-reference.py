@@ -59,6 +59,17 @@ INPUT_GROUPS: list[tuple[str, list[str]]] = [
   ]),
   ("CI checks", [
     "enforce_branch_naming",
+    "require-copilot-review",
+    "copilot-review-freshness",
+    "copilot-review-allowed-logins",
+    "copilot-review-allow-login-pattern",
+    "copilot-review-fail-on-unknown-identity",
+    "copilot-review-ignore-drafts",
+    "copilot-review-ignore-labels",
+    "copilot-review-ignore-authors",
+    "copilot-review-ignore-paths",
+    "copilot-review-reporter",
+    "copilot-review-check-name",
   ]),
   ("Version file injection", [
     "version-file",
@@ -86,6 +97,10 @@ INPUT_GROUPS: list[tuple[str, list[str]]] = [
   ("release-please", [
     "release-please-release-type",
     "release-please-config-file",
+  ]),
+  ("Auto-merge", [
+    "pr-number",
+    "auto-merge-method",
   ]),
 ]
 
