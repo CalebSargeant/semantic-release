@@ -53,12 +53,19 @@ case "$(printf '%s' "${METHOD_INPUT}" | tr '[:upper:]' '[:lower:]')" in
     ;;
 esac
 
+# Create a temporary directory for stderr logs and clean up on exit.
+TMPDIR="${RUNNER_TEMP:-/tmp}"
+WORKDIR=$(mktemp -d "${TMPDIR}/enable-auto-merge.XXXXXX")
+trap 'rm -rf "${WORKDIR}"' EXIT
+PR_FETCH_ERR="${WORKDIR}/pr-fetch.err"
+AUTOMERGE_ERR="${WORKDIR}/automerge.err"
+
 # Fetch PR metadata: node id (required by the GraphQL mutation), state
 # (skip if already merged/closed), and current autoMergeRequest (skip if
 # already enabled with the same method to keep this idempotent).
-PR_JSON=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" 2>/tmp/pr-fetch.err || true)
+PR_JSON=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" 2>"${PR_FETCH_ERR}" || true)
 if [ -z "${PR_JSON}" ]; then
-  error "Could not fetch PR #${PR_NUMBER} on ${OWNER}/${REPO}: $(head -3 /tmp/pr-fetch.err 2>/dev/null | tr '\n' ' ')"
+  error "Could not fetch PR #${PR_NUMBER} on ${OWNER}/${REPO}: $(head -3 "${PR_FETCH_ERR}" 2>/dev/null | tr '\n' ' ')"
   exit 1
 fi
 
@@ -92,12 +99,12 @@ MUTATION='mutation($prId: ID!, $method: PullRequestMergeMethod!) {
 RESPONSE=$(gh api graphql \
   -f "query=${MUTATION}" \
   -f "prId=${PR_NODE_ID}" \
-  -f "method=${METHOD}" 2>/tmp/automerge.err || true)
+  -f "method=${METHOD}" 2>"${AUTOMERGE_ERR}" || true)
 
 # `gh api graphql` returns 200 even for GraphQL-level errors, so detect
 # them in the response body before declaring success.
 GQL_ERRORS=$(printf '%s' "${RESPONSE}" | jq -r '.errors // [] | map(.message) | join("; ")' 2>/dev/null || echo "")
-CURL_ERR=$(head -3 /tmp/automerge.err 2>/dev/null | tr '\n' ' ')
+CURL_ERR=$(head -3 "${AUTOMERGE_ERR}" 2>/dev/null | tr '\n' ' ')
 
 if [ -n "${GQL_ERRORS}" ]; then
   warn "GitHub refused to enable auto-merge on PR #${PR_NUMBER}: ${GQL_ERRORS}. Check that the repository has 'Allow auto-merge' enabled and the target branch is protected with at least one required status check. PR can still be merged manually."
