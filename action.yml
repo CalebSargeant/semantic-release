@@ -14,8 +14,9 @@ inputs:
   mode:
     description: |
       Pipeline mode. One of:
-        ci       Build Docker image and push pr-<N> to GHCR (run on pull_request events).
-        release  (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true).
+        ci                 Build Docker image and push pr-<N> to GHCR (run on pull_request events).
+        release            (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true).
+        enable-auto-merge  Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Release Runner ones.
     required: false
     default: 'release'
 
@@ -522,6 +523,24 @@ inputs:
     description: 'Path to release-please-config.json.'
     required: false
     default: 'release-please-config.json'
+
+  # ── enable-auto-merge mode ────────────────────────────────────────────────
+  pr-number:
+    description: |
+      Pull request number to operate on. Required for `mode: enable-auto-merge`.
+      Typically `${{ github.event.pull_request.number }}` from a `pull_request`
+      workflow.
+    required: false
+    default: ''
+
+  auto-merge-method:
+    description: |
+      Merge method used by `mode: enable-auto-merge`. One of:
+        squash  (default) Squash the PR's commits into a single commit on the target branch.
+        merge   Standard merge commit.
+        rebase  Rebase the PR's commits onto the target branch.
+    required: false
+    default: 'squash'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OUTPUTS
@@ -1943,3 +1962,30 @@ runs:
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
         TARGET_STATUS: ${{ inputs.github-projects-target-status }}
       run: "${GITHUB_ACTION_PATH}/scripts/move-github-projects.sh"
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # ENABLE-AUTO-MERGE MODE — turn on native GitHub auto-merge for a PR
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Invoked from a separate caller workflow (typically `pull_request`) to
+    # opt a non-promotion PR into native auto-merge so it lands as soon as
+    # required checks pass and required reviews approve. Pairs naturally
+    # with the `require-copilot-review` gate for hands-off PR handling.
+    #
+    # Repo prerequisites (GitHub-side, not enforced by this action):
+    #   - "Allow auto-merge" enabled in Settings → General → Pull Requests
+    #   - Branch protection on the target branch with at least one
+    #     required status check
+    # The helper warns-and-continues if either is missing — the PR is
+    # still mergeable manually.
+
+    - name: Enable auto-merge
+      if: inputs.mode == 'enable-auto-merge'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MERGE_METHOD: ${{ inputs.auto-merge-method }}
+      run: "${GITHUB_ACTION_PATH}/scripts/enable-auto-merge.sh"

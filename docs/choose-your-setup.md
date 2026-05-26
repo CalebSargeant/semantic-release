@@ -246,3 +246,48 @@ steps:
 | TBD promotion PRs, version-only | `deployment-model: tbd-pr`, environment inputs, `create-promotion-pr` |
 | TBD promotion PRs with Docker | TBD promotion PR inputs plus `image_name` and PR CI |
 | BBD with Docker | `deployment-model: bbd`, `branch-map`, environment inputs, `image_name`, BBD PR CI |
+
+## 5. (Optional) Auto-Merge Feature PRs
+
+Opt non-promotion PRs into native GitHub auto-merge so they land as soon as
+required checks pass and required reviews approve. Promotion PRs are
+unaffected — this is for ordinary feature/dependabot/fix PRs.
+
+**Repo prerequisites (GitHub-side, one-time):**
+
+- Settings → General → Pull Requests → **Allow auto-merge** is on.
+- The target branch (usually `main`) has a branch protection rule with at
+  least one required status check. GitHub refuses to engage auto-merge on
+  unprotected branches.
+
+**Caller workflow:**
+
+```yaml
+name: Auto-merge PR
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: magmamoose/release-runner@v1
+        with:
+          mode: enable-auto-merge
+          pr-number: ${{ github.event.pull_request.number }}
+          auto-merge-method: squash   # squash (default) | merge | rebase
+```
+
+The job exits 0 even when the repo isn't fully set up for auto-merge (logs
+a `::warning::` instead). PRs remain mergeable manually.
+
+Pairs naturally with `require-copilot-review` as a required status check:
+once Copilot has approved the head commit and CI is green, the PR
+auto-merges with no human in the loop.

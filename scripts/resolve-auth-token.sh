@@ -29,7 +29,7 @@ case "${mode}" in
     if [[ -n "${public_app_token}" ]]; then
       token="${public_app_token}"
       source="public-app"
-    elif [[ "${action_mode}" == "ci" ]]; then
+    elif [[ "${action_mode}" == "ci" || "${action_mode}" == "enable-auto-merge" ]]; then
       token="${default_token}"
       source="github-token"
     else
@@ -48,7 +48,7 @@ if [[ "${mode}" == "private-app" && -z "${private_app_token}" ]]; then
   exit 1
 fi
 
-if [[ "${mode}" == "public-app" && "${action_mode}" != "ci" && -z "${public_app_token}" ]]; then
+if [[ "${mode}" == "public-app" && "${action_mode}" != "ci" && "${action_mode}" != "enable-auto-merge" && -z "${public_app_token}" ]]; then
   echo "::error::auth-mode public-app requires a successful token broker exchange."
   exit 1
 fi

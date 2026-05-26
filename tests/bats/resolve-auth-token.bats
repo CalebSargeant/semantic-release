@@ -36,3 +36,11 @@ setup() {
   grep -q "token=gh" "${GITHUB_OUTPUT}"
   grep -q "source=github-token" "${GITHUB_OUTPUT}"
 }
+
+@test "public app falls back to workflow token for enable-auto-merge mode" {
+  run env ACTION_MODE=enable-auto-merge AUTH_MODE=public-app DEFAULT_GITHUB_TOKEN=gh bash scripts/resolve-auth-token.sh
+
+  [ "$status" -eq 0 ]
+  grep -q "token=gh" "${GITHUB_OUTPUT}"
+  grep -q "source=github-token" "${GITHUB_OUTPUT}"
+}
