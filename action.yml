@@ -1893,6 +1893,7 @@ runs:
               TAG="${TAG}" VERSION="${VERSION}" \
               ENV="${ENV}" NEXT_ENV="${NEXT_ENV}" \
               PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER}" \
+              PROMOTE_BRANCH_PREFIX="${PREFIX}" \
               "${GITHUB_ACTION_PATH}/scripts/build-promotion-pr-body.sh" > "${out}" 2>/dev/null \
               && [ -s "${out}" ]; then
             echo "Using enriched PR body ($(wc -l < "${out}") lines)."

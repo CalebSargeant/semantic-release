@@ -9,6 +9,11 @@
 #   NEXT_ENV                the target environment (where the merge will release)
 #   PRERELEASE_IDENTIFIER   identifier of the source env (e.g. "dev", "rc")
 #                            — used to find the previous tag of the same series
+#   PROMOTE_BRANCH_PREFIX   prefix of auto-generated promotion PR branches
+#                            (default "promote"); PRs whose head ref starts
+#                            with "${PROMOTE_BRANCH_PREFIX}/" are skipped so
+#                            they don't clutter the list with action-bot
+#                            plumbing.
 #
 # Output:
 #   Writes the rendered Markdown to stdout. The action.yml caller pipes it
@@ -19,7 +24,9 @@
 #     as the range start. Falls back to "all commits in this release" when
 #     no previous tag exists.
 #   - Lists merged PRs landed in the range (deduped, most-recent-first),
-#     each annotated with author and title.
+#     each annotated with author and title. Promotion PRs (head ref starts
+#     with the promote-branch-prefix) are filtered out — they're plumbing,
+#     not reviewable changes.
 #   - Lists the loose commits in the range that don't have an associated
 #     PR (direct pushes, version-bump commits).
 #   - Highlights the originating PR (most recent merged PR in range) at
@@ -36,6 +43,7 @@ set -euo pipefail
 : "${ENV:?ENV is required}"
 : "${NEXT_ENV:?NEXT_ENV is required}"
 PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER:-}"
+PROMOTE_BRANCH_PREFIX="${PROMOTE_BRANCH_PREFIX:-promote}"
 
 REPO_URL="https://github.com/${OWNER}/${REPO}"
 
@@ -66,10 +74,22 @@ COMMITS=$(git log "${RANGE}" --pretty=format:'%H|%h|%s' 2>/dev/null | head -50 |
 
 while IFS='|' read -r SHA SHORT_SHA SUBJECT; do
   [ -z "${SHA}" ] && continue
+  # `first(...) // empty` so a commit with zero matching PRs produces an
+  # empty string instead of "null\tnull\tnull" — the previous `.[0] |
+  # "..."` form rendered null fields literally and slipped past the
+  # post-process guard.
+  # Also skip auto-generated promotion PRs (head ref starts with the
+  # configured promote-branch-prefix) — they're action-bot plumbing
+  # and add noise to the reviewer's list of "what changed in this range".
   PR_LINE=$(gh api "repos/${OWNER}/${REPO}/commits/${SHA}/pulls" \
-    --jq '[.[] | select(.merged_at != null)] | .[0] | "\(.number)\t\(.user.login)\t\(.title)"' \
+    --jq "first(
+            .[]
+            | select(.merged_at != null)
+            | select((.head.ref // \"\") | startswith(\"${PROMOTE_BRANCH_PREFIX}/\") | not)
+            | \"\(.number)\t\(.user.login)\t\(.title)\"
+          ) // empty" \
     2>/dev/null || true)
-  if [ -n "${PR_LINE}" ] && [ "${PR_LINE}" != "null" ]; then
+  if [ -n "${PR_LINE}" ]; then
     echo "${PR_LINE}" >> "${TMP_PRS}"
   else
     # Skip the auto-version-bump commits (their subject is just the
