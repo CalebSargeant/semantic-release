@@ -98,6 +98,8 @@ jobs:
     name: Build (${{ inputs.bake_target }})
     runs-on: ${{ inputs.runner }}
     permissions:
+      # `statuses: write` is needed when `require-copilot-review` is true and reporter is `commit-status`.
+      # `checks: write` is needed when reporter is `check-run`. You can remove these if not using copilot review.
       contents: read
       packages: write
       pull-requests: read
