@@ -23,6 +23,9 @@ permissions:
 ```
 
 Use `packages: write` only when Docker image build or promotion is enabled.
+Use `statuses: write` when enabling
+[Require Copilot Review](copilot-review.md) with the default commit-status
+reporter, or `checks: write` when using its check-run reporter.
 
 Release job:
 
@@ -52,6 +55,8 @@ Create a GitHub App with repository permissions:
 |---|---|
 | Contents | Read and write |
 | Pull requests | Read and write |
+| Commit statuses | Write, only for Require Copilot Review with commit-status reporting |
+| Checks | Write, only for Require Copilot Review with check-run reporting |
 | Metadata | Read-only |
 
 Add `Workflows: Read and write` only if your release process intentionally edits workflow files.

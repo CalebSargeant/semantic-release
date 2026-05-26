@@ -28,6 +28,7 @@ GHCR.
 |---|---|
 | Create stable tags from `main` | Production-only release |
 | Build and tag GHCR images | PR CI with `mode: ci`, release with `image_name` |
+| Require Copilot PR Review before merge | [Require Copilot Review](copilot-review.md) |
 | Release `dev`, `staging`, and `prod` from one branch | Trunk-Based Development with promotion PRs |
 | Release from long-lived environment branches | Branch-Based Development with `branch-map` |
 

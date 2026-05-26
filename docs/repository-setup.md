@@ -166,7 +166,43 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-## 4. Add The Release Workflow
+## 4. Optional: Require Copilot Review
+
+Release Runner can publish a merge gate that requires GitHub Copilot PR Review
+to have reviewed the current PR head.
+
+```yaml
+name: Copilot Review Gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  copilot-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: calebsargeant/semantic-release@v1
+        with:
+          mode: ci
+          enforce_branch_naming: 'false'
+          require-copilot-review: 'true'
+```
+
+Then add `Release Runner / Require Copilot Review` as a required status check
+in branch protection or repository rulesets. Configure GitHub automatic
+Copilot review separately if you want Copilot to be requested automatically.
+
+See [Require Copilot Review](copilot-review.md) for bot identity, freshness,
+bypass, and permission options.
+
+## 5. Add The Release Workflow
 
 ### Production-Only
 
@@ -275,7 +311,7 @@ jobs:
 
 Remove `packages: write` and `image_name` for a version-only flow.
 
-## 5. Use Outputs In Later Jobs
+## 6. Use Outputs In Later Jobs
 
 Later jobs can consume Release Runner outputs such as `tag`, `version`, and
 `released`.
@@ -308,12 +344,14 @@ jobs:
       - run: echo "Released ${{ needs.release.outputs.tag }}"
 ```
 
-## 6. Validate The First Run
+## 7. Validate The First Run
 
 Before relying on the workflow:
 
 1. Open a PR and confirm Docker CI publishes `pr-<number>` when Docker is enabled.
-2. Merge a commit that your selected versioning tool should release.
-3. Confirm the selected versioning tool updates only expected files.
-4. Confirm a promotion PR is created when using `tbd-pr`.
-5. Confirm later jobs read `tag`, `version`, and `released` correctly.
+2. If `require-copilot-review` is enabled, confirm the required status fails
+   before Copilot reviews and passes after Copilot reviews the current head.
+3. Merge a commit that your selected versioning tool should release.
+4. Confirm the selected versioning tool updates only expected files.
+5. Confirm a promotion PR is created when using `tbd-pr`.
+6. Confirm later jobs read `tag`, `version`, and `released` correctly.
