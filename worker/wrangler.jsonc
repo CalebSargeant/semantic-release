@@ -12,4 +12,11 @@
     "enabled": true,
     "head_sampling_rate": 1
   }
+  // KV namespace backing the /copilot-quota endpoint is added by deployers,
+  // not committed here. The endpoint degrades gracefully (returns
+  // rate_limited: false) when the binding is absent. To enable:
+  //   wrangler kv namespace create COPILOT_QUOTA_KV
+  //   wrangler kv namespace create COPILOT_QUOTA_KV --preview
+  // Then add the returned ids under "kv_namespaces" in this file using the
+  // binding name COPILOT_QUOTA_KV.
 }

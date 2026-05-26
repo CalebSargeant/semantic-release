@@ -27,6 +27,10 @@ export type BrokerEnv = Env & {
   OIDC_AUDIENCE?: string;
   ALLOWED_REPOSITORIES?: string;
   TOKEN_PERMISSIONS?: string;
+  // /copilot-quota
+  COPILOT_QUOTA_KV?: KVNamespace;
+  COPILOT_QUOTA_OVERRIDE_SECRET?: string;
+  COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
 };
 
 interface TokenRequest {
@@ -92,55 +96,14 @@ export async function handleRequest(
 
   try {
     const url = new URL(request.url);
-    if (url.pathname !== "/token") {
-      return jsonError(404, "not_found");
+    switch (url.pathname) {
+      case "/token":
+        return await handleTokenRequest(request, env, dependencies);
+      case "/copilot-quota":
+        return await handleCopilotQuotaRequest(request, env, dependencies, url);
+      default:
+        return jsonError(404, "not_found");
     }
-
-    if (request.method !== "POST") {
-      return jsonError(405, "method_not_allowed");
-    }
-
-    const body = await readTokenRequest(request);
-    const repository = `${body.owner}/${body.repo}`;
-    assertRepositoryParts(body.owner, body.repo);
-
-    const audience = env.OIDC_AUDIENCE || DEFAULT_AUDIENCE;
-    const oidcPayload = await verifyOidc(body.oidcToken, audience, dependencies);
-    if (oidcPayload.repository !== repository) {
-      return jsonError(403, "repo_mismatch");
-    }
-
-    if (!repositoryAllowed(repository, env.ALLOWED_REPOSITORIES)) {
-      return jsonError(403, "repo_not_allowed");
-    }
-
-    const appJwt = await dependencies.createGitHubAppJwt(
-      requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-      requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
-      dependencies.now()
-    );
-    const installationId = await findInstallationId(
-      dependencies.fetch,
-      appJwt,
-      body.owner,
-      body.repo
-    );
-    const token = await createInstallationToken(
-      dependencies.fetch,
-      appJwt,
-      installationId,
-      body.repo,
-      parsePermissions(env.TOKEN_PERMISSIONS)
-    );
-
-    return json(
-      {
-        token: token.token,
-        expires_at: token.expires_at,
-        repository
-      },
-      200
-    );
   } catch (error) {
     if (error instanceof HttpError) {
       return jsonError(error.status, error.code);
@@ -152,6 +115,465 @@ export async function handleRequest(
 
     return jsonError(500, "internal_error");
   }
+}
+
+async function handleTokenRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonError(405, "method_not_allowed");
+  }
+
+  const body = await readTokenRequest(request);
+  const repository = `${body.owner}/${body.repo}`;
+  assertRepositoryParts(body.owner, body.repo);
+
+  const audience = env.OIDC_AUDIENCE || DEFAULT_AUDIENCE;
+  const oidcPayload = await verifyOidc(body.oidcToken, audience, dependencies);
+  if (oidcPayload.repository !== repository) {
+    return jsonError(403, "repo_mismatch");
+  }
+
+  if (!repositoryAllowed(repository, env.ALLOWED_REPOSITORIES)) {
+    return jsonError(403, "repo_not_allowed");
+  }
+
+  const appJwt = await dependencies.createGitHubAppJwt(
+    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    dependencies.now()
+  );
+  const installationId = await findInstallationId(
+    dependencies.fetch,
+    appJwt,
+    body.owner,
+    body.repo
+  );
+  const token = await createInstallationToken(
+    dependencies.fetch,
+    appJwt,
+    installationId,
+    body.repo,
+    parsePermissions(env.TOKEN_PERMISSIONS)
+  );
+
+  return json(
+    {
+      token: token.token,
+      expires_at: token.expires_at,
+      repository
+    },
+    200
+  );
+}
+
+// ─── /copilot-quota ──────────────────────────────────────────────────────────
+// Reports whether a GitHub account has exhausted its Copilot premium-request
+// allowance. The signal is consumed by release-runner's require-copilot-review
+// gate so it can pass gracefully when no review will ever arrive.
+//
+// State sources, in order of preference:
+//   1. Manual override in KV (POSTed by an operator who saw the UI banner).
+//   2. GitHub Billing Usage API (auto-detect; best-effort, may not be
+//      available for the account type or App permissions).
+//   3. Default false (don't claim a rate limit we can't prove).
+//
+// Manual override TTL defaults to the next UTC month boundary (matching the
+// "Limit resets on Jun 1" wording in the UI banner). Caller can pass an
+// explicit `until` ISO timestamp to override.
+
+interface CopilotQuotaState {
+  rate_limited: boolean;
+  resets_at?: string;
+  source: "manual" | "github-billing-api" | "default";
+  checked_at: string;
+  detail?: string;
+}
+
+interface ManualOverrideRecord {
+  rate_limited: boolean;
+  resets_at: string;
+  set_at: string;
+}
+
+const COPILOT_QUOTA_DEFAULT_CACHE_TTL_SECONDS = 3600;
+
+async function handleCopilotQuotaRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  url: URL
+): Promise<Response> {
+  if (request.method === "GET") {
+    return handleCopilotQuotaGet(env, dependencies, url);
+  }
+  if (request.method === "POST") {
+    return handleCopilotQuotaPost(request, env, dependencies);
+  }
+  return jsonError(405, "method_not_allowed");
+}
+
+async function handleCopilotQuotaGet(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  url: URL
+): Promise<Response> {
+  const owner = url.searchParams.get("owner");
+  if (!owner) {
+    return jsonError(400, "missing_owner");
+  }
+  assertOwnerName(owner);
+
+  const now = dependencies.now();
+
+  // 1. Manual override wins. KV may be unbound on dev or in legacy deploys.
+  const manual = await readManualOverride(env, owner, now);
+  if (manual) {
+    return json({ ...manual } as unknown as Record<string, unknown>, 200);
+  }
+
+  // 2. Auto-detect via GitHub Billing API. Best-effort; we'd rather
+  // misreport false than make the worker noisy on every PR. The action
+  // treats `rate_limited: false` as "no signal, stay strict" anyway.
+  const auto = await tryBillingApiLookup(env, dependencies, owner, now).catch(
+    () => null
+  );
+  if (auto) {
+    return json({ ...auto } as unknown as Record<string, unknown>, 200);
+  }
+
+  const fallback: CopilotQuotaState = {
+    rate_limited: false,
+    source: "default",
+    checked_at: now.toISOString()
+  };
+  return json({ ...fallback } as unknown as Record<string, unknown>, 200);
+}
+
+async function handleCopilotQuotaPost(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  const expected = env.COPILOT_QUOTA_OVERRIDE_SECRET;
+  if (!expected || expected.trim() === "") {
+    return jsonError(503, "override_disabled");
+  }
+  const authz = request.headers.get("authorization") ?? "";
+  if (authz !== `Bearer ${expected}`) {
+    return jsonError(401, "unauthorized");
+  }
+
+  if (!env.COPILOT_QUOTA_KV) {
+    return jsonError(503, "kv_not_configured");
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonError(400, "invalid_json");
+  }
+
+  if (!isRecord(payload)) {
+    return jsonError(400, "invalid_request");
+  }
+
+  const owner = asString(payload.owner);
+  if (!owner) {
+    return jsonError(400, "missing_owner");
+  }
+  assertOwnerName(owner);
+
+  const rateLimited = payload.rate_limited;
+  if (typeof rateLimited !== "boolean") {
+    return jsonError(400, "missing_rate_limited");
+  }
+
+  const now = dependencies.now();
+  const resetsAt = resolveResetsAt(payload.resets_at, now);
+
+  if (!rateLimited) {
+    await env.COPILOT_QUOTA_KV.delete(manualKey(owner));
+    return json({ cleared: true, owner }, 200);
+  }
+
+  const ttlSeconds = Math.max(
+    60,
+    Math.floor((resetsAt.getTime() - now.getTime()) / 1000)
+  );
+  const record: ManualOverrideRecord = {
+    rate_limited: true,
+    resets_at: resetsAt.toISOString(),
+    set_at: now.toISOString()
+  };
+  await env.COPILOT_QUOTA_KV.put(manualKey(owner), JSON.stringify(record), {
+    expirationTtl: ttlSeconds
+  });
+  return json({ stored: true, owner, resets_at: record.resets_at }, 200);
+}
+
+async function readManualOverride(
+  env: BrokerEnv,
+  owner: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  if (!env.COPILOT_QUOTA_KV) return null;
+  const raw = await env.COPILOT_QUOTA_KV.get(manualKey(owner));
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || typeof parsed.rate_limited !== "boolean") {
+    return null;
+  }
+  const resetsAt = asString(parsed.resets_at);
+  if (resetsAt) {
+    const expiry = new Date(resetsAt);
+    if (!Number.isNaN(expiry.getTime()) && expiry.getTime() <= now.getTime()) {
+      // Defensive: KV TTL should have evicted, but a stale value snuck
+      // through. Treat as cleared.
+      return null;
+    }
+  }
+  return {
+    rate_limited: parsed.rate_limited,
+    resets_at: resetsAt,
+    source: "manual",
+    checked_at: now.toISOString()
+  };
+}
+
+async function tryBillingApiLookup(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  owner: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  if (!env.COPILOT_QUOTA_KV) {
+    return performBillingApiLookup(env, dependencies, owner, now);
+  }
+  const cacheKey = billingCacheKey(owner);
+  const cached = await env.COPILOT_QUOTA_KV.get(cacheKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as CopilotQuotaState;
+      if (parsed && typeof parsed.rate_limited === "boolean") {
+        return parsed;
+      }
+    } catch {
+      // fall through to refresh
+    }
+  }
+
+  const fresh = await performBillingApiLookup(env, dependencies, owner, now);
+  if (fresh) {
+    const ttl = Math.max(
+      60,
+      Number(env.COPILOT_QUOTA_CACHE_TTL_SECONDS) ||
+        COPILOT_QUOTA_DEFAULT_CACHE_TTL_SECONDS
+    );
+    await env.COPILOT_QUOTA_KV.put(cacheKey, JSON.stringify(fresh), {
+      expirationTtl: ttl
+    });
+  }
+  return fresh;
+}
+
+async function performBillingApiLookup(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  owner: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  // The Billing Usage API requires an App installation with billing
+  // permissions on the owner. Without an installation token we can't
+  // proceed. We mint a fresh App JWT and look up the installation for
+  // this owner the same way the /token endpoint does for repos.
+  const appId = env.GITHUB_APP_ID;
+  const privateKey = env.GITHUB_APP_PRIVATE_KEY;
+  if (!appId || !privateKey) {
+    return null;
+  }
+
+  let appJwt: string;
+  try {
+    appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
+  } catch {
+    return null;
+  }
+
+  const installationId = await findInstallationIdForOwner(
+    dependencies.fetch,
+    appJwt,
+    owner
+  );
+  if (installationId === null) {
+    return null;
+  }
+
+  // Permissions are configured on the App itself (Plan: read or
+  // Billing: read for orgs; user-level billing for user installations).
+  // We request whatever the App ships with — if it has billing perms,
+  // the token will carry them.
+  const tokenResponse = await dependencies.fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: githubHeaders(appJwt)
+    }
+  );
+  if (!tokenResponse.ok) {
+    return null;
+  }
+  const tokenBody = (await tokenResponse.json()) as { token?: string };
+  if (!tokenBody.token) {
+    return null;
+  }
+
+  // Try the org endpoint first; fall back to user endpoint. The 404 from
+  // the wrong scope is harmless.
+  const endpoints = [
+    `https://api.github.com/orgs/${encodeURIComponent(owner)}/settings/billing/usage`,
+    `https://api.github.com/users/${encodeURIComponent(owner)}/settings/billing/usage`
+  ];
+
+  for (const endpoint of endpoints) {
+    const usageResponse = await dependencies.fetch(endpoint, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${tokenBody.token}`,
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        "User-Agent": "release-runner-broker"
+      }
+    });
+    if (usageResponse.status === 404) continue;
+    if (!usageResponse.ok) continue;
+
+    const body = (await usageResponse.json()) as unknown;
+    const verdict = interpretBillingUsage(body, now);
+    if (verdict) return verdict;
+  }
+
+  return null;
+}
+
+async function findInstallationIdForOwner(
+  githubFetch: typeof fetch,
+  appJwt: string,
+  owner: string
+): Promise<number | null> {
+  // Try organisation first, then user. We can't know which scope ahead
+  // of time without an extra round-trip, so we just try both.
+  const candidates = [
+    `https://api.github.com/orgs/${encodeURIComponent(owner)}/installation`,
+    `https://api.github.com/users/${encodeURIComponent(owner)}/installation`
+  ];
+  for (const url of candidates) {
+    const response = await githubFetch(url, { headers: githubHeaders(appJwt) });
+    if (response.status === 404) continue;
+    if (!response.ok) continue;
+    const body = (await response.json()) as { id?: number };
+    if (typeof body.id === "number") return body.id;
+  }
+  return null;
+}
+
+function interpretBillingUsage(
+  body: unknown,
+  now: Date
+): CopilotQuotaState | null {
+  // The Billing Usage API returns a list of usage items keyed by product.
+  // We're looking for any Copilot premium-request item whose remaining
+  // quota is exhausted. GitHub's response shape has shifted across
+  // previews, so we accept a few shapes:
+  //
+  //   { usageItems: [ { product, sku, quantity, remaining, ... }, ... ] }
+  //   { items:      [ ... ] }
+  //
+  // Heuristic: an item is "rate-limited" when product matches /copilot/i
+  // AND (remaining === 0 OR included_quantity === 0) AND either an SKU
+  // or description mentions "premium" or "request".
+  if (!isRecord(body)) return null;
+  const items = (body.usageItems ?? body.items ?? body.usage_items) as
+    | unknown
+    | undefined;
+  if (!Array.isArray(items)) return null;
+
+  for (const raw of items) {
+    if (!isRecord(raw)) continue;
+    const product = String(raw.product ?? "").toLowerCase();
+    const sku = String(raw.sku ?? raw.unitType ?? "").toLowerCase();
+    const desc = String(raw.description ?? "").toLowerCase();
+    if (!product.includes("copilot")) continue;
+    const mentionsPremium = sku.includes("premium") || desc.includes("premium");
+    const mentionsRequest = sku.includes("request") || desc.includes("request");
+    if (!mentionsPremium && !mentionsRequest) continue;
+
+    const remaining = Number(raw.remaining ?? raw.remainingQuantity ?? NaN);
+    const includedQty = Number(raw.includedQuantity ?? raw.included ?? NaN);
+    const usedQty = Number(raw.quantity ?? raw.used ?? NaN);
+    let exhausted = false;
+    if (Number.isFinite(remaining)) {
+      exhausted = remaining <= 0;
+    } else if (Number.isFinite(includedQty) && Number.isFinite(usedQty)) {
+      exhausted = usedQty >= includedQty;
+    }
+    if (!exhausted) continue;
+
+    const resetsAt =
+      asString(raw.periodEnd ?? raw.period_end ?? raw.resets_at) ??
+      nextUtcMonthBoundary(now).toISOString();
+    return {
+      rate_limited: true,
+      resets_at: resetsAt,
+      source: "github-billing-api",
+      checked_at: now.toISOString(),
+      detail: desc || sku || "premium request quota exhausted"
+    };
+  }
+
+  // We saw billing data but no exhausted Copilot premium-request item.
+  return {
+    rate_limited: false,
+    source: "github-billing-api",
+    checked_at: now.toISOString()
+  };
+}
+
+function manualKey(owner: string): string {
+  return `copilot-quota:manual:${owner.toLowerCase()}`;
+}
+
+function billingCacheKey(owner: string): string {
+  return `copilot-quota:billing:${owner.toLowerCase()}`;
+}
+
+function assertOwnerName(owner: string): void {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(owner)) {
+    throw new HttpError(400, "invalid_owner");
+  }
+}
+
+function resolveResetsAt(input: unknown, now: Date): Date {
+  if (typeof input === "string" && input.trim() !== "") {
+    const parsed = new Date(input);
+    if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) {
+      return parsed;
+    }
+  }
+  return nextUtcMonthBoundary(now);
+}
+
+function nextUtcMonthBoundary(now: Date): Date {
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0)
+  );
 }
 
 async function readTokenRequest(request: Request): Promise<TokenRequest> {

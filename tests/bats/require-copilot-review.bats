@@ -99,6 +99,22 @@ esac
 MOCK
   chmod +x "${BIN_DIR}/gh"
 
+  # Mock curl so the quota-check fallback can be exercised without
+  # standing up a worker. The test sets CURL_MOCK_RESPONSE / CURL_MOCK_EXIT
+  # in the environment; the mock echoes whichever is configured.
+  cat > "${BIN_DIR}/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -e
+if [ -n "${CURL_MOCK_EXIT:-}" ]; then
+  echo "${CURL_MOCK_STDERR:-mock curl: forced failure}" >&2
+  exit "${CURL_MOCK_EXIT}"
+fi
+if [ -n "${CURL_MOCK_RESPONSE:-}" ]; then
+  printf '%s' "${CURL_MOCK_RESPONSE}"
+fi
+MOCK
+  chmod +x "${BIN_DIR}/curl"
+
   export PATH="${BIN_DIR}:${PATH}"
   export FIXTURE_DIR STATUS_LOG
   export GH_TOKEN="fake-token"
@@ -287,4 +303,81 @@ run_policy() {
   grep -Fq "state=failure" "${STATUS_LOG}"
   grep -Fq "context=Release Runner / Require Copilot Review" "${STATUS_LOG}"
   grep -Fq "description=Copilot has not reviewed this pull request yet." "${STATUS_LOG}"
+}
+
+@test "quota check: bypasses no-review failure when worker reports rate_limited:true" {
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"manual","resets_at":"2026-06-01T00:00:00Z","checked_at":"2026-05-26T10:00:00Z"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"rate-limited"* ]]
+  [[ "$output" == *"resets at 2026-06-01T00:00:00Z"* ]]
+}
+
+@test "quota check: bypasses stale-review failure when worker reports rate_limited:true" {
+  write_reviews_page 1 '[
+    {
+      "user": {"login": "copilot-pull-request-reviewer[bot]"},
+      "state": "COMMENTED",
+      "submitted_at": "2026-05-26T09:45:00Z",
+      "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ]'
+
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"github-billing-api","resets_at":"2026-06-01T00:00:00Z"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"github-billing-api"* ]]
+}
+
+@test "quota check: falls through to strict failure when worker reports rate_limited:false" {
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":false,"source":"default","checked_at":"2026-05-26T10:00:00Z"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot has not reviewed this pull request yet."* ]]
+}
+
+@test "quota check: tolerates worker unreachable (exits 1) and stays strict" {
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_EXIT=22 \
+    CURL_MOCK_STDERR="HTTP/1.1 500 Internal Server Error" \
+    "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot quota check"* ]]
+  [[ "$output" == *"Falling through to strict gate"* ]]
+}
+
+@test "quota check: tolerates malformed JSON from worker and stays strict" {
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='not valid json at all' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot has not reviewed this pull request yet."* ]]
+}
+
+@test "quota check: appends owner correctly to URLs with existing query string" {
+  # Smoke test: setting the URL with a pre-existing query string shouldn't
+  # break parsing. The mock ignores the URL, but the script's `&` vs `?`
+  # branching is exercised on this path.
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota?foo=bar" \
+    CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"manual"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
 }

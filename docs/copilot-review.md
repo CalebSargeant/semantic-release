@@ -161,3 +161,67 @@ Manual workflow reruns also refresh the status. A comment command such as
 - Bot identities can differ across environments. Keep
   `copilot-review-fail-on-unknown-identity: 'true'` for strict enforcement, or
   configure `copilot-review-allowed-logins` for your environment.
+
+## Premium Request Rate Limit Bypass
+
+When a user exhausts their Copilot premium-request allowance, the GitHub UI
+shows a banner like:
+
+```text
+You have reached your monthly limit for premium requests for Copilot code
+review. Limit resets on Jun 1, 2026.
+```
+
+Copilot then refuses to review, so the strict gate fails indefinitely. The
+banner is rendered from the user's private billing state and has no
+programmatic signal on the PR (no review, no comment, no check-run, no
+timeline event), so the gate cannot detect the rate limit on its own.
+
+Release Runner ships an opt-in workaround: a `/copilot-quota` endpoint on
+the broker worker that the gate consults before failing.
+
+```yaml
+- uses: magmamoose/release-runner@v1
+  with:
+    mode: ci
+    require-copilot-review: 'true'
+    copilot-review-quota-check-url: 'https://release-runner.sargeant.workers.dev/copilot-quota'
+```
+
+When the URL is set, the gate calls it before reporting a failure for
+"no Copilot review" or "stale Copilot review". If the worker responds
+`{"rate_limited": true, ...}`, the gate finishes as `success` with a
+`::warning::` annotation that reports the reset date and the source of
+the signal. If the worker is unreachable or returns `rate_limited: false`,
+the gate falls back to strict mode (current behaviour).
+
+The worker resolves the rate-limit state in this order:
+
+1. **Manual override** stored in KV — set via
+   `POST /copilot-quota` with a `Bearer` token. Useful for flipping the
+   flag the moment you see the UI banner; auto-expires at the next UTC
+   month boundary (matching GitHub's reset cadence).
+2. **GitHub Billing Usage API** — when the broker App has billing
+   permissions on the owner, the worker fetches `/orgs/{owner}/settings/billing/usage`
+   (and falls back to the user-scoped variant for personal accounts),
+   scans for a Copilot premium-request line item with zero remaining
+   quota, and reports the result. Cached in KV for one hour to keep
+   round-trip cost low.
+3. **Default `rate_limited: false`** when neither source produced a
+   verdict, so a misconfigured broker doesn't silently weaken the gate.
+
+The action treats `rate_limited: false` as "no signal, stay strict" — the
+worker never weakens enforcement, it only relaxes it on a positive
+signal.
+
+Set the manual flag from anywhere:
+
+```bash
+curl -fsSL -X POST \
+  -H "Authorization: Bearer ${BROKER_OVERRIDE_SECRET}" \
+  -H 'Content-Type: application/json' \
+  -d '{"owner":"CalebSargeant","rate_limited":true}' \
+  https://release-runner.sargeant.workers.dev/copilot-quota
+```
+
+Clear it again with the same call and `"rate_limited": false`.
