@@ -20,8 +20,11 @@
 #
 # Exit codes:
 #   0  - auto-merge enabled, or already enabled, or PR already merged/closed
+#        (also warn-and-exit-0 for known repo-prerequisite GraphQL errors:
+#        "Allow auto-merge" disabled, target branch unprotected with zero
+#        required checks)
 #   1  - invalid input (bad MERGE_METHOD, missing required env, PR lookup
-#        failed, or token lacks permissions)
+#        failed, token lacks permissions, or an unrecognised GraphQL error)
 #
 # Warn-and-continue policy:
 #   The repo-level prerequisites above (allow-auto-merge off, no branch
@@ -30,6 +33,9 @@
 #   GraphQL error from enablePullRequestAutoMerge. The script logs an
 #   actionable ::warning:: with the upstream error text and exits 0 — the
 #   caller's PR workflow stays green and the PR is still mergeable manually.
+#
+# All other GraphQL errors (e.g. permission denied, bad PR id, API outage)
+# and empty responses cause exit 1 so the workflow can react.
 
 set -euo pipefail
 
@@ -107,13 +113,31 @@ GQL_ERRORS=$(printf '%s' "${RESPONSE}" | jq -r '.errors // [] | map(.message) | 
 CURL_ERR=$(head -3 "${AUTOMERGE_ERR}" 2>/dev/null | tr '\n' ' ')
 
 if [ -n "${GQL_ERRORS}" ]; then
-  warn "GitHub refused to enable auto-merge on PR #${PR_NUMBER}: ${GQL_ERRORS}. Check that the repository has 'Allow auto-merge' enabled and the target branch is protected with at least one required status check. PR can still be merged manually."
-  exit 0
+  # Known repo-prerequisite errors: allow auto-merge disabled, branch not protected,
+  # no required status checks. These are configuration issues — warn and exit 0.
+  # All other errors (permissions, bad PR id, etc.) are failures — exit 1.
+  PREREQ_PATTERNS=("allow auto-merge" "branch protection" "required status check")
+  is_prereq=false
+  lower_errors=$(printf '%s' "${GQL_ERRORS}" | tr '[:upper:]' '[:lower:]')
+  for pat in "${PREREQ_PATTERNS[@]}"; do
+    if [[ "${lower_errors}" == *"${pat}"* ]]; then
+      is_prereq=true
+      break
+    fi
+  done
+
+  if [ "${is_prereq}" = true ]; then
+    warn "GitHub refused to enable auto-merge on PR #${PR_NUMBER}: ${GQL_ERRORS}. Check that the repository has 'Allow auto-merge' enabled and the target branch is protected with at least one required status check. PR can still be merged manually."
+    exit 0
+  else
+    error "Unexpected GraphQL error enabling auto-merge on PR #${PR_NUMBER}: ${GQL_ERRORS}"
+    exit 1
+  fi
 fi
 
 if [ -z "${RESPONSE}" ]; then
-  warn "enablePullRequestAutoMerge returned no response for PR #${PR_NUMBER}: ${CURL_ERR}. PR can still be merged manually."
-  exit 0
+  error "enablePullRequestAutoMerge returned no response for PR #${PR_NUMBER}: ${CURL_ERR}. This may indicate a permissions or API issue."
+  exit 1
 fi
 
 log "Auto-merge enabled on PR #${PR_NUMBER} with method ${METHOD}."
