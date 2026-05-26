@@ -369,6 +369,117 @@ Enforce TBD branch naming convention on PRs (mode: ci).
 Allowed prefixes: feat, fix, chore, hotfix, docs, refactor, perf, test, ci, style.
 Set to false for BBD (branches are named after environments).
 
+#### `require-copilot-review`
+
+- Required: `false`
+- Default: `false`
+
+Enforce GitHub Copilot PR Review as a required PR policy (mode: ci).
+
+When true, Release Runner reads pull request reviews, detects a
+configured Copilot reviewer identity, verifies that the review covers
+the current PR head, and reports a stable required status named
+`Release Runner / Require Copilot Review` by default.
+
+This does not request Copilot review automatically. Configure GitHub's
+automatic Copilot review separately in repository or organization
+rulesets, then require this status in branch protection.
+
+#### `copilot-review-freshness`
+
+- Required: `false`
+- Default: `after_latest_commit`
+
+Freshness rule for `require-copilot-review`. One of:
+
+| Value | Description |
+|---|---|
+| `after_latest_commit` | (default) Prefer the review's commit_id matching the current PR head; if commit_id is unavailable, require submitted_at to be at or after the latest PR commit timestamp. |
+| `exact_head_sha` | Require the review's commit_id to equal the current PR head SHA. |
+
+#### `copilot-review-allowed-logins`
+
+- Required: `false`
+- Default: `["copilot-pull-request-reviewer[bot]"]`
+
+JSON array or comma-separated list of Copilot reviewer logins accepted
+by `require-copilot-review`.
+
+Override this for GitHub Enterprise Server or organization-specific
+bot identities.
+
+#### `copilot-review-allow-login-pattern`
+
+- Required: `false`
+- Default: `false`
+
+When true, entries in `copilot-review-allowed-logins` are treated as
+shell-style login patterns. Keep false for exact login matching.
+
+#### `copilot-review-fail-on-unknown-identity`
+
+- Required: `false`
+- Default: `true`
+
+When true, fail closed unless a submitted review matches
+`copilot-review-allowed-logins`. When false, Release Runner may accept
+a submitted reviewer login containing `copilot` as a compatibility
+fallback for environments with different bot names.
+
+#### `copilot-review-ignore-drafts`
+
+- Required: `false`
+- Default: `true`
+
+Skip the Copilot review gate for draft pull requests.
+
+#### `copilot-review-ignore-labels`
+
+- Required: `false`
+- Default: `[]`
+
+JSON array or comma-separated list of pull request labels that bypass
+`require-copilot-review`, for example `["skip-copilot-review"]`.
+
+#### `copilot-review-ignore-authors`
+
+- Required: `false`
+- Default: `[]`
+
+JSON array or comma-separated list of pull request authors that bypass
+`require-copilot-review`, for example `["dependabot[bot]"]`.
+
+#### `copilot-review-ignore-paths`
+
+- Required: `false`
+- Default: `[]`
+
+JSON array or comma-separated list of shell-style file path patterns
+that bypass `require-copilot-review` when every changed PR file matches
+one of the patterns. Example: `["docs/*","*.md"]`.
+
+#### `copilot-review-reporter`
+
+- Required: `false`
+- Default: `commit-status`
+
+Reporter used for `require-copilot-review`. One of:
+
+| Value | Description |
+|---|---|
+| `commit-status` | (default) Create a commit status with context `copilot-review-check-name`; requires `statuses: write`. |
+| `check-run` | Create or update a GitHub Check Run named `copilot-review-check-name`; requires `checks: write`. |
+| `none` | Evaluate only; useful for local tests. |
+
+#### `copilot-review-check-name`
+
+- Required: `false`
+- Default: `Release Runner / Require Copilot Review`
+
+Stable status context or check-run name for `require-copilot-review`.
+Add this exact value to branch protection or rulesets when making the
+gate required.
+
 ### Version file injection
 
 #### `version-file`
