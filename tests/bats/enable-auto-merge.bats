@@ -259,6 +259,17 @@ JSON
   [[ "$output" == *"branch protection"* ]]
 }
 
+@test "fails when GraphQL returns an unrecognized error (e.g. permission denied)" {
+  write_graphql_error "Resource not accessible by integration"
+
+  run "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"Unexpected GraphQL error"* ]]
+  [[ "$output" == *"Resource not accessible"* ]]
+}
+
 @test "fails when PR payload has no node_id" {
   write_pr_missing_node_id
 

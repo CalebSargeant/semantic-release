@@ -113,10 +113,21 @@ GQL_ERRORS=$(printf '%s' "${RESPONSE}" | jq -r '.errors // [] | map(.message) | 
 CURL_ERR=$(head -3 "${AUTOMERGE_ERR}" 2>/dev/null | tr '\n' ' ')
 
 if [ -n "${GQL_ERRORS}" ]; then
-  # Known repo-prerequisite errors: allow auto-merge disabled, branch not protected,
-  # no required status checks. These are configuration issues — warn and exit 0.
-  # All other errors (permissions, bad PR id, etc.) are failures — exit 1.
-  PREREQ_PATTERNS=("allow auto-merge" "branch protection" "required status check")
+  # Known repo-prerequisite errors: "Allow auto-merge" off, target branch
+  # unprotected, no required status checks. These are repo-configuration
+  # issues — warn and exit 0 so the caller workflow stays green. Patterns
+  # are matched against the lowercased error text. Keep them aligned with
+  # GitHub's actual wording, which uses "Auto merge" (two words, no
+  # hyphen) and may say "not protected" instead of "branch protection".
+  # All other errors (permissions denied, bad node id, API outage) are
+  # genuine failures — exit 1 so the workflow can react.
+  PREREQ_PATTERNS=(
+    "auto merge is not allowed"
+    "auto-merge is not allowed"
+    "branch protection"
+    "not protected"
+    "required status check"
+  )
   is_prereq=false
   lower_errors=$(printf '%s' "${GQL_ERRORS}" | tr '[:upper:]' '[:lower:]')
   for pat in "${PREREQ_PATTERNS[@]}"; do
