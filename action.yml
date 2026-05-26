@@ -698,7 +698,7 @@ runs:
 
     - name: Request public GitHub App token
       id: public-app-token
-      if: inputs.mode == 'release' && inputs.auth-mode == 'public-app'
+      if: (inputs.mode == 'release' || inputs.mode == 'enable-auto-merge') && inputs.auth-mode == 'public-app'
       shell: bash
       env:
         TOKEN_BROKER_URL: ${{ inputs.token-broker-url }}
@@ -1674,7 +1674,7 @@ runs:
           BASE_VERSION=$(echo "${VERSION}" | sed 's/-[a-zA-Z][^.]*\.[0-9]*$//')
           SEARCH_PREFIX="${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."
           SOURCE_TAG_SUFFIX=$(gh api "repos/${REPO_FULL}/git/matching-refs/tags/${SEARCH_PREFIX}" \
-            --jq '[.[].ref | ltrimstr("refs/tags/")] | sort_by(ltrimstr("'"${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."'") | tonumber) | last // empty' \
+            --jq '[.[].ref | ltrimstr("refs/tags/")] | sort_by(ltrimstr("'"${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."'"') | tonumber) | last // empty' \
             2>/dev/null || echo "")
           if [ -n "${SOURCE_TAG_SUFFIX}" ]; then
             echo "Source tag: ${SOURCE_TAG_SUFFIX}"
