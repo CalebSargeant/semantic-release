@@ -151,4 +151,12 @@ if [ -z "${RESPONSE}" ]; then
   exit 1
 fi
 
+# Validate that the response contains the expected mutation result.
+# This catches non-JSON responses and missing/incorrect data fields.
+AUTO_MERGE_RESULT=$(printf '%s' "${RESPONSE}" | jq -r '.data.enablePullRequestAutoMerge.pullRequest.autoMergeRequest.mergeMethod // empty' 2>/dev/null || echo "")
+if [ -z "${AUTO_MERGE_RESULT}" ]; then
+  error "enablePullRequestAutoMerge response is missing or malformed. Response: $(head -c 500 <<<"${RESPONSE}")"
+  exit 1
+fi
+
 log "Auto-merge enabled on PR #${PR_NUMBER} with method ${METHOD}."
