@@ -97,6 +97,10 @@ INPUT_GROUPS: list[tuple[str, list[str]]] = [
     "release-please-release-type",
     "release-please-config-file",
   ]),
+  ("Auto-merge", [
+    "pr-number",
+    "auto-merge-method",
+  ]),
 ]
 
 

@@ -18,6 +18,7 @@ Pipeline mode. One of:
 |---|---|
 | `ci` | Build Docker image and push pr-<N> to GHCR (run on pull_request events). |
 | `release` | (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true). |
+| `enable-auto-merge` | Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Release Runner ones. |
 
 #### `environment`
 
@@ -684,6 +685,30 @@ release-please release type (python, node, simple, go, etc.).
 - Default: `release-please-config.json`
 
 Path to release-please-config.json.
+
+### Auto-merge
+
+#### `pr-number`
+
+- Required: `false`
+- Default: `''`
+
+Pull request number to operate on. Required for `mode: enable-auto-merge`.
+Typically `${{ github.event.pull_request.number }}` from a `pull_request`
+workflow.
+
+#### `auto-merge-method`
+
+- Required: `false`
+- Default: `squash`
+
+Merge method used by `mode: enable-auto-merge`. One of:
+
+| Value | Description |
+|---|---|
+| `squash` | (default) Squash the PR's commits into a single commit on the target branch. |
+| `merge` | Standard merge commit. |
+| `rebase` | Rebase the PR's commits onto the target branch. |
 
 ### Other
 
