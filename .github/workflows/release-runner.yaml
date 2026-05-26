@@ -130,6 +130,39 @@ on:
       enforce_branch_naming:
         type: string
         default: 'true'
+      require-copilot-review:
+        type: string
+        default: 'false'
+      copilot-review-freshness:
+        type: string
+        default: 'after_latest_commit'
+      copilot-review-allowed-logins:
+        type: string
+        default: '["copilot-pull-request-reviewer[bot]"]'
+      copilot-review-allow-login-pattern:
+        type: string
+        default: 'false'
+      copilot-review-fail-on-unknown-identity:
+        type: string
+        default: 'true'
+      copilot-review-ignore-drafts:
+        type: string
+        default: 'true'
+      copilot-review-ignore-labels:
+        type: string
+        default: '[]'
+      copilot-review-ignore-authors:
+        type: string
+        default: '[]'
+      copilot-review-ignore-paths:
+        type: string
+        default: '[]'
+      copilot-review-reporter:
+        type: string
+        default: 'commit-status'
+      copilot-review-check-name:
+        type: string
+        default: 'Release Runner / Require Copilot Review'
       admin-required-from:
         type: string
         default: '@last'
@@ -278,6 +311,17 @@ jobs:
           platforms: ${{ inputs.platforms }}
           build-github-token: ${{ secrets.build-github-token }}
           enforce_branch_naming: ${{ inputs.enforce_branch_naming }}
+          require-copilot-review: ${{ inputs.require-copilot-review }}
+          copilot-review-freshness: ${{ inputs.copilot-review-freshness }}
+          copilot-review-allowed-logins: ${{ inputs.copilot-review-allowed-logins }}
+          copilot-review-allow-login-pattern: ${{ inputs.copilot-review-allow-login-pattern }}
+          copilot-review-fail-on-unknown-identity: ${{ inputs.copilot-review-fail-on-unknown-identity }}
+          copilot-review-ignore-drafts: ${{ inputs.copilot-review-ignore-drafts }}
+          copilot-review-ignore-labels: ${{ inputs.copilot-review-ignore-labels }}
+          copilot-review-ignore-authors: ${{ inputs.copilot-review-ignore-authors }}
+          copilot-review-ignore-paths: ${{ inputs.copilot-review-ignore-paths }}
+          copilot-review-reporter: ${{ inputs.copilot-review-reporter }}
+          copilot-review-check-name: ${{ inputs.copilot-review-check-name }}
           admin-required-from: ${{ inputs.admin-required-from }}
           working-directory: ${{ inputs.working-directory }}
           create-release: ${{ inputs.create-release }}

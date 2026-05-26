@@ -20,6 +20,7 @@ nav:
       - Organization: organization-setup.md
       - Choose your setup: choose-your-setup.md
       - Repository: repository-setup.md
+      - Require Copilot Review: copilot-review.md
   - Branching strategies: branching-strategies.md
   - Reference:
       - Action inputs and outputs: reference/action-inputs-outputs.md

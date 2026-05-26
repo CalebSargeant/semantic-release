@@ -48,6 +48,50 @@ on:
         required: false
         type: boolean
         default: true
+      require-copilot-review:
+        required: false
+        type: boolean
+        default: false
+      copilot-review-freshness:
+        required: false
+        type: string
+        default: 'after_latest_commit'
+      copilot-review-allowed-logins:
+        required: false
+        type: string
+        default: '["copilot-pull-request-reviewer[bot]"]'
+      copilot-review-allow-login-pattern:
+        required: false
+        type: boolean
+        default: false
+      copilot-review-fail-on-unknown-identity:
+        required: false
+        type: boolean
+        default: true
+      copilot-review-ignore-drafts:
+        required: false
+        type: boolean
+        default: true
+      copilot-review-ignore-labels:
+        required: false
+        type: string
+        default: '[]'
+      copilot-review-ignore-authors:
+        required: false
+        type: string
+        default: '[]'
+      copilot-review-ignore-paths:
+        required: false
+        type: string
+        default: '[]'
+      copilot-review-reporter:
+        required: false
+        type: string
+        default: 'commit-status'
+      copilot-review-check-name:
+        required: false
+        type: string
+        default: 'Release Runner / Require Copilot Review'
 
 jobs:
   build:
@@ -57,6 +101,8 @@ jobs:
       contents: read
       packages: write
       pull-requests: read
+      statuses: write
+      checks: write
     steps:
       - uses: magmamoose/release-runner@e88a8245037aab4f1c030852048efcdd4e54991b # v1
         with:
@@ -67,4 +113,15 @@ jobs:
           platforms:               ${{ inputs.platforms }}
           registry:                ${{ inputs.registry }}
           enforce_branch_naming:   ${{ inputs.enforce_branch_naming }}
+          require-copilot-review:  ${{ inputs.require-copilot-review }}
+          copilot-review-freshness: ${{ inputs.copilot-review-freshness }}
+          copilot-review-allowed-logins: ${{ inputs.copilot-review-allowed-logins }}
+          copilot-review-allow-login-pattern: ${{ inputs.copilot-review-allow-login-pattern }}
+          copilot-review-fail-on-unknown-identity: ${{ inputs.copilot-review-fail-on-unknown-identity }}
+          copilot-review-ignore-drafts: ${{ inputs.copilot-review-ignore-drafts }}
+          copilot-review-ignore-labels: ${{ inputs.copilot-review-ignore-labels }}
+          copilot-review-ignore-authors: ${{ inputs.copilot-review-ignore-authors }}
+          copilot-review-ignore-paths: ${{ inputs.copilot-review-ignore-paths }}
+          copilot-review-reporter: ${{ inputs.copilot-review-reporter }}
+          copilot-review-check-name: ${{ inputs.copilot-review-check-name }}
           github-token:            ${{ secrets.GITHUB_TOKEN }}

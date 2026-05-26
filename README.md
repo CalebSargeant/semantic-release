@@ -72,6 +72,7 @@ Install the [Release Runner GitHub App](https://github.com/apps/release-runner/i
 - **Retag-not-rebuild Docker promotion.** The image that passed PR CI as `pr-42` becomes `v1.2.3` via registry retag. No fresh build, no binary drift between staging and prod. Falls back to a Docker Bake rebuild only when the source image is missing.
 - **Per-environment prerelease identifiers.** `{"dev":"dev","staging":"rc"}` → tags land as `v1.2.3-dev.1`, `v1.2.3-rc.1`, `v1.2.3`. Production sheds the suffix.
 - **Promotion PRs auto-open.** In `deployment-model: tbd-pr` with `create-promotion-pr: 'true'`, each release publish opens the promotion PR for the next environment. Merging `promote/staging/<version>` cuts the staging tag and opens `promote/prod/<version>`; merging that cuts the stable prod tag. The cascade chains through every entry in `environments`.
+- **Require Copilot Review.** In `mode: ci`, Release Runner can publish `Release Runner / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
 - **ClickUp + GitHub Projects v2 in release notes.** Scans commits and PR bodies in the release range for `app.clickup.com/t/...` URLs and issue/PR refs (`#NNN`), appends grouped sections to the GitHub Release notes and to any open promotion PR body.
 - **Production guardrail on by default.** `admin-required-from: '@last'` makes manual `workflow_dispatch` runs targeting production require `permission: admin` on the repository. Push and promotion-PR-merge triggers are unaffected.
 - **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: release-runner-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
@@ -97,6 +98,7 @@ Install the [Release Runner GitHub App](https://github.com/apps/release-runner/i
 - [Concepts](https://releaserunner.dev/docs/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
 - [Choose your setup](https://releaserunner.dev/docs/choose-your-setup/) — paste-ready snippets for each release model.
 - [Repository setup](https://releaserunner.dev/docs/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
+- [Require Copilot Review](https://releaserunner.dev/docs/copilot-review/) — enforce completed Copilot PR Review as a required status check.
 - [Organization setup](https://releaserunner.dev/docs/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
 
 Full input/output reference: [Action reference](https://releaserunner.dev/docs/reference/action-inputs-outputs/).
