@@ -10,7 +10,7 @@
 # Both are upstream GitHub prerequisites, not Release Runner ones.
 #
 # Required env:
-#   GH_TOKEN     - auth token with `pull_requests: write` on the repo
+#   GH_TOKEN     - auth token with `pull-requests: write` on the repo
 #   OWNER        - repository owner (e.g., MagmaMoose)
 #   REPO         - repository name (e.g., release-runner)
 #   PR_NUMBER    - pull request number
@@ -81,7 +81,7 @@ PR_MERGED=$(printf '%s' "${PR_JSON}" | jq -r '.merged // false')
 PR_AUTO_METHOD=$(printf '%s' "${PR_JSON}" | jq -r '.auto_merge.merge_method // empty' | tr '[:lower:]' '[:upper:]')
 
 if [ -z "${PR_NODE_ID}" ]; then
-  error "PR #${PR_NUMBER} payload has no node_id; token may lack pull_requests:read."
+  error "PR #${PR_NUMBER} payload has no node_id; token may lack pull-requests:read."
   exit 1
 fi
 
