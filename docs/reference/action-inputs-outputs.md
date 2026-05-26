@@ -694,8 +694,9 @@ Path to release-please-config.json.
 - Default: `''`
 
 Pull request number to operate on. Required for `mode: enable-auto-merge`.
-Typically `${{ github.event.pull_request.number }}` from a `pull_request`
-workflow.
+Typically passed as `github.event.pull_request.number` from a
+`pull_request` workflow (wrapped in the usual expression syntax in
+the caller's `with:` block).
 
 #### `auto-merge-method`
 
