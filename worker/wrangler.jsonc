@@ -8,6 +8,26 @@
   ],
   "workers_dev": true,
   "preview_urls": true,
+  // Production custom domain. The Cloudflare zone for magmamoose.com
+  // must exist and be on Cloudflare DNS for cert provisioning to
+  // work. wrangler creates the AAAA/A record and TLS automatically
+  // on first deploy.
+  //
+  // `api.lava.magmamoose.com` is the API surface for the Lava
+  // product (release-runner broker today; future Lava services may
+  // share or split off). The bare `lava.magmamoose.com` is
+  // intentionally NOT bound to the Worker so it stays free for a
+  // marketing/portal site on whatever host (Vercel, Cloudflare Pages,
+  // etc.) without conflict.
+  //
+  // The workers.dev URL keeps working in parallel — both hostnames
+  // hit the same worker — so older consumers can migrate gradually.
+  "routes": [
+    {
+      "pattern": "api.lava.magmamoose.com",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

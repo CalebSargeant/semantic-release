@@ -36,7 +36,7 @@ inputs:
       Advanced override for the hosted Release Runner GitHub App auth service.
       Most repositories should not set this.
     required: false
-    default: 'https://release-runner.sargeant.workers.dev'
+    default: 'https://api.lava.magmamoose.com'
 
   oidc-audience:
     description: 'Advanced override for public-app authentication. Most repositories should not set this.'

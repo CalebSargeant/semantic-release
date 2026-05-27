@@ -271,7 +271,7 @@ One of:
 #### `token-broker-url`
 
 - Required: `false`
-- Default: `https://release-runner.sargeant.workers.dev`
+- Default: `https://api.lava.magmamoose.com`
 
 Advanced override for the hosted Release Runner GitHub App auth service.
 Most repositories should not set this.
