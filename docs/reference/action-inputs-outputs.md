@@ -741,12 +741,16 @@ Pass secrets.NPM_TOKEN or secrets.GITHUB_TOKEN from the calling workflow.
 - Required: `false`
 - Default: `''`
 
-Optional `/copilot-quota` worker endpoint. When set, the gate calls
-this URL before failing for "no Copilot review" and passes gracefully
-(with a `::warning::`) if the worker reports `rate_limited: true`.
-Intended for the Release Runner public-app broker; self-hosted
-brokers can use it too. Empty string = strict mode (current
-behaviour). See worker/README for the endpoint contract.
+`/copilot-quota` worker endpoint. When set, the gate calls this URL
+before failing for "no Copilot review" and passes gracefully (with
+a `::warning::`) if the worker reports `rate_limited: true`.
+
+Under `auth-mode: public-app` (the default) the URL is auto-derived
+from `token-broker-url` as `${token-broker-url}/copilot-quota`, so
+public-app callers get rate-limit bypass without any wiring.
+Self-hosted brokers and callers using `auth-mode: private-app` or
+`github-token` opt in explicitly by setting this input.
+See worker/README for the endpoint contract.
 
 ## Outputs
 

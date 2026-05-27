@@ -199,26 +199,41 @@ annotation that includes the original decline text. No configuration
 required; this fires automatically whenever Copilot leaves the decline
 review.
 
-### Layer 2 — broker-worker quota endpoint (opt-in)
+### Layer 2 — broker-worker quota endpoint
 
 When Copilot is **not** requested as a reviewer (so no decline notice
-exists) but the user is still rate-limited, the gate can consult a
+exists) but the user is still rate-limited, the gate consults a
 `/copilot-quota` endpoint on the broker worker.
+
+`auth-mode: public-app` (the default) auto-derives the URL from
+`token-broker-url`, so no configuration is required:
 
 ```yaml
 - uses: magmamoose/release-runner@v1
   with:
     mode: ci
     require-copilot-review: 'true'
-    copilot-review-quota-check-url: 'https://release-runner.sargeant.workers.dev/copilot-quota'
+    # copilot-review-quota-check-url defaults to
+    # `${token-broker-url}/copilot-quota` under auth-mode: public-app.
 ```
 
-When the URL is set, the gate calls it before reporting a failure for
-"no Copilot review" or "stale Copilot review". If the worker responds
-`{"rate_limited": true, ...}`, the gate finishes as `success` with a
-`::warning::` annotation that reports the reset date and the source of
-the signal. If the worker is unreachable or returns `rate_limited: false`,
-the gate falls back to strict mode (current behaviour).
+Self-hosted brokers (or callers using `auth-mode: private-app` /
+`github-token`) opt in explicitly:
+
+```yaml
+- uses: magmamoose/release-runner@v1
+  with:
+    mode: ci
+    require-copilot-review: 'true'
+    copilot-review-quota-check-url: 'https://your-broker.example.com/copilot-quota'
+```
+
+When the URL is set (or auto-derived), the gate calls it before
+reporting a failure for "no Copilot review" or "stale Copilot review".
+If the worker responds `{"rate_limited": true, ...}`, the gate finishes
+as `success` with a `::warning::` annotation that reports the reset
+date and the source of the signal. If the worker is unreachable or
+returns `rate_limited: false`, the gate falls back to strict mode.
 
 The worker resolves the rate-limit state through a layered detection
 chain. Positive signals short-circuit; a `rate_limited: false` is only

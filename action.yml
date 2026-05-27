@@ -369,12 +369,16 @@ inputs:
 
   copilot-review-quota-check-url:
     description: |
-      Optional `/copilot-quota` worker endpoint. When set, the gate calls
-      this URL before failing for "no Copilot review" and passes gracefully
-      (with a `::warning::`) if the worker reports `rate_limited: true`.
-      Intended for the Release Runner public-app broker; self-hosted
-      brokers can use it too. Empty string = strict mode (current
-      behaviour). See worker/README for the endpoint contract.
+      `/copilot-quota` worker endpoint. When set, the gate calls this URL
+      before failing for "no Copilot review" and passes gracefully (with
+      a `::warning::`) if the worker reports `rate_limited: true`.
+
+      Under `auth-mode: public-app` (the default) the URL is auto-derived
+      from `token-broker-url` as `${token-broker-url}/copilot-quota`, so
+      public-app callers get rate-limit bypass without any wiring.
+      Self-hosted brokers and callers using `auth-mode: private-app` or
+      `github-token` opt in explicitly by setting this input.
+      See worker/README for the endpoint contract.
     required: false
     default: ''
 
@@ -779,7 +783,12 @@ runs:
         COPILOT_REVIEW_IGNORE_PATHS: ${{ inputs.copilot-review-ignore-paths }}
         COPILOT_REVIEW_REPORTER: ${{ inputs.copilot-review-reporter }}
         COPILOT_REVIEW_CHECK_NAME: ${{ inputs.copilot-review-check-name }}
-        COPILOT_REVIEW_QUOTA_CHECK_URL: ${{ inputs.copilot-review-quota-check-url }}
+        # When the caller didn't pass an explicit quota URL and they are
+        # using the public-app broker, auto-derive `${token-broker-url}/copilot-quota`
+        # so the rate-limit bypass works out-of-the-box. Self-hosted callers
+        # (private-app, github-token) keep the strict default unless they
+        # opt in explicitly.
+        COPILOT_REVIEW_QUOTA_CHECK_URL: ${{ inputs.copilot-review-quota-check-url || (inputs.auth-mode == 'public-app' && format('{0}/copilot-quota', inputs.token-broker-url)) || '' }}
       run: "${GITHUB_ACTION_PATH}/scripts/require-copilot-review.sh"
 
     - name: Validate version override
