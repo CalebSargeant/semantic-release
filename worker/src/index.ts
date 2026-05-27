@@ -503,6 +503,13 @@ async function performBillingApiLookup(
     return null;
   }
 
+  // Extract fetch off `dependencies` into a local. Calling
+  // `dependencies.fetch(...)` is a method call with `this=dependencies`,
+  // which Cloudflare's native fetch rejects ("Illegal invocation"). The
+  // existing `findInstallationIdForOwner` path passes fetch as a plain
+  // argument and so avoids the bind; mirror that here.
+  const fetchFn: typeof fetch = dependencies.fetch;
+
   let appJwt: string;
   try {
     appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
@@ -511,7 +518,7 @@ async function performBillingApiLookup(
   }
 
   const installationId = await findInstallationIdForOwner(
-    dependencies.fetch,
+    fetchFn,
     appJwt,
     owner
   );
@@ -519,11 +526,12 @@ async function performBillingApiLookup(
     return null;
   }
 
-  // Permissions are configured on the App itself (Plan: read or
-  // Billing: read for orgs; user-level billing for user installations).
-  // We request whatever the App ships with — if it has billing perms,
-  // the token will carry them.
-  const tokenResponse = await dependencies.fetch(
+  // Permissions are configured on the App itself ("Plan" account /
+  // organization permissions for billing usage endpoints). The
+  // installation token carries whichever subset the installation
+  // has accepted — a stale installation that pre-dates a new App
+  // permission needs to be re-approved to surface it.
+  const tokenResponse = await fetchFn(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
@@ -538,15 +546,22 @@ async function performBillingApiLookup(
     return null;
   }
 
-  // Try the org endpoint first; fall back to user endpoint. The 404 from
-  // the wrong scope is harmless.
+  // GitHub exposes Copilot premium-request usage under a dedicated
+  // /premium_request/usage endpoint, distinct from the general
+  // /billing/usage SKU dump (which surfaces only Actions / Storage /
+  // Packages, not Copilot). Try both — premium_request first — and
+  // accept whichever returns a usable shape. 404 from the wrong scope
+  // is harmless; the loop just continues.
+  const enc = encodeURIComponent(owner);
   const endpoints = [
-    `https://api.github.com/orgs/${encodeURIComponent(owner)}/settings/billing/usage`,
-    `https://api.github.com/users/${encodeURIComponent(owner)}/settings/billing/usage`
+    `https://api.github.com/organizations/${enc}/settings/billing/premium_request/usage`,
+    `https://api.github.com/users/${enc}/settings/billing/premium_request/usage`,
+    `https://api.github.com/orgs/${enc}/settings/billing/usage`,
+    `https://api.github.com/users/${enc}/settings/billing/usage`
   ];
 
   for (const endpoint of endpoints) {
-    const usageResponse = await dependencies.fetch(endpoint, {
+    const usageResponse = await fetchFn(endpoint, {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
@@ -1008,6 +1023,11 @@ async function tryMetricsApiLookup(
   const privateKey = env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) return null;
 
+  // See performBillingApiLookup — calling `dependencies.fetch(...)`
+  // directly binds `this=dependencies` and Cloudflare's native fetch
+  // rejects with "Illegal invocation". Extract to a local first.
+  const fetchFn: typeof fetch = dependencies.fetch;
+
   let appJwt: string;
   try {
     appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
@@ -1016,13 +1036,13 @@ async function tryMetricsApiLookup(
   }
 
   const installationId = await findInstallationIdForOwner(
-    dependencies.fetch,
+    fetchFn,
     appJwt,
     owner
   );
   if (installationId === null) return null;
 
-  const tokenResponse = await dependencies.fetch(
+  const tokenResponse = await fetchFn(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
@@ -1039,7 +1059,7 @@ async function tryMetricsApiLookup(
   ];
 
   for (const endpoint of endpoints) {
-    const response = await dependencies.fetch(endpoint, {
+    const response = await fetchFn(endpoint, {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
