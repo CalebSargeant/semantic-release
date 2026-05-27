@@ -177,27 +177,38 @@ and pushes the release tag. Stable releases also get `latest`.
 
 Some apps need to know their own version at runtime — a .NET service
 that displays "v1.2.3" in its footer reads it from `appsettings.json`,
-a Node service from a generated `version.json`, a frontend bundle from
-a manifest. Set `version-file` (and optionally `version-file-json-path`)
-and Release Runner will:
+a Node service from a generated `version.json`, a Helm chart from
+`Chart.yaml`'s `appVersion`. Set `version-file` (and optionally the
+path input) and Release Runner will:
 
-1. Inject the resolved version into the JSON file at the given path.
+1. Inject the resolved version into the file at the given path.
 2. Commit with `[skip ci]`.
 3. Push back to the active branch using the resolved release token, so
    the push bypasses branch-protection rulesets.
 
-Works with every versioning tool. Off by default. **The file must be
-JSON** — the injection step uses `jq` and will warn-and-skip on YAML or
-non-JSON content. (Helm `Chart.yaml` and other YAML targets aren't
-supported today; use a small repo-side hook to mirror the JSON value
-into YAML if you need it.) The commit lands *after* the release tag,
-so the tag itself does not include the version-file change — that's
-deliberate, the tag is your release boundary.
+Works with every versioning tool. Off by default. The file format is
+detected from its extension: `.yaml`/`.yml` files are processed with
+`yq`; all other files are processed with `jq`. The commit lands *after*
+the release tag, so the tag itself does not include the version-file
+change — that's deliberate, the tag is your release boundary.
+
+**JSON example** — inject into `appsettings.json`:
 
 ```yaml
 with:
   version-file: src/MyApp.Web/appsettings.json
   version-file-json-path: .Application.Version
+```
+
+**YAML/Helm example** — update `appVersion` in `Chart.yaml` so the
+chart's default `image.tag` (set to `{{ .Chart.AppVersion }}`) always
+matches the released container image:
+
+```yaml
+with:
+  version-file: charts/my-app/Chart.yaml
+  # version-file-yaml-path defaults to .appVersion — no override needed
+  # for the standard Helm use-case
 ```
 
 ## GitHub Projects Integration

@@ -551,16 +551,15 @@ inputs:
   # ── Version file injection (any tool) ─────────────────────────────────────
   version-file:
     description: |
-      Path to a JSON file where the released version is injected and committed
-      back to the branch after every release. Works with every versioning
-      tool, not just GitVersion. Typical use: persist the version into
-      `appsettings.json` for a .NET app so the running container can display
-      its own version.
+      Path to a JSON or YAML file where the released version is injected and
+      committed back to the branch after every release. Works with every
+      versioning tool, not just GitVersion. Typical uses:
+      - JSON: persist the version into `appsettings.json` for a .NET app.
+      - YAML: update `appVersion` in a Helm `Chart.yaml` so the chart tracks
+        the released image tag automatically.
 
-      JSON only — the injection step uses `jq`. YAML targets (e.g. Helm
-      `Chart.yaml`) aren't supported today; if `jq` errors on the file
-      the step warns and skips so a mis-configured file does not block
-      the release.
+      File format is detected from the extension: `.yaml`/`.yml` files are
+      processed with `yq`; all other files are processed with `jq`.
 
       The commit uses the resolved release auth token (Release Runner App,
       private app, or `github-token`), so it can bypass branch-protection
@@ -574,10 +573,23 @@ inputs:
 
   version-file-json-path:
     description: |
-      jq path for the version field inside `version-file`. Only used when
-      `version-file` is set. Example: `.Application.Version`
+      jq path for the version field inside `version-file` when the file is
+      JSON. Only used when `version-file` is set and the file is not a
+      `.yaml`/`.yml` file. Example: `.Application.Version`
     required: false
     default: '.Application.Version'
+
+  version-file-yaml-path:
+    description: |
+      yq path for the version field inside `version-file` when the file is
+      YAML (`.yaml` or `.yml` extension). Only used when `version-file` is
+      set and the file has a YAML extension. Example: `.appVersion`
+
+      For Helm charts, set this to `.appVersion` (default) to update the
+      application version, or `.version` to update the chart version, or a
+      custom path for other YAML schemas.
+    required: false
+    default: '.appVersion'
   # ── Integrations ──────────────────────────────────────────────────────────
   aggregate-clickup-tickets:
     description: |
@@ -809,11 +821,11 @@ runs:
 
     - name: Set up Docker Buildx (CI)
       if: inputs.mode == 'ci' && inputs.image_name != ''
-      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     - name: Log in to container registry (CI)
       if: inputs.mode == 'ci' && inputs.image_name != ''
-      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
         registry: ${{ inputs.registry }}
         username: ${{ inputs.registry-username || github.actor }}
@@ -1440,10 +1452,11 @@ runs:
     # RELEASE MODE — Persist version into a tracked file (any tool)
     # ═════════════════════════════════════════════════════════════════════════
     #
-    # Common in .NET deployments (e.g. appsettings.json) where the running
-    # app needs to know its own version. JSON only; the injection step
-    # uses jq and warns-and-skips on non-JSON content. Works with every
-    # versioning tool and runs only when a release was created.
+    # Common in .NET deployments (e.g. appsettings.json) and Helm charts
+    # (Chart.yaml appVersion) where the running app or chart needs to know
+    # its own version. JSON files are processed with jq; YAML files (.yaml/
+    # .yml) are processed with yq. Works with every versioning tool and runs
+    # only when a release was created.
     #
     # The push uses the resolved release auth token, so it bypasses branch
     # protection rulesets when the Release Runner App (or your private app)
@@ -1461,6 +1474,7 @@ runs:
         GITHUB_TOKEN: ${{ steps.auth.outputs.token }}
         INPUT_VERSION_FILE: ${{ inputs.version-file }}
         INPUT_VERSION_FILE_JSON_PATH: ${{ inputs.version-file-json-path }}
+        INPUT_VERSION_FILE_YAML_PATH: ${{ inputs.version-file-yaml-path }}
         INPUT_GITVERSION_APPSETTINGS_FILE: ${{ inputs.gitversion-appsettings-file }}
         INPUT_GITVERSION_APPSETTINGS_VERSION_PATH: ${{ inputs.gitversion-appsettings-version-path }}
         NORMALIZE_VERSION: ${{ steps.normalize.outputs.version }}
@@ -1471,6 +1485,7 @@ runs:
         # alias so existing callers keep working.
         FILE="${INPUT_VERSION_FILE}"
         JSON_PATH="${INPUT_VERSION_FILE_JSON_PATH}"
+        YAML_PATH="${INPUT_VERSION_FILE_YAML_PATH}"
         if [ -z "${FILE}" ]; then
           FILE="${INPUT_GITVERSION_APPSETTINGS_FILE}"
           if [ -n "${INPUT_GITVERSION_APPSETTINGS_VERSION_PATH}" ]; then
@@ -1490,20 +1505,32 @@ runs:
           exit 0
         fi
 
-        # Tolerate a bad path expression or non-JSON content rather than
+        # Detect file format by extension: .yaml/.yml → yq; anything else → jq.
+        # Tolerate a bad path expression or unexpected content rather than
         # failing the release — version-file is opt-in plumbing and
         # mis-configuring it should warn, not block the publish.
         TMP=$(mktemp)
-        if ! jq --arg v "${VERSION}" "${JSON_PATH} = \$v" "${FILE}" > "${TMP}" 2>/tmp/jq.err; then
-          echo "::warning::Failed to inject version into ${FILE} at path '${JSON_PATH}': $(cat /tmp/jq.err 2>/dev/null | head -1). Skipping."
-          rm -f "${TMP}"
-          exit 0
+        if [[ "${FILE}" =~ \.(yaml|yml)$ ]]; then
+          # Pass VERSION via env so it isn't interpolated into the expression.
+          if ! _INJECT_VERSION="${VERSION}" yq "${YAML_PATH} = strenv(_INJECT_VERSION)" "${FILE}" > "${TMP}" 2>/tmp/yq.err; then
+            echo "::warning::Failed to inject version into ${FILE} at path '${YAML_PATH}': $(cat /tmp/yq.err 2>/dev/null | head -1). Skipping."
+            rm -f "${TMP}"
+            exit 0
+          fi
+          USED_PATH="${YAML_PATH}"
+        else
+          if ! jq --arg v "${VERSION}" "${JSON_PATH} = \$v" "${FILE}" > "${TMP}" 2>/tmp/jq.err; then
+            echo "::warning::Failed to inject version into ${FILE} at path '${JSON_PATH}': $(cat /tmp/jq.err 2>/dev/null | head -1). Skipping."
+            rm -f "${TMP}"
+            exit 0
+          fi
+          USED_PATH="${JSON_PATH}"
         fi
         if ! mv "${TMP}" "${FILE}"; then
           echo "::warning::Failed to write ${FILE} after injection — skipping."
           exit 0
         fi
-        echo "Injected version ${VERSION} into ${FILE} at ${JSON_PATH}"
+        echo "Injected version ${VERSION} into ${FILE} at ${USED_PATH}"
 
         git config user.name  "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -1570,11 +1597,11 @@ runs:
 
     - name: Set up Docker Buildx (release)
       if: inputs.mode == 'release' && inputs.image_name != '' && steps.normalize.outputs.released == 'true'
-      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     - name: Log in to container registry (release)
       if: inputs.mode == 'release' && inputs.image_name != '' && steps.normalize.outputs.released == 'true'
-      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
         registry: ${{ inputs.registry }}
         username: ${{ inputs.registry-username || github.actor }}
