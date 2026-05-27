@@ -537,48 +537,6 @@ describe("copilot-quota endpoint", () => {
     expect(body.source).toBe("github-billing-api");
   });
 
-  it("flags rate-limited from user-scoped Billing API when requester is set", async () => {
-    // Owner-scoped lookup finds no Copilot data (org billing returns
-    // only Actions usage); requester-scoped lookup hits the user
-    // installation and finds an exhausted Copilot premium-request item.
-    const { deps: injected } = deps({
-      githubResponses: [
-        // requester (user) billing lookup
-        new Response("{}", { status: 404 }),              // /orgs/calebsargeant/installation
-        Response.json({ id: 77 }),                        // /users/calebsargeant/installation
-        Response.json({ token: "ghs_user", expires_at: "2026-05-26T13:00:00Z" }),
-        new Response("{}", { status: 404 }),              // org billing usage (404 — user not an org)
-        Response.json({
-          usageItems: [
-            {
-              product: "Copilot",
-              sku: "Copilot Premium Requests",
-              quantity: 500,
-              includedQuantity: 500,
-              remaining: 0,
-              periodEnd: "2026-06-01T00:00:00.000Z"
-            }
-          ]
-        })
-      ]
-    });
-
-    const response = await handleRequest(
-      new Request(
-        "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
-        { method: "GET" }
-      ),
-      env,
-      injected
-    );
-
-    expect(response.status).toBe(200);
-    const body = await readJson(response);
-    expect(body.rate_limited).toBe(true);
-    expect(body.source).toBe("github-billing-api");
-    expect(body.resets_at).toBe("2026-06-01T00:00:00.000Z");
-  });
-
   it("checks the manual override for the requester as well as the owner", async () => {
     // Owner has no override; requester does.
     const { kv, store } = makeKv();

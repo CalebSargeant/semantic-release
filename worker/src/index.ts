@@ -242,12 +242,27 @@ async function handleCopilotQuotaGet(
   }
   assertOwnerName(owner);
 
-  // Optional `requester` is the PR author whose user-scoped Copilot quota
-  // matters even when the repo lives under an organization. Copilot
-  // premium-request quotas are per-user even on Copilot Business, so
-  // org-level billing for `owner` will miss individual exhaustion.
-  // Invalid requester strings are silently ignored — the endpoint stays
-  // backward-compatible with callers that don't pass the parameter.
+  // Optional `requester` is the PR author. We use it to widen two
+  // signals that follow the *user* across orgs, not the repo owner:
+  //
+  //   - manual override keyed by user login (so flipping the flag once
+  //     covers every org that user pushes PRs to)
+  //   - webhook backlog scoped to the requester (Copilot review
+  //     requested by/for the user, never delivered → rate-limited)
+  //
+  // Note: we deliberately don't try a user-scoped *billing* API call
+  // here. The user-level billing endpoint (`/users/{user}/settings/
+  // billing/usage`) requires a "Plan" account permission, which is a
+  // USER permission in the GitHub Apps model — meaning it's only
+  // available on a User access token (OAuth web flow), not on the
+  // installation tokens we mint here. Adding the App-side permission
+  // and re-installing doesn't help; the installation token never
+  // carries account-scoped permissions by design. The earlier
+  // implementation that called `/users/{requester}/...` always 403s
+  // and has been removed.
+  //
+  // Invalid requester strings are silently ignored — the endpoint
+  // stays backward-compatible with callers that don't pass it.
   let requester: string | null = url.searchParams.get("requester");
   if (requester) {
     try {
@@ -278,28 +293,9 @@ async function handleCopilotQuotaGet(
     }
   }
 
-  // 3. User-level Billing API for the requester. GitHub tracks Copilot
-  // premium-request usage at the user account level (the broker App must
-  // be installed on the requester's personal account with Plan:read).
-  // This is the most direct signal for individual quota exhaustion.
-  let userBilling: CopilotQuotaState | null = null;
-  if (requester) {
-    userBilling = await tryBillingApiLookup(
-      env,
-      dependencies,
-      requester,
-      now
-    ).catch(() => null);
-    if (userBilling && userBilling.rate_limited) {
-      return json(
-        { ...userBilling } as unknown as Record<string, unknown>,
-        200
-      );
-    }
-  }
-
-  // 4. Org-level Billing API for owner. Useful for Copilot Business orgs
-  // where premium-request usage shows up at the org level.
+  // 3. Org-level Billing API for owner. Useful for Copilot Business
+  // orgs where premium-request usage shows up at the org level (shared
+  // org pool). Individual user quotas don't appear here.
   const billing = await tryBillingApiLookup(env, dependencies, owner, now).catch(
     () => null
   );
@@ -307,7 +303,7 @@ async function handleCopilotQuotaGet(
     return json({ ...billing } as unknown as Record<string, unknown>, 200);
   }
 
-  // 5. Webhook-derived heuristic for the owner. If our event stream
+  // 4. Webhook-derived heuristic for the owner. If our event stream
   // shows Copilot review requests outpacing deliveries, Copilot is
   // likely rate-limited even when the Billing API hasn't caught up (or
   // isn't available).
@@ -316,7 +312,7 @@ async function handleCopilotQuotaGet(
     return json({ ...webhook } as unknown as Record<string, unknown>, 200);
   }
 
-  // 6. Webhook signal scoped to the requester — only set if we've seen
+  // 5. Webhook signal scoped to the requester — only set if we've seen
   // a Copilot review request whose sender matched the requester.
   if (requester) {
     const webhookUser = await webhookSignalForOwner(env, requester, now).catch(
@@ -327,7 +323,7 @@ async function handleCopilotQuotaGet(
     }
   }
 
-  // 7. Copilot Metrics API as a softer fallback — useful when the App
+  // 6. Copilot Metrics API as a softer fallback — useful when the App
   // has copilot:read but not billing:read.
   const metrics = await tryMetricsApiLookup(env, dependencies, owner, now).catch(
     () => null
@@ -336,12 +332,8 @@ async function handleCopilotQuotaGet(
     return json({ ...metrics } as unknown as Record<string, unknown>, 200);
   }
 
-  // 8. Negative billing results — surface stronger no-signal data
-  // (Copilot data present but not exhausted) over the bare default.
-  // User billing is more specific than org billing, so prefer it.
-  if (userBilling) {
-    return json({ ...userBilling } as unknown as Record<string, unknown>, 200);
-  }
+  // 7. Negative billing result — surface "Copilot data present but
+  // not exhausted" over the bare default.
   if (billing) {
     return json({ ...billing } as unknown as Record<string, unknown>, 200);
   }

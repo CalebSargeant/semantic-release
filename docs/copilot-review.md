@@ -241,13 +241,28 @@ The action passes two query parameters to the worker:
   the repo. Always present.
 - `requester` — `${{ github.event.pull_request.user.login }}`, the PR
   author. Present whenever the gate runs on a PR event. The worker uses
-  it to additionally query *user-scoped* billing, because Copilot
-  premium-request quotas are tracked per-user even on Copilot Business —
-  so a personal account's exhaustion won't appear in the org-level
-  billing usage at all.
+  it to widen the *user-following* signals — primarily the manual
+  override (so flipping the flag once covers every org the user
+  contributes to).
 
-The worker resolves the rate-limit state through a layered detection
-chain. Positive signals short-circuit; a `rate_limited: false` is only
+### Why there is no user-billing layer
+
+You might expect the worker to also call
+`/users/{requester}/settings/billing/usage` to directly read the user's
+Copilot premium-request quota. It can't, by design. That endpoint
+requires the `Plan` permission at the *account* level, and account
+permissions are only available on a **user access token** (the OAuth
+web-flow result), not on the **installation access tokens** the broker
+mints. Granting `Plan` on the App definition and re-installing on the
+user's account doesn't change this: installation tokens never carry
+account-scoped permissions. So we don't try — the call would always
+return `403 Resource not accessible by integration`. For individual
+quota exhaustion the working detection paths are the manual override
+(Layer 1) and the webhook backlog heuristic (Layer 4).
+
+### Resolution chain
+
+Positive signals short-circuit; a `rate_limited: false` is only
 returned after every source has been consulted.
 
 1. **Manual override** stored in KV — set via
@@ -256,40 +271,38 @@ returned after every source has been consulted.
    month boundary (matching GitHub's reset cadence). Checked for both
    `owner` and `requester`, so flipping the flag on the user account
    suffices even when PRs land under multiple orgs.
-2. **GitHub Billing Usage API (user-scoped)** — when `requester` is
-   set and the broker App is installed on the requester's personal
-   account with `Plan: read`, the worker fetches
-   `/users/{requester}/settings/billing/usage` and looks for an
-   exhausted Copilot premium-request item. This is the most direct
-   signal for individual quota exhaustion. Cached in KV for one hour.
-3. **GitHub Billing Usage API (org-scoped)** — when the broker App
-   has billing permissions on the owner, the worker fetches
-   `/orgs/{owner}/settings/billing/usage` and scans for a Copilot
-   premium-request line item with zero remaining quota. Useful for
-   Copilot Business orgs where premium-request usage shows up at the
-   org level. A **Cloudflare Cron Trigger** (every 15 minutes)
-   refreshes both caches proactively for any owner the worker has
+2. **GitHub Billing Usage API (org-scoped)** — when the broker App
+   has the `Plan` *organization* permission on the owner, the worker
+   fetches `/orgs/{owner}/settings/billing/premium_request/usage`
+   (with fallback to the legacy `/settings/billing/usage`) and scans
+   for an exhausted Copilot premium-request line item. Useful for
+   Copilot Business orgs where premium-request usage is reported at
+   the org level. A **Cloudflare Cron Trigger** (every 15 minutes)
+   refreshes the cache proactively for any owner the worker has
    seen — so `GET /copilot-quota` stays single-digit-ms warm-path.
-4. **Webhook-derived heuristic** — the broker App subscribes to
+3. **Webhook-derived heuristic** — the broker App subscribes to
    `pull_request` (review_requested) and `pull_request_review`
    (submitted) events delivered to `POST /webhook`. The worker
    HMAC-verifies each delivery against `GITHUB_WEBHOOK_SECRET` and
    accumulates per-owner timestamps of Copilot review requests vs
    deliveries in KV. If a request has been outstanding longer than
-   `COPILOT_WEBHOOK_REVIEW_GAP_SECONDS` (default 30 min) and no review
-   came back, the worker infers Copilot is rate-limited. A subsequent
-   Copilot review delivery clears the backlog automatically. Inferred
-   purely from observed behavior — no extra App permissions beyond
-   what PR/review event subscriptions already grant. Checked for
-   both `owner` and `requester`.
-5. **Copilot Metrics API** — falls through to
+   `COPILOT_WEBHOOK_REVIEW_GAP_SECONDS` (default 30 min) and no
+   review came back, the worker infers Copilot is rate-limited. A
+   subsequent Copilot review delivery clears the backlog
+   automatically. Inferred purely from observed behavior — no extra
+   App permissions beyond what PR/review event subscriptions already
+   grant. Checked for both `owner` and `requester`. **For this layer
+   to fire you must have Copilot configured to actually review PRs
+   in the affected repo** (e.g. via a repository ruleset that adds
+   `copilot-pull-request-reviewer[bot]` as a required reviewer).
+4. **Copilot Metrics API** — falls through to
    `/orgs/{owner}/copilot/metrics` (and the user-scoped variant),
    which returns daily Copilot activity reports. If
    `total_engaged_users` for the latest day is 0 after a non-zero
    prior day, the worker reports a sudden activity drop as a softer
    rate-limit signal (`source: github-copilot-metrics`). Useful when
    the App has `copilot: read` but no billing permissions.
-6. **Default `rate_limited: false`** when no source produced a
+5. **Default `rate_limited: false`** when no source produced a
    positive verdict, so a misconfigured broker can never silently
    weaken the gate.
 
@@ -325,20 +338,22 @@ To enable the full detection chain on a self-hosted broker:
 3. **Grant App permissions** on the broker App:
    - `Plan: read` (organization permission) for org-scoped billing
      auto-detect on Copilot Business orgs.
-   - `Plan: read` (account permission) for user-scoped billing
-     auto-detect — this is the one that catches individual quota
-     exhaustion. Requires the App to ALSO be installed on each
-     contributor's personal account.
    - `Copilot: read` for the metrics-API fallback.
    - Subscribe to `Pull request` and `Pull request review` events
      under "Subscribe to events" if you want the webhook heuristic.
+
+   Note: don't bother granting the *account-level* `Plan` permission
+   on user installations — installation tokens never carry account
+   permissions, so the user-billing endpoint will 403 anyway. See
+   "Why there is no user-billing layer" above.
 4. **Point the App webhook URL** at the broker's `/webhook` path. Existing
    installations need to accept the new permissions before any of the
    auto-detect signals can fire.
 5. **Install on contributor accounts (optional)** — for the user-scoped
-   billing layer to fire, each PR author who hits Copilot quota must
-   have the broker App installed on their personal GitHub account.
-   Without this, the worker falls back to org billing / webhook /
+   webhook heuristic to fire, the broker App must be installed on the
+   contributor's personal GitHub account (so it receives webhook
+   events with that user as the sender). Without this, the worker
+   falls back to org billing / org webhook /
    metrics / manual.
 
 Each layer is independent — you can deploy with only some of them
