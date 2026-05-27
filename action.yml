@@ -367,6 +367,17 @@ inputs:
     required: false
     default: 'Release Runner / Require Copilot Review'
 
+  copilot-review-quota-check-url:
+    description: |
+      Optional `/copilot-quota` worker endpoint. When set, the gate calls
+      this URL before failing for "no Copilot review" and passes gracefully
+      (with a `::warning::`) if the worker reports `rate_limited: true`.
+      Intended for the Release Runner public-app broker; self-hosted
+      brokers can use it too. Empty string = strict mode (current
+      behaviour). See worker/README for the endpoint contract.
+    required: false
+    default: ''
+
   # ── Integrations: GitHub Projects ─────────────────────────────────────────
   aggregate-github-projects:
     description: |
@@ -756,6 +767,7 @@ runs:
         COPILOT_REVIEW_IGNORE_PATHS: ${{ inputs.copilot-review-ignore-paths }}
         COPILOT_REVIEW_REPORTER: ${{ inputs.copilot-review-reporter }}
         COPILOT_REVIEW_CHECK_NAME: ${{ inputs.copilot-review-check-name }}
+        COPILOT_REVIEW_QUOTA_CHECK_URL: ${{ inputs.copilot-review-quota-check-url }}
       run: "${GITHUB_ACTION_PATH}/scripts/require-copilot-review.sh"
 
     - name: Validate version override
