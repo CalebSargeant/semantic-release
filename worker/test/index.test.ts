@@ -537,17 +537,29 @@ describe("copilot-quota endpoint", () => {
     expect(body.source).toBe("github-billing-api");
   });
 
-  it("flags rate-limited from user-scoped Billing API when requester is set", async () => {
-    // Owner-scoped lookup finds no Copilot data (org billing returns
-    // only Actions usage); requester-scoped lookup hits the user
-    // installation and finds an exhausted Copilot premium-request item.
+  it("flags rate-limited via OAuth user-billing when requester has a stored refresh token", async () => {
+    // requester has a stored OAuth refresh token; worker refreshes,
+    // queries /users/{requester}/settings/billing/premium_request/usage,
+    // sees exhausted Copilot premium-request line item.
+    const { kv, store } = makeKv();
+    store.set("copilot-oauth:user:calebsargeant", {
+      value: JSON.stringify({
+        refresh_token: "ghr_old",
+        refresh_token_expires_at: "2026-11-01T00:00:00.000Z",
+        connected_at: "2026-05-01T12:00:00.000Z"
+      })
+    });
+
     const { deps: injected } = deps({
       githubResponses: [
-        // requester (user) billing lookup
-        new Response("{}", { status: 404 }),              // /orgs/calebsargeant/installation
-        Response.json({ id: 77 }),                        // /users/calebsargeant/installation
-        Response.json({ token: "ghs_user", expires_at: "2026-05-26T13:00:00Z" }),
-        new Response("{}", { status: 404 }),              // org billing usage (404 — user not an org)
+        // 1. token refresh
+        Response.json({
+          access_token: "ghu_fresh",
+          refresh_token: "ghr_rotated",
+          expires_in: 28800,
+          refresh_token_expires_in: 15897600
+        }),
+        // 2. premium_request/usage
         Response.json({
           usageItems: [
             {
@@ -568,15 +580,98 @@ describe("copilot-quota endpoint", () => {
         "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
         { method: "GET" }
       ),
-      env,
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      },
       injected
     );
 
     expect(response.status).toBe(200);
     const body = await readJson(response);
     expect(body.rate_limited).toBe(true);
-    expect(body.source).toBe("github-billing-api");
+    expect(body.source).toBe("github-oauth-user-billing");
     expect(body.resets_at).toBe("2026-06-01T00:00:00.000Z");
+
+    // Refresh token should have been rotated and persisted
+    const stored = store.get("copilot-oauth:user:calebsargeant");
+    expect(stored).toBeDefined();
+    const parsed = JSON.parse(stored!.value);
+    expect(parsed.refresh_token).toBe("ghr_rotated");
+    expect(parsed.access_token).toBe("ghu_fresh");
+  });
+
+  it("OAuth user-billing layer is a no-op when no refresh token exists for requester", async () => {
+    // No OAuth record → Layer 3 returns null. The chain falls through
+    // to org billing (Layer 4), which here also has no Copilot data,
+    // so the gate stays default-false.
+    const { kv } = makeKv();
+    const { deps: injected } = deps({
+      githubResponses: [
+        // org billing for owner — App not installed
+        new Response("{}", { status: 404 }),
+        new Response("{}", { status: 404 })
+      ]
+    });
+
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
+        { method: "GET" }
+      ),
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(false);
+    expect(body.source).toBe("default");
+  });
+
+  it("OAuth user-billing returns no-signal when refresh token has expired", async () => {
+    const { kv } = makeKv();
+    kv.put(
+      "copilot-oauth:user:calebsargeant",
+      JSON.stringify({
+        refresh_token: "ghr_old",
+        refresh_token_expires_at: "2026-01-01T00:00:00.000Z", // already past
+        connected_at: "2025-08-01T00:00:00.000Z"
+      })
+    );
+
+    const { deps: injected } = deps({
+      githubResponses: [
+        new Response("{}", { status: 404 }),
+        new Response("{}", { status: 404 })
+      ]
+    });
+
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
+        { method: "GET" }
+      ),
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(false);
+    expect(body.source).toBe("default");
   });
 
   it("checks the manual override for the requester as well as the owner", async () => {
@@ -1051,5 +1146,166 @@ describe("scheduled cron refresh", () => {
       store.get("copilot-quota:billing:octo-org")!.value
     );
     expect(cached.rate_limited).toBe(true);
+  });
+});
+
+// ─── /copilot-oauth ──────────────────────────────────────────────────────────
+
+describe("copilot-oauth flow", () => {
+  it("connect returns 503 when client_id is not configured", async () => {
+    const response = await handleRequest(
+      new Request("https://broker.example.com/copilot-oauth/connect", { method: "GET" }),
+      env
+    );
+    expect(response.status).toBe(503);
+    expect(await readJson(response)).toEqual({ error: "oauth_disabled" });
+  });
+
+  it("connect 302s to github.com with a CSRF state", async () => {
+    const { kv, store } = makeKv();
+    const response = await handleRequest(
+      new Request("https://broker.example.com/copilot-oauth/connect", { method: "GET" }),
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test"
+      }
+    );
+    expect(response.status).toBe(302);
+    const loc = response.headers.get("Location") ?? "";
+    expect(loc.startsWith("https://github.com/login/oauth/authorize")).toBe(true);
+    expect(loc).toContain("client_id=Iv23test");
+    expect(loc).toContain("state=");
+    expect(loc).toContain("redirect_uri=https%3A%2F%2Fbroker.example.com%2Fcopilot-oauth%2Fcallback");
+
+    // state should be stashed in KV with the matching value
+    const stateMatch = loc.match(/state=([a-f0-9]+)/);
+    expect(stateMatch).toBeTruthy();
+    expect(store.has(`copilot-oauth:state:${stateMatch![1]}`)).toBe(true);
+  });
+
+  it("callback exchanges code for tokens and stores refresh_token in KV", async () => {
+    const { kv, store } = makeKv();
+    const state = "fakestate1234";
+    store.set(`copilot-oauth:state:${state}`, {
+      value: JSON.stringify({ created_at: "2026-05-27T10:00:00.000Z" })
+    });
+
+    const { deps: injected } = deps({
+      githubResponses: [
+        // POST /login/oauth/access_token
+        Response.json({
+          access_token: "ghu_initial",
+          refresh_token: "ghr_initial",
+          expires_in: 28800,
+          refresh_token_expires_in: 15897600
+        }),
+        // GET /user
+        Response.json({ login: "calebsargeant", id: 4991715 })
+      ]
+    });
+
+    const response = await handleRequest(
+      new Request(
+        `https://broker.example.com/copilot-oauth/callback?code=abc123&state=${state}`,
+        { method: "GET" }
+      ),
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const body = await response.text();
+    expect(body).toContain("calebsargeant");
+
+    // State should be burned
+    expect(store.has(`copilot-oauth:state:${state}`)).toBe(false);
+
+    // User record persisted
+    const stored = store.get("copilot-oauth:user:calebsargeant");
+    expect(stored).toBeDefined();
+    const parsed = JSON.parse(stored!.value);
+    expect(parsed.refresh_token).toBe("ghr_initial");
+    expect(parsed.access_token).toBe("ghu_initial");
+    expect(parsed.connected_at).toBeDefined();
+  });
+
+  it("callback rejects unknown state (CSRF protection)", async () => {
+    const { kv } = makeKv();
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-oauth/callback?code=abc&state=unknown",
+        { method: "GET" }
+      ),
+      {
+        ...env,
+        COPILOT_QUOTA_KV: kv,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      }
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Authorization expired");
+  });
+
+  it("callback surfaces GitHub's error param without exchanging tokens", async () => {
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-oauth/callback?error=access_denied",
+        { method: "GET" }
+      ),
+      {
+        ...env,
+        GITHUB_APP_CLIENT_ID: "Iv23test",
+        GITHUB_APP_CLIENT_SECRET: "test_secret"
+      }
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("access_denied");
+  });
+
+  it("status returns connected:false when KV is empty", async () => {
+    const { kv } = makeKv();
+    const response = await handleRequest(
+      new Request("https://broker.example.com/copilot-oauth/status?user=alice", {
+        method: "GET"
+      }),
+      { ...env, COPILOT_QUOTA_KV: kv }
+    );
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body).toEqual({ connected: false, user: "alice" });
+  });
+
+  it("status returns connected:true with metadata when refresh token is stored", async () => {
+    const { kv, store } = makeKv();
+    store.set("copilot-oauth:user:calebsargeant", {
+      value: JSON.stringify({
+        refresh_token: "ghr_x",
+        refresh_token_expires_at: "2026-11-01T00:00:00.000Z",
+        connected_at: "2026-05-01T12:00:00.000Z"
+      })
+    });
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-oauth/status?user=calebsargeant",
+        { method: "GET" }
+      ),
+      { ...env, COPILOT_QUOTA_KV: kv }
+    );
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body).toMatchObject({
+      connected: true,
+      user: "calebsargeant",
+      connected_at: "2026-05-01T12:00:00.000Z",
+      refresh_token_expires_at: "2026-11-01T00:00:00.000Z"
+    });
   });
 });
