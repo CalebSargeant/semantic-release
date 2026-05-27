@@ -332,6 +332,16 @@ maybe_pass_for_quota() {
   fi
   local full_url="${url}${separator}owner=${OWNER}"
 
+  # Pass the PR author as `requester` so the worker can additionally check
+  # the user-scoped billing endpoint. Copilot premium-request quotas are
+  # tracked per-user even on Copilot Business, so the org-billing path
+  # alone misses individual exhaustion when the repo lives under an org.
+  # `requester` is informational — the worker stays backward-compatible
+  # when it's absent.
+  if [ -n "${PR_AUTHOR:-}" ]; then
+    full_url="${full_url}&requester=${PR_AUTHOR}"
+  fi
+
   local response
   local err_file
   err_file="$(tmp_file)"

@@ -537,6 +537,99 @@ describe("copilot-quota endpoint", () => {
     expect(body.source).toBe("github-billing-api");
   });
 
+  it("flags rate-limited from user-scoped Billing API when requester is set", async () => {
+    // Owner-scoped lookup finds no Copilot data (org billing returns
+    // only Actions usage); requester-scoped lookup hits the user
+    // installation and finds an exhausted Copilot premium-request item.
+    const { deps: injected } = deps({
+      githubResponses: [
+        // requester (user) billing lookup
+        new Response("{}", { status: 404 }),              // /orgs/calebsargeant/installation
+        Response.json({ id: 77 }),                        // /users/calebsargeant/installation
+        Response.json({ token: "ghs_user", expires_at: "2026-05-26T13:00:00Z" }),
+        new Response("{}", { status: 404 }),              // org billing usage (404 — user not an org)
+        Response.json({
+          usageItems: [
+            {
+              product: "Copilot",
+              sku: "Copilot Premium Requests",
+              quantity: 500,
+              includedQuantity: 500,
+              remaining: 0,
+              periodEnd: "2026-06-01T00:00:00.000Z"
+            }
+          ]
+        })
+      ]
+    });
+
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
+        { method: "GET" }
+      ),
+      env,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(true);
+    expect(body.source).toBe("github-billing-api");
+    expect(body.resets_at).toBe("2026-06-01T00:00:00.000Z");
+  });
+
+  it("checks the manual override for the requester as well as the owner", async () => {
+    // Owner has no override; requester does.
+    const { kv, store } = makeKv();
+    store.set("copilot-quota:manual:calebsargeant", {
+      value: JSON.stringify({
+        rate_limited: true,
+        resets_at: "2026-06-01T00:00:00.000Z",
+        set_at: "2026-05-26T10:00:00.000Z"
+      })
+    });
+
+    const { deps: injected } = deps();
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-quota?owner=octo-org&requester=calebsargeant",
+        { method: "GET" }
+      ),
+      { ...env, COPILOT_QUOTA_KV: kv },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(true);
+    expect(body.source).toBe("manual");
+  });
+
+  it("silently ignores invalid requester strings and stays backward-compatible", async () => {
+    // Invalid requester should not throw; the endpoint should still
+    // resolve based on owner alone (default false when no signal).
+    const { deps: injected } = deps({
+      githubResponses: [
+        new Response("{}", { status: 404 }),
+        new Response("{}", { status: 404 })
+      ]
+    });
+    const response = await handleRequest(
+      new Request(
+        "https://broker.example.com/copilot-quota?owner=octo-org&requester=not%20a%20valid%20name",
+        { method: "GET" }
+      ),
+      env,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.rate_limited).toBe(false);
+    expect(body.source).toBe("default");
+  });
+
   it("returns 405 for unsupported methods", async () => {
     const response = await handleRequest(
       new Request("https://broker.example.com/copilot-quota?owner=octo-org", {

@@ -101,10 +101,21 @@ MOCK
 
   # Mock curl so the quota-check fallback can be exercised without
   # standing up a worker. The test sets CURL_MOCK_RESPONSE / CURL_MOCK_EXIT
-  # in the environment; the mock echoes whichever is configured.
+  # in the environment; the mock echoes whichever is configured. The
+  # requested URL is captured into CURL_URL_LOG so tests can assert
+  # query-parameter wiring.
+  CURL_URL_LOG="${WORK}/curl-urls.log"
+  : > "${CURL_URL_LOG}"
+  export CURL_URL_LOG
   cat > "${BIN_DIR}/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -e
+# Last positional arg is the URL after the flags.
+for arg in "$@"; do
+  case "${arg}" in
+    http*|https*) echo "${arg}" >> "${CURL_URL_LOG}" ;;
+  esac
+done
 if [ -n "${CURL_MOCK_EXIT:-}" ]; then
   echo "${CURL_MOCK_STDERR:-mock curl: forced failure}" >&2
   exit "${CURL_MOCK_EXIT}"
@@ -370,9 +381,9 @@ run_policy() {
 }
 
 @test "quota check: appends owner correctly to URLs with existing query string" {
-  # Smoke test: setting the URL with a pre-existing query string shouldn't
-  # break parsing. The mock ignores the URL, but the script's `&` vs `?`
-  # branching is exercised on this path.
+  # Setting the URL with a pre-existing query string shouldn't break
+  # parsing. The mock captures the URL into CURL_URL_LOG so we can
+  # verify both branches.
   run env \
     COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota?foo=bar" \
     CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"manual"}' \
@@ -380,6 +391,24 @@ run_policy() {
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::"* ]]
+  # `&owner=...` (not `?owner=...`) because the URL already had a query.
+  grep -q 'broker.example.test/copilot-quota?foo=bar&owner=octo' "${CURL_URL_LOG}"
+}
+
+@test "quota check: appends requester=<pr author> to the URL" {
+  # Per-user Copilot premium-request quotas are tracked at the user level;
+  # the worker uses `requester` to look up user-scoped billing in
+  # addition to org-scoped billing. The script reads the PR author from
+  # the PR JSON.
+  write_pr "false" "calebsargeant" "[]"
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"github-billing-api"}' \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  grep -q 'owner=octo&requester=calebsargeant' "${CURL_URL_LOG}"
 }
 
 @test "body-pattern: bypasses with warning when Copilot posts a quota decline review" {
