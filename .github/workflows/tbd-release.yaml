@@ -194,7 +194,7 @@ jobs:
       prerelease-identifier: ${{ steps.tbd.outputs.prerelease-identifier }}
       resolved-environment: ${{ steps.tbd.outputs.resolved-environment }}
     steps:
-      - uses: magmamoose/release-runner@e88a8245037aab4f1c030852048efcdd4e54991b # v1
+      - uses: magmamoose/release-runner@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
         id: tbd
         with:
           mode:                        release
