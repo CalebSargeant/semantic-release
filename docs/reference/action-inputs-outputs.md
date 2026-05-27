@@ -707,8 +707,9 @@ Path to release-please-config.json.
 - Default: `''`
 
 Pull request number to operate on. Required for `mode: enable-auto-merge`.
-Typically `${{ github.event.pull_request.number }}` from a `pull_request`
-workflow.
+Typically passed as `github.event.pull_request.number` from a
+`pull_request` workflow (wrapped in the usual expression syntax in
+the caller's `with:` block).
 
 #### `auto-merge-method`
 
@@ -734,6 +735,18 @@ Optional token passed as --secret id=github_token to docker buildx bake.
 Use when Dockerfiles use --mount=type=secret,id=github_token to pull
 private packages (e.g. GitHub Packages).
 Pass secrets.NPM_TOKEN or secrets.GITHUB_TOKEN from the calling workflow.
+
+#### `copilot-review-quota-check-url`
+
+- Required: `false`
+- Default: `''`
+
+Optional `/copilot-quota` worker endpoint. When set, the gate calls
+this URL before failing for "no Copilot review" and passes gracefully
+(with a `::warning::`) if the worker reports `rate_limited: true`.
+Intended for the Release Runner public-app broker; self-hosted
+brokers can use it too. Empty string = strict mode (current
+behaviour). See worker/README for the endpoint contract.
 
 ## Outputs
 

@@ -161,3 +161,141 @@ Manual workflow reruns also refresh the status. A comment command such as
 - Bot identities can differ across environments. Keep
   `copilot-review-fail-on-unknown-identity: 'true'` for strict enforcement, or
   configure `copilot-review-allowed-logins` for your environment.
+
+## Premium Request Rate Limit Bypass
+
+When a user exhausts their Copilot premium-request allowance, the GitHub UI
+shows a banner like:
+
+```text
+You have reached your monthly limit for premium requests for Copilot code
+review. Limit resets on Jun 1, 2026.
+```
+
+Copilot then refuses to review, so the strict gate fails indefinitely. The
+banner is rendered from the user's private billing state and has no
+programmatic signal on the PR (no review, no comment, no check-run, no
+timeline event), so the gate cannot detect the rate limit on its own.
+
+Release Runner handles this with two layers, in order of preference.
+
+### Layer 1 — Copilot's own decline notice (zero-config)
+
+When Copilot is explicitly requested as a reviewer on a PR but its
+premium-request quota is exhausted, it posts a real review on the head
+commit whose body explains the decline, for example:
+
+```text
+Copilot was unable to review this pull request because the user who
+requested the review has reached their quota limit.
+```
+
+This review has `state: COMMENTED` and a fresh `commit_id`, so without
+detection the strict gate would silently accept it as a real Copilot
+review. The gate detects the decline wording (`"unable to review"` +
+`"quota"`, `"monthly limit for premium request"`, `"reached your quota"`
+— case-insensitive) and finishes as `success` with a `::warning::`
+annotation that includes the original decline text. No configuration
+required; this fires automatically whenever Copilot leaves the decline
+review.
+
+### Layer 2 — broker-worker quota endpoint (opt-in)
+
+When Copilot is **not** requested as a reviewer (so no decline notice
+exists) but the user is still rate-limited, the gate can consult a
+`/copilot-quota` endpoint on the broker worker.
+
+```yaml
+- uses: magmamoose/release-runner@v1
+  with:
+    mode: ci
+    require-copilot-review: 'true'
+    copilot-review-quota-check-url: 'https://release-runner.sargeant.workers.dev/copilot-quota'
+```
+
+When the URL is set, the gate calls it before reporting a failure for
+"no Copilot review" or "stale Copilot review". If the worker responds
+`{"rate_limited": true, ...}`, the gate finishes as `success` with a
+`::warning::` annotation that reports the reset date and the source of
+the signal. If the worker is unreachable or returns `rate_limited: false`,
+the gate falls back to strict mode (current behaviour).
+
+The worker resolves the rate-limit state through a layered detection
+chain. Positive signals short-circuit; a `rate_limited: false` is only
+returned after every source has been consulted.
+
+1. **Manual override** stored in KV — set via
+   `POST /copilot-quota` with a `Bearer` token. Useful for flipping the
+   flag the moment you see the UI banner; auto-expires at the next UTC
+   month boundary (matching GitHub's reset cadence).
+2. **GitHub Billing Usage API** — when the broker App has billing
+   permissions on the owner, the worker mints an installation token,
+   fetches `/orgs/{owner}/settings/billing/usage` (and falls back to the
+   user-scoped variant for personal accounts), scans for a Copilot
+   premium-request line item with zero remaining quota, and reports
+   the result. Cached in KV for one hour. A **Cloudflare Cron Trigger**
+   (every 15 minutes) refreshes the cache proactively for any owner the
+   worker has seen — so `GET /copilot-quota` stays single-digit-ms
+   warm-path.
+3. **Webhook-derived heuristic** — the broker App can subscribe to
+   `pull_request` (review_requested) and `pull_request_review`
+   (submitted) events delivered to `POST /webhook`. The worker
+   HMAC-verifies each delivery against `GITHUB_WEBHOOK_SECRET` and
+   accumulates per-owner timestamps of Copilot review requests vs
+   deliveries in KV. If a request has been outstanding longer than
+   `COPILOT_WEBHOOK_REVIEW_GAP_SECONDS` (default 30 min) and no review
+   came back, the worker infers Copilot is rate-limited. A subsequent
+   Copilot review delivery clears the backlog automatically. Inferred
+   purely from observed behavior — no extra App permissions beyond what
+   PR/review event subscriptions already grant.
+4. **Copilot Metrics API** — falls through to
+   `/orgs/{owner}/copilot/metrics` (and the user-scoped variant), which
+   returns daily Copilot activity reports. If `total_engaged_users` for
+   the latest day is 0 after a non-zero prior day, the worker reports a
+   sudden activity drop as a softer rate-limit signal (`source:
+   github-copilot-metrics`). Useful when the App has `copilot: read`
+   but no billing permissions.
+5. **Default `rate_limited: false`** when no source produced a positive
+   verdict, so a misconfigured broker can never silently weaken the
+   gate.
+
+The action treats `rate_limited: false` as "no signal, stay strict" — the
+worker never weakens enforcement, it only relaxes it on a positive
+signal.
+
+Set the manual flag from anywhere:
+
+```bash
+curl -fsSL -X POST \
+  -H "Authorization: Bearer ${BROKER_OVERRIDE_SECRET}" \
+  -H 'Content-Type: application/json' \
+  -d '{"owner":"CalebSargeant","rate_limited":true}' \
+  https://release-runner.sargeant.workers.dev/copilot-quota
+```
+
+Clear it again with the same call and `"rate_limited": false`.
+
+### Deployer setup
+
+To enable the full detection chain on a self-hosted broker:
+
+1. **Provision KV** — `wrangler kv namespace create COPILOT_QUOTA_KV` (+
+   `--preview`). Paste the returned IDs into `wrangler.jsonc` under
+   `kv_namespaces`.
+2. **Set secrets** —
+   - `COPILOT_QUOTA_OVERRIDE_SECRET` — bearer token for the manual
+     override POST endpoint (optional).
+   - `GITHUB_WEBHOOK_SECRET` — shared secret configured on the App's
+     webhook URL (optional; webhook endpoint refuses requests until it
+     is set).
+3. **Grant App permissions** on the broker App:
+   - `Plan: read` and/or `Billing: read` for billing-API auto-detect.
+   - `Copilot: read` for the metrics-API fallback.
+   - Subscribe to `Pull request` and `Pull request review` events
+     under "Subscribe to events" if you want the webhook heuristic.
+4. **Point the App webhook URL** at the broker's `/webhook` path. Existing
+   installations need to accept the new permissions before any of the
+   auto-detect signals can fire.
+
+Each layer is independent — you can deploy with only some of them
+configured and the others degrade to neutral output.
