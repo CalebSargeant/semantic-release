@@ -488,16 +488,15 @@ gate required.
 - Required: `false`
 - Default: `''`
 
-Path to a JSON file where the released version is injected and committed
-back to the branch after every release. Works with every versioning
-tool, not just GitVersion. Typical use: persist the version into
-`appsettings.json` for a .NET app so the running container can display
-its own version.
+Path to a JSON or YAML file where the released version is injected and
+committed back to the branch after every release. Works with every
+versioning tool, not just GitVersion. Typical uses:
+- JSON: persist the version into `appsettings.json` for a .NET app.
+- YAML: update `appVersion` in a Helm `Chart.yaml` so the chart tracks
+  the released image tag automatically.
 
-JSON only — the injection step uses `jq`. YAML targets (e.g. Helm
-`Chart.yaml`) aren't supported today; if `jq` errors on the file
-the step warns and skips so a mis-configured file does not block
-the release.
+File format is detected from the extension: `.yaml`/`.yml` files are
+processed with `yq`; all other files are processed with `jq`.
 
 The commit uses the resolved release auth token (Release Runner App,
 private app, or `github-token`), so it can bypass branch-protection
@@ -512,8 +511,22 @@ with a warning.
 - Required: `false`
 - Default: `.Application.Version`
 
-jq path for the version field inside `version-file`. Only used when
-`version-file` is set. Example: `.Application.Version`
+jq path for the version field inside `version-file` when the file is
+JSON. Only used when `version-file` is set and the file is not a
+`.yaml`/`.yml` file. Example: `.Application.Version`
+
+#### `version-file-yaml-path`
+
+- Required: `false`
+- Default: `.appVersion`
+
+yq path for the version field inside `version-file` when the file is
+YAML (`.yaml` or `.yml` extension). Only used when `version-file` is
+set and the file has a YAML extension. Example: `.appVersion`
+
+For Helm charts, set this to `.appVersion` (default) to update the
+application version, or `.version` to update the chart version, or a
+custom path for other YAML schemas.
 
 ### GitHub Projects integration
 
