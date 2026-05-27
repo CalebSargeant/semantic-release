@@ -14,8 +14,9 @@ inputs:
   mode:
     description: |
       Pipeline mode. One of:
-        ci       Build Docker image and push pr-<N> to GHCR (run on pull_request events).
-        release  (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true).
+        ci                 Build Docker image and push pr-<N> to GHCR (run on pull_request events).
+        release            (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true).
+        enable-auto-merge  Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Release Runner ones.
     required: false
     default: 'release'
 
@@ -273,6 +274,110 @@ inputs:
     required: false
     default: 'true'
 
+  require-copilot-review:
+    description: |
+      Enforce GitHub Copilot PR Review as a required PR policy (mode: ci).
+
+      When true, Release Runner reads pull request reviews, detects a
+      configured Copilot reviewer identity, verifies that the review covers
+      the current PR head, and reports a stable required status named
+      `Release Runner / Require Copilot Review` by default.
+
+      This does not request Copilot review automatically. Configure GitHub's
+      automatic Copilot review separately in repository or organization
+      rulesets, then require this status in branch protection.
+    required: false
+    default: 'false'
+
+  copilot-review-freshness:
+    description: |
+      Freshness rule for `require-copilot-review`. One of:
+        after_latest_commit  (default) Prefer the review's commit_id matching the current PR head; if commit_id is unavailable, require submitted_at to be at or after the latest PR commit timestamp.
+        exact_head_sha       Require the review's commit_id to equal the current PR head SHA.
+    required: false
+    default: 'after_latest_commit'
+
+  copilot-review-allowed-logins:
+    description: |
+      JSON array or comma-separated list of Copilot reviewer logins accepted
+      by `require-copilot-review`.
+
+      Override this for GitHub Enterprise Server or organization-specific
+      bot identities.
+    required: false
+    default: '["copilot-pull-request-reviewer[bot]"]'
+
+  copilot-review-allow-login-pattern:
+    description: |
+      When true, entries in `copilot-review-allowed-logins` are treated as
+      shell-style login patterns. Keep false for exact login matching.
+    required: false
+    default: 'false'
+
+  copilot-review-fail-on-unknown-identity:
+    description: |
+      When true, fail closed unless a submitted review matches
+      `copilot-review-allowed-logins`. When false, Release Runner may accept
+      a submitted reviewer login containing `copilot` as a compatibility
+      fallback for environments with different bot names.
+    required: false
+    default: 'true'
+
+  copilot-review-ignore-drafts:
+    description: 'Skip the Copilot review gate for draft pull requests.'
+    required: false
+    default: 'true'
+
+  copilot-review-ignore-labels:
+    description: |
+      JSON array or comma-separated list of pull request labels that bypass
+      `require-copilot-review`, for example `["skip-copilot-review"]`.
+    required: false
+    default: '[]'
+
+  copilot-review-ignore-authors:
+    description: |
+      JSON array or comma-separated list of pull request authors that bypass
+      `require-copilot-review`, for example `["dependabot[bot]"]`.
+    required: false
+    default: '[]'
+
+  copilot-review-ignore-paths:
+    description: |
+      JSON array or comma-separated list of shell-style file path patterns
+      that bypass `require-copilot-review` when every changed PR file matches
+      one of the patterns. Example: `["docs/*","*.md"]`.
+    required: false
+    default: '[]'
+
+  copilot-review-reporter:
+    description: |
+      Reporter used for `require-copilot-review`. One of:
+        commit-status  (default) Create a commit status with context `copilot-review-check-name`; requires `statuses: write`.
+        check-run      Create or update a GitHub Check Run named `copilot-review-check-name`; requires `checks: write`.
+        none           Evaluate only; useful for local tests.
+    required: false
+    default: 'commit-status'
+
+  copilot-review-check-name:
+    description: |
+      Stable status context or check-run name for `require-copilot-review`.
+      Add this exact value to branch protection or rulesets when making the
+      gate required.
+    required: false
+    default: 'Release Runner / Require Copilot Review'
+
+  copilot-review-quota-check-url:
+    description: |
+      Optional `/copilot-quota` worker endpoint. When set, the gate calls
+      this URL before failing for "no Copilot review" and passes gracefully
+      (with a `::warning::`) if the worker reports `rate_limited: true`.
+      Intended for the Release Runner public-app broker; self-hosted
+      brokers can use it too. Empty string = strict mode (current
+      behaviour). See worker/README for the endpoint contract.
+    required: false
+    default: ''
+
   # ── Integrations: GitHub Projects ─────────────────────────────────────────
   aggregate-github-projects:
     description: |
@@ -523,6 +628,25 @@ inputs:
     required: false
     default: 'release-please-config.json'
 
+  # ── enable-auto-merge mode ────────────────────────────────────────────────
+  pr-number:
+    description: |
+      Pull request number to operate on. Required for `mode: enable-auto-merge`.
+      Typically passed as `github.event.pull_request.number` from a
+      `pull_request` workflow (wrapped in the usual expression syntax in
+      the caller's `with:` block).
+    required: false
+    default: ''
+
+  auto-merge-method:
+    description: |
+      Merge method used by `mode: enable-auto-merge`. One of:
+        squash  (default) Squash the PR's commits into a single commit on the target branch.
+        merge   Standard merge commit.
+        rebase  Rebase the PR's commits onto the target branch.
+    required: false
+    default: 'squash'
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OUTPUTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,7 +710,7 @@ runs:
 
     - name: Request public GitHub App token
       id: public-app-token
-      if: inputs.mode == 'release' && inputs.auth-mode == 'public-app'
+      if: (inputs.mode == 'release' || inputs.mode == 'enable-auto-merge') && inputs.auth-mode == 'public-app'
       shell: bash
       env:
         TOKEN_BROKER_URL: ${{ inputs.token-broker-url }}
@@ -623,6 +747,28 @@ runs:
       env:
         PROMOTE_BRANCH_PREFIX: ${{ inputs.promote-branch-prefix }}
       run: "${GITHUB_ACTION_PATH}/scripts/check-branch-naming.sh"
+
+    - name: Require Copilot Review
+      if: inputs.mode == 'ci' && inputs.require-copilot-review == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        COPILOT_REVIEW_FRESHNESS: ${{ inputs.copilot-review-freshness }}
+        COPILOT_REVIEW_ALLOWED_LOGINS: ${{ inputs.copilot-review-allowed-logins }}
+        COPILOT_REVIEW_ALLOW_LOGIN_PATTERN: ${{ inputs.copilot-review-allow-login-pattern }}
+        COPILOT_REVIEW_FAIL_ON_UNKNOWN_IDENTITY: ${{ inputs.copilot-review-fail-on-unknown-identity }}
+        COPILOT_REVIEW_IGNORE_DRAFTS: ${{ inputs.copilot-review-ignore-drafts }}
+        COPILOT_REVIEW_IGNORE_LABELS: ${{ inputs.copilot-review-ignore-labels }}
+        COPILOT_REVIEW_IGNORE_AUTHORS: ${{ inputs.copilot-review-ignore-authors }}
+        COPILOT_REVIEW_IGNORE_PATHS: ${{ inputs.copilot-review-ignore-paths }}
+        COPILOT_REVIEW_REPORTER: ${{ inputs.copilot-review-reporter }}
+        COPILOT_REVIEW_CHECK_NAME: ${{ inputs.copilot-review-check-name }}
+        COPILOT_REVIEW_QUOTA_CHECK_URL: ${{ inputs.copilot-review-quota-check-url }}
+      run: "${GITHUB_ACTION_PATH}/scripts/require-copilot-review.sh"
 
     - name: Validate version override
       id: version-override
@@ -1541,7 +1687,7 @@ runs:
           BASE_VERSION=$(echo "${VERSION}" | sed 's/-[a-zA-Z][^.]*\.[0-9]*$//')
           SEARCH_PREFIX="${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."
           SOURCE_TAG_SUFFIX=$(gh api "repos/${REPO_FULL}/git/matching-refs/tags/${SEARCH_PREFIX}" \
-            --jq '[.[].ref | ltrimstr("refs/tags/")] | sort_by(ltrimstr("'"${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."'") | tonumber) | last // empty' \
+            --jq '[.[].ref | ltrimstr("refs/tags/")] | sort_by(ltrimstr("'"${PREFIX}${BASE_VERSION}-${PREV_IDENTIFIER}."'"') | tonumber) | last // empty' \
             2>/dev/null || echo "")
           if [ -n "${SOURCE_TAG_SUFFIX}" ]; then
             echo "Source tag: ${SOURCE_TAG_SUFFIX}"
@@ -1943,3 +2089,30 @@ runs:
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
         TARGET_STATUS: ${{ inputs.github-projects-target-status }}
       run: "${GITHUB_ACTION_PATH}/scripts/move-github-projects.sh"
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # ENABLE-AUTO-MERGE MODE — turn on native GitHub auto-merge for a PR
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Invoked from a separate caller workflow (typically `pull_request`) to
+    # opt a non-promotion PR into native auto-merge so it lands as soon as
+    # required checks pass and required reviews approve. Pairs naturally
+    # with the `require-copilot-review` gate for hands-off PR handling.
+    #
+    # Repo prerequisites (GitHub-side, not enforced by this action):
+    #   - "Allow auto-merge" enabled in Settings → General → Pull Requests
+    #   - Branch protection on the target branch with at least one
+    #     required status check
+    # The helper warns-and-continues if either is missing — the PR is
+    # still mergeable manually.
+
+    - name: Enable auto-merge
+      if: inputs.mode == 'enable-auto-merge'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MERGE_METHOD: ${{ inputs.auto-merge-method }}
+      run: "${GITHUB_ACTION_PATH}/scripts/enable-auto-merge.sh"
