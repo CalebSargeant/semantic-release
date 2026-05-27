@@ -376,6 +376,67 @@ maybe_pass_for_quota() {
 
 warn() { echo "::warning::[copilot-review] $*"; }
 
+# Parse an ISO-8601 timestamp into a Unix epoch. Uses python3 for
+# portability — GNU `date -d` would work on Ubuntu runners but the
+# bats suite needs to pass on macOS too. Returns the epoch on stdout
+# or nothing on parse error.
+parse_iso_to_epoch() {
+  python3 -c "
+import sys
+from datetime import datetime
+try:
+    print(int(datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00')).timestamp()))
+except Exception:
+    sys.exit(1)
+" "$1" 2>/dev/null
+}
+
+# When Copilot is rate-limited at the user level, GitHub provides no
+# programmatic signal: the `copilot_code_review` ruleset's auto-request
+# doesn't fire a webhook `review_requested` event we can observe, and
+# Copilot doesn't post a decline notice when the auto-request itself
+# was skipped. The only signal we can reliably use is elapsed time:
+# if the head commit is older than COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES
+# and Copilot still hasn't reviewed, assume rate-limit and bypass with
+# a ::warning::. Set the grace period to 0 to disable this layer.
+#
+# Args:
+#   $1 - the strict-mode failure reason (passed through to the warning)
+maybe_pass_for_grace_period() {
+  local fail_reason="$1"
+  local grace_minutes="${GRACE_MINUTES:-30}"
+  if ! [[ "${grace_minutes}" =~ ^[0-9]+$ ]]; then
+    log "Invalid COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES='${grace_minutes}' — skipping grace-period bypass."
+    return 0
+  fi
+  [ "${grace_minutes}" -le 0 ] && return 0
+  [ -z "${HEAD_COMMIT_DATE:-}" ] && return 0
+
+  local head_epoch
+  head_epoch="$(parse_iso_to_epoch "${HEAD_COMMIT_DATE}")"
+  [ -z "${head_epoch}" ] && return 0
+
+  local now_epoch
+  now_epoch="$(date -u +%s)"
+  local age_seconds=$((now_epoch - head_epoch))
+  local grace_seconds=$((grace_minutes * 60))
+
+  if [ "${age_seconds}" -lt "${grace_seconds}" ]; then
+    local remaining_min=$(( (grace_seconds - age_seconds + 59) / 60 ))
+    log "Head commit is $((age_seconds / 60))m old (HEAD_COMMIT_DATE=${HEAD_COMMIT_DATE}); grace period of ${grace_minutes}m not yet elapsed — staying strict. Re-trigger the workflow in ~${remaining_min}m to bypass if Copilot still hasn't reviewed."
+    return 0
+  fi
+
+  local age_minutes=$((age_seconds / 60))
+  local detail="Head commit $(short_sha "${HEAD_SHA}") is ${age_minutes}m old and no Copilot review was submitted within the ${grace_minutes}m grace window. GitHub doesn't expose 'Copilot was auto-requested but skipped due to rate-limit' as a webhook event, so elapsed time is the only signal we have. Original gate reason: ${fail_reason}"
+
+  warn "${detail}"
+
+  finish "success" 0 \
+    "Copilot review bypassed — grace period elapsed" \
+    "Copilot review gate passed gracefully because ${age_minutes} minutes have passed since the head commit and no Copilot review was submitted. ${detail}"
+}
+
 # Detect Copilot's own "I can't review because I'm rate-limited" notice.
 #
 # When Copilot is requested as a reviewer but its premium-request quota is
@@ -422,6 +483,7 @@ CHECK_NAME="${COPILOT_REVIEW_CHECK_NAME:-Release Runner / Require Copilot Review
 ALLOW_LOGIN_PATTERN="${COPILOT_REVIEW_ALLOW_LOGIN_PATTERN:-false}"
 FAIL_ON_UNKNOWN_IDENTITY="${COPILOT_REVIEW_FAIL_ON_UNKNOWN_IDENTITY:-true}"
 IGNORE_DRAFTS="${COPILOT_REVIEW_IGNORE_DRAFTS:-true}"
+GRACE_MINUTES="${COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES:-30}"
 ALLOWED_LOGINS_JSON="$(normalize_array "${COPILOT_REVIEW_ALLOWED_LOGINS:-[\"copilot-pull-request-reviewer[bot]\"]}")"
 IGNORE_LABELS_JSON="$(normalize_array "${COPILOT_REVIEW_IGNORE_LABELS:-[]}")"
 IGNORE_AUTHORS_JSON="$(normalize_array "${COPILOT_REVIEW_IGNORE_AUTHORS:-[]}")"
@@ -533,14 +595,22 @@ TOTAL_SUBMITTED_REVIEWS="$(echo "${REVIEWS_JSON}" | jq '[.[] | select((.submitte
 if [ "${CANDIDATE_COUNT}" -eq 0 ]; then
   if [ "${TOTAL_SUBMITTED_REVIEWS}" -eq 0 ]; then
     maybe_pass_for_quota "Copilot has not reviewed this pull request yet."
+    maybe_pass_for_grace_period "Copilot has not reviewed this pull request yet."
     finish "failure" 1 \
       "Copilot review missing" \
       "Copilot has not reviewed this pull request yet."
   fi
 
+  # Non-Copilot reviews exist but no Copilot review. Still consult the
+  # quota / grace-period bypasses before failing — a rate-limited author
+  # shouldn't be blocked just because they (or someone else) left a
+  # human review on the PR.
+  identity_fail_reason="Unable to identify a valid Copilot review for the current head commit. Checked ${TOTAL_SUBMITTED_REVIEWS} submitted PR review(s); none matched the configured Copilot reviewer identities."
+  maybe_pass_for_quota "${identity_fail_reason}"
+  maybe_pass_for_grace_period "${identity_fail_reason}"
   finish "failure" 1 \
     "Copilot review identity not found" \
-    "Unable to identify a valid Copilot review for the current head commit. Checked ${TOTAL_SUBMITTED_REVIEWS} submitted PR review(s); none matched the configured Copilot reviewer identities."
+    "${identity_fail_reason}"
 fi
 
 VALID_REVIEW=""
@@ -592,8 +662,10 @@ else
   STALE_DETAIL="Latest Copilot review from ${LATEST_LOGIN} at ${LATEST_SUBMITTED_AT}; current head commit time is ${HEAD_COMMIT_DATE:-unknown}."
 fi
 
-maybe_pass_for_quota "Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL}"
+stale_fail_reason="Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL}"
+maybe_pass_for_quota "${stale_fail_reason}"
+maybe_pass_for_grace_period "${stale_fail_reason}"
 
 finish "failure" 1 \
   "Copilot review is stale" \
-  "Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL}"
+  "${stale_fail_reason}"

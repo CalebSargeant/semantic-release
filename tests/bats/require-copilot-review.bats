@@ -136,6 +136,10 @@ MOCK
   export GITHUB_SERVER_URL="https://github.example.test"
   export GITHUB_REPOSITORY="octo/repo"
   export GITHUB_RUN_ID="1001"
+  # Default the grace-period bypass off for tests — existing assertions
+  # assume strict "fail when no Copilot review" semantics. Tests that
+  # exercise the bypass override this explicitly.
+  export COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES="0"
 
   write_pr "false" "alice" "[]"
   write_commits '[{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commit":{"committer":{"date":"2026-05-26T10:00:00Z"},"author":{"date":"2026-05-26T10:00:00Z"}}}]'
@@ -517,4 +521,95 @@ run_policy() {
   # If the worker had been consulted and the gate fell through to its
   # `false` verdict, the output would say "Copilot has not reviewed".
   [[ "$output" != *"Copilot has not reviewed this pull request yet"* ]]
+}
+
+# ── Grace-period bypass ──────────────────────────────────────────────────────
+# When Copilot is rate-limited at the user level, GitHub silently skips
+# the auto-request — no `review_requested` event, no decline notice, no
+# webhook signal. The only programmatic indicator is elapsed time. These
+# tests exercise the grace-period bypass that fires after
+# COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES with no Copilot review.
+
+@test "grace-period: bypasses when head commit is older than grace and no Copilot review" {
+  # Head commit 60 minutes ago; grace = 30 → should bypass.
+  local sixty_min_ago
+  sixty_min_ago="$(python3 -c "from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  write_commits "[{\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"commit\":{\"committer\":{\"date\":\"${sixty_min_ago}\"},\"author\":{\"date\":\"${sixty_min_ago}\"}}}]"
+
+  run env \
+    COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES=30 \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"grace period elapsed"* ]] || [[ "$output" == *"grace window"* ]]
+}
+
+@test "grace-period: stays strict when head commit is younger than grace" {
+  # Head commit 5 minutes ago; grace = 30 → should NOT bypass.
+  local five_min_ago
+  five_min_ago="$(python3 -c "from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  write_commits "[{\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"commit\":{\"committer\":{\"date\":\"${five_min_ago}\"},\"author\":{\"date\":\"${five_min_ago}\"}}}]"
+
+  run env \
+    COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES=30 \
+    "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot has not reviewed this pull request yet"* ]]
+  [[ "$output" != *"grace period elapsed"* ]]
+}
+
+@test "grace-period: disabled when GRACE_MINUTES=0" {
+  local hour_ago
+  hour_ago="$(python3 -c "from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  write_commits "[{\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"commit\":{\"committer\":{\"date\":\"${hour_ago}\"},\"author\":{\"date\":\"${hour_ago}\"}}}]"
+
+  run env \
+    COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES=0 \
+    "${SCRIPT}"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"grace period elapsed"* ]]
+}
+
+@test "grace-period: also fires on the non-Copilot-reviews-only failure path" {
+  # When non-Copilot reviews exist but no Copilot review, the previous
+  # code skipped quota AND grace bypasses — only the "identity not found"
+  # error fired. Reproduce a PR with one human review then check that
+  # the grace period still bypasses.
+  local hour_ago
+  hour_ago="$(python3 -c "from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  write_commits "[{\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"commit\":{\"committer\":{\"date\":\"${hour_ago}\"},\"author\":{\"date\":\"${hour_ago}\"}}}]"
+  write_reviews_page 1 "[{\"user\":{\"login\":\"alice\"},\"state\":\"COMMENTED\",\"submitted_at\":\"${hour_ago}\",\"commit_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"body\":\"LGTM\"}]"
+
+  run env \
+    COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES=30 \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  # The detail should reference the non-Copilot review path
+  [[ "$output" == *"identify a valid Copilot review"* ]] || [[ "$output" == *"none matched the configured Copilot reviewer identities"* ]]
+}
+
+@test "quota check: also fires on the non-Copilot-reviews-only failure path (was silently skipped)" {
+  # Manual override should rescue PRs that have self-reviews but no
+  # Copilot review. Previously the script took the "identity not found"
+  # branch without consulting the worker, so a properly-set override on
+  # the requester didn't help — confirmed empirically on MagmaMoose/zoey#257.
+  write_reviews_page 1 '[
+    {"user":{"login":"alice"},"state":"COMMENTED","submitted_at":"2026-05-27T16:25:23Z","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","body":"nit comment"},
+    {"user":{"login":"alice"},"state":"COMMENTED","submitted_at":"2026-05-27T16:25:20Z","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","body":"another nit"}
+  ]'
+
+  run env \
+    COPILOT_REVIEW_QUOTA_CHECK_URL="https://broker.example.test/copilot-quota" \
+    CURL_MOCK_RESPONSE='{"rate_limited":true,"source":"manual","resets_at":"2026-06-01T00:00:00.000Z"}' \
+    COPILOT_REVIEW_RATE_LIMIT_GRACE_MINUTES=0 \
+    "${SCRIPT}"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"rate-limited"* ]] || [[ "$output" == *"rate limit"* ]]
 }

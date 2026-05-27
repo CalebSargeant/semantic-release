@@ -481,6 +481,33 @@ Stable status context or check-run name for `require-copilot-review`.
 Add this exact value to branch protection or rulesets when making the
 gate required.
 
+#### `copilot-review-rate-limit-grace-minutes`
+
+- Required: `false`
+- Default: `30`
+
+Time in minutes since the PR's head commit after which the gate
+assumes Copilot is rate-limited and bypasses with a `::warning::`,
+when no Copilot review has been submitted.
+
+This is the only signal available for "GitHub's copilot_code_review
+ruleset was supposed to auto-request Copilot but the request was
+silently skipped because the user is over their premium-request
+quota" — that path produces no webhook event, no review record,
+and no check-run, so elapsed time is the only programmatic
+indicator we have. The gate is re-evaluated each time the workflow
+re-runs (new commit, new review, manual rerun), so the bypass
+fires the first time the workflow runs after this grace window
+has elapsed since the head commit.
+
+Set to `0` to disable the grace-period layer entirely (strict
+mode: require an actual Copilot review or a manual override).
+
+Default is conservative; long enough to let Copilot's normal
+review latency (a few minutes for typical PRs) complete without
+falsely bypassing, short enough that rate-limited authors aren't
+blocked indefinitely.
+
 ### Version file injection
 
 #### `version-file`

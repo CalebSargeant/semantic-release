@@ -174,10 +174,12 @@ review. Limit resets on Jun 1, 2026.
 
 Copilot then refuses to review, so the strict gate fails indefinitely. The
 banner is rendered from the user's private billing state and has no
-programmatic signal on the PR (no review, no comment, no check-run, no
-timeline event), so the gate cannot detect the rate limit on its own.
+direct programmatic signal on the PR (no review, no comment, no check-run,
+no timeline event), so the gate cannot directly *detect* the rate limit —
+but it can infer it from elapsed time when Copilot was expected to
+review and didn't.
 
-Release Runner handles this with two layers, in order of preference.
+Release Runner handles this with three layers, in order of preference.
 
 ### Layer 1 — Copilot's own decline notice (zero-config)
 
@@ -199,7 +201,45 @@ annotation that includes the original decline text. No configuration
 required; this fires automatically whenever Copilot leaves the decline
 review.
 
-### Layer 2 — broker-worker quota endpoint
+### Layer 2 — elapsed-time grace period (zero-config)
+
+The Layer 1 decline notice only fires when Copilot was **explicitly
+requested as a reviewer** and made it as far as posting a decline
+comment. The `copilot_code_review` ruleset is a *different* path:
+GitHub auto-requests Copilot internally, but when the requester is
+over their premium-request quota the request itself is silently
+dropped. No `review_requested` webhook event, no review record, no
+check-run, no timeline event. Layer 1 cannot fire for this case
+because there's nothing to detect.
+
+Layer 2 uses the only remaining programmatic signal: **time**. If the
+PR's head commit is older than `copilot-review-rate-limit-grace-minutes`
+(default 30 minutes) and no Copilot review has been submitted, the
+gate assumes Copilot is rate-limited and bypasses with a `::warning::`.
+
+```yaml
+- uses: magmamoose/release-runner@v1
+  with:
+    mode: ci
+    require-copilot-review: 'true'
+    # Default: 30 minutes. Set to 0 to disable grace bypass (strict mode).
+    copilot-review-rate-limit-grace-minutes: '30'
+```
+
+The gate is re-evaluated each time the workflow re-runs (new commit,
+new review submitted, manual rerun, etc.), so the bypass fires the
+*first* time the workflow runs after the grace window has elapsed
+since the head commit. If a PR sits with no activity, you may need
+to push another commit or submit a comment to re-trigger the workflow
+once enough time has passed; the typical PR flow (pushing fixes,
+discussing, etc.) re-triggers it for you.
+
+Tuning hints:
+- **Healthy Copilot review latency** is single-digit minutes for typical PRs. Default of 30 leaves comfortable margin without blocking rate-limited authors for too long.
+- **Set to `0`** if you'd rather fail closed and require manual override / explicit decline notice / actual Copilot review.
+- **Set higher** (e.g. 60–120) if you have unusually large PRs that Copilot takes longer to review when it does have quota.
+
+### Layer 3 — broker-worker quota endpoint
 
 When Copilot is **not** requested as a reviewer (so no decline notice
 exists) but the user is still rate-limited, the gate consults a

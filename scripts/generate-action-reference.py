@@ -70,6 +70,7 @@ INPUT_GROUPS: list[tuple[str, list[str]]] = [
     "copilot-review-ignore-paths",
     "copilot-review-reporter",
     "copilot-review-check-name",
+    "copilot-review-rate-limit-grace-minutes",
   ]),
   ("Version file injection", [
     "version-file",
