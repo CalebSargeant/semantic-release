@@ -736,22 +736,6 @@ Use when Dockerfiles use --mount=type=secret,id=github_token to pull
 private packages (e.g. GitHub Packages).
 Pass secrets.NPM_TOKEN or secrets.GITHUB_TOKEN from the calling workflow.
 
-#### `copilot-review-quota-check-url`
-
-- Required: `false`
-- Default: `''`
-
-`/copilot-quota` worker endpoint. When set, the gate calls this URL
-before failing for "no Copilot review" and passes gracefully (with
-a `::warning::`) if the worker reports `rate_limited: true`.
-
-Under `auth-mode: public-app` (the default) the URL is auto-derived
-from `token-broker-url` as `${token-broker-url}/copilot-quota`, so
-public-app callers get rate-limit bypass without any wiring.
-Self-hosted brokers and callers using `auth-mode: private-app` or
-`github-token` opt in explicitly by setting this input.
-See worker/README for the endpoint contract.
-
 ## Outputs
 
 ### `version`

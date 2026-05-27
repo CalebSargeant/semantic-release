@@ -313,68 +313,16 @@ review_is_fresh() {
   esac
 }
 
-# Query the configured /copilot-quota worker endpoint and, if it reports
-# the owner is rate-limited on Copilot premium requests, finish the gate
-# as success with a warning. No-op when COPILOT_REVIEW_QUOTA_CHECK_URL is
-# empty or the call fails — the caller falls through to strict mode.
-#
-# Args:
-#   $1 - summary used in the success message (e.g. the reason the gate
-#        was about to fail; included so the warning is self-describing)
-maybe_pass_for_quota() {
-  local fail_reason="$1"
-  local url="${COPILOT_REVIEW_QUOTA_CHECK_URL:-}"
-  [ -z "${url}" ] && return 0
-
-  local separator="?"
-  if [[ "${url}" == *"?"* ]]; then
-    separator="&"
-  fi
-  local full_url="${url}${separator}owner=${OWNER}"
-
-  # Pass the PR author as `requester` so the worker can additionally check
-  # the user-scoped billing endpoint. Copilot premium-request quotas are
-  # tracked per-user even on Copilot Business, so the org-billing path
-  # alone misses individual exhaustion when the repo lives under an org.
-  # `requester` is informational — the worker stays backward-compatible
-  # when it's absent.
-  if [ -n "${PR_AUTHOR:-}" ]; then
-    full_url="${full_url}&requester=${PR_AUTHOR}"
-  fi
-
-  local response
-  local err_file
-  err_file="$(tmp_file)"
-  if ! response="$(curl -fsSL --max-time 10 "${full_url}" 2>"${err_file}")"; then
-    log "Copilot quota check at ${url} failed: $(head -2 "${err_file}" | tr '\n' ' '). Falling through to strict gate."
-    return 0
-  fi
-
-  local rate_limited
-  rate_limited="$(printf '%s' "${response}" | jq -r '.rate_limited // false' 2>/dev/null || echo "false")"
-  if [ "${rate_limited}" != "true" ]; then
-    return 0
-  fi
-
-  local source
-  local resets_at
-  source="$(printf '%s' "${response}" | jq -r '.source // "unknown"' 2>/dev/null || echo "unknown")"
-  resets_at="$(printf '%s' "${response}" | jq -r '.resets_at // empty' 2>/dev/null || echo "")"
-
-  local detail="Copilot premium-request quota reported exhausted (source: ${source}"
-  if [ -n "${resets_at}" ]; then
-    detail+="; resets at ${resets_at}"
-  fi
-  detail+="). Original gate reason: ${fail_reason}"
-
-  warn "${detail}"
-
-  finish "success" 0 \
-    "Copilot review bypassed — rate limit" \
-    "Copilot review gate passed gracefully because ${OWNER} is rate-limited on premium requests. ${detail}"
-}
-
 warn() { echo "::warning::[copilot-review] $*"; }
+
+# Diagnostic hint appended to "no Copilot review" failure messages so
+# the actor sees exactly what to check. Linked from docs/copilot-review.md
+# as the canonical failure-mode catalogue.
+COPILOT_FAILURE_DIAGNOSTIC_HINT="\
+Common causes:
+  1. Copilot premium-request quota exhausted — check https://github.com/settings/copilot/features (resets monthly). When the requester is over quota, GitHub silently skips the copilot_code_review ruleset's auto-request; no review will arrive until quota resets or an admin bypasses the required check.
+  2. copilot_code_review ruleset not enabled on the base branch — Settings → Rules → Rulesets → branch ruleset → 'Automatically request Copilot code review' must be checked. Without it Copilot is never requested.
+  3. Copilot has not finished reviewing yet — re-run the workflow in a few minutes (typical review latency is single-digit minutes)."
 
 # Detect Copilot's own "I can't review because I'm rate-limited" notice.
 #
@@ -532,15 +480,14 @@ TOTAL_SUBMITTED_REVIEWS="$(echo "${REVIEWS_JSON}" | jq '[.[] | select((.submitte
 
 if [ "${CANDIDATE_COUNT}" -eq 0 ]; then
   if [ "${TOTAL_SUBMITTED_REVIEWS}" -eq 0 ]; then
-    maybe_pass_for_quota "Copilot has not reviewed this pull request yet."
     finish "failure" 1 \
       "Copilot review missing" \
-      "Copilot has not reviewed this pull request yet."
+      "Copilot has not reviewed this pull request yet. ${COPILOT_FAILURE_DIAGNOSTIC_HINT}"
   fi
 
   finish "failure" 1 \
     "Copilot review identity not found" \
-    "Unable to identify a valid Copilot review for the current head commit. Checked ${TOTAL_SUBMITTED_REVIEWS} submitted PR review(s); none matched the configured Copilot reviewer identities."
+    "Unable to identify a valid Copilot review for the current head commit. Checked ${TOTAL_SUBMITTED_REVIEWS} submitted PR review(s); none matched the configured Copilot reviewer identities. ${COPILOT_FAILURE_DIAGNOSTIC_HINT}"
 fi
 
 VALID_REVIEW=""
@@ -592,8 +539,6 @@ else
   STALE_DETAIL="Latest Copilot review from ${LATEST_LOGIN} at ${LATEST_SUBMITTED_AT}; current head commit time is ${HEAD_COMMIT_DATE:-unknown}."
 fi
 
-maybe_pass_for_quota "Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL}"
-
 finish "failure" 1 \
   "Copilot review is stale" \
-  "Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL}"
+  "Copilot reviewed this pull request, but new commits were pushed afterwards. ${STALE_DETAIL} ${COPILOT_FAILURE_DIAGNOSTIC_HINT}"
