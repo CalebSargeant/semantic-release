@@ -42,6 +42,9 @@ export type BrokerEnv = Env & {
   TRIAGE_LLM_API_KEY?: string;
   TRIAGE_LLM_MODEL?: string; // default claude-haiku-4-5 for anthropic
   TRIAGE_LLM_BASE_URL?: string; // override for OpenAI-compatible providers
+  // Trusted-author gate for automatic triage: untrusted PRs are skipped.
+  TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
+  TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
 };
 
 interface TokenRequest {
@@ -1475,6 +1478,31 @@ function resolveTriageConfig(env: BrokerEnv): TriageConfig | null {
   return { kind: "openai", apiKey, model: model || defaultModel, baseUrl };
 }
 
+const DEFAULT_TRUSTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+// Whether a PR author is trusted enough for automatic triage. An explicit
+// TRIAGE_TRUSTED_USERS login allowlist wins; otherwise the author's
+// repo association must be in the trusted set (default OWNER/MEMBER/COLLABORATOR).
+function isTrustedAuthor(
+  association: string | undefined,
+  login: string | undefined,
+  env: BrokerEnv
+): boolean {
+  const allowlist = (env.TRIAGE_TRUSTED_USERS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (login && allowlist.includes(login.toLowerCase())) return true;
+
+  const configured = (env.TRIAGE_TRUSTED_ASSOCIATIONS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toUpperCase())
+    .filter(Boolean);
+  const trusted =
+    configured.length > 0 ? configured : DEFAULT_TRUSTED_ASSOCIATIONS;
+  return !!association && trusted.includes(association.toUpperCase());
+}
+
 async function handleReviewCommentEvent(
   payload: Record<string, unknown>,
   env: BrokerEnv,
@@ -1512,6 +1540,15 @@ async function handleReviewCommentEvent(
   const body = asString(comment.body) ?? "";
   if (!repo || prNumber === null || commentId === null) {
     return json({ ok: true, incomplete: true }, 200);
+  }
+
+  // Trusted-author gate: only auto-triage PRs opened by trusted authors, so a
+  // random contributor's PR can't drive auto-dismiss (or, later, auto-fix).
+  // The manual POST /process bypasses this — it's an explicit operator action.
+  const prAuthor = pr && isRecord(pr.user) ? asString(pr.user.login) : undefined;
+  const association = pr ? asString(pr.author_association) : undefined;
+  if (!isTrustedAuthor(association, prAuthor, env)) {
+    return json({ ok: true, skipped: "untrusted_author" }, 200);
   }
 
   if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {

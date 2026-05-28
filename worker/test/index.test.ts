@@ -1180,7 +1180,11 @@ function reviewCommentPayload(
   return {
     action: "created",
     repository: { name: "octo-repo", owner: { login: "octo-org" } },
-    pull_request: { number: 7 },
+    pull_request: {
+      number: 7,
+      author_association: "OWNER",
+      user: { login: "trusted-dev" }
+    },
     comment: {
       id: 12345,
       user: { login: "copilot-pull-request-reviewer[bot]" },
@@ -1347,6 +1351,56 @@ describe("Copilot comment triage", () => {
     });
     expect(calls[0].url).toContain("api.deepseek.com");
     expect(calls[0].url).toContain("/chat/completions");
+  });
+
+  it("skips PRs from untrusted authors", async () => {
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "NONE",
+        user: { login: "random-person" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not classify an untrusted author's PR");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      skipped: "untrusted_author"
+    });
+  });
+
+  it("allows an untrusted association when the author is on TRIAGE_TRUSTED_USERS", async () => {
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "NONE",
+        user: { login: "trusted-contractor" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps({
+      githubResponses: [anthropicReply("skip")]
+    });
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      { ...triageEnv, TRIAGE_TRUSTED_USERS: "trusted-contractor" },
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
   });
 });
 // ─── /copilot-oauth ──────────────────────────────────────────────────────────
