@@ -1149,6 +1149,260 @@ describe("scheduled cron refresh", () => {
   });
 });
 
+// ─── Copilot comment triage (pull_request_review_comment) ────────────────────
+
+function reviewCommentRequest(
+  body: Record<string, unknown>,
+  sig: string
+): Request {
+  return new Request("https://broker.example.com/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request_review_comment",
+      "x-hub-signature-256": sig
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+const triageEnv: BrokerEnv = {
+  ...env,
+  GITHUB_WEBHOOK_SECRET: "shh",
+  TRIAGE_LLM_API_KEY: "sk-test",
+  TRIAGE_LLM_PROVIDER: "anthropic"
+};
+
+function reviewCommentPayload(
+  overrides: Record<string, unknown> = {},
+  commentOverrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    action: "created",
+    repository: { name: "octo-repo", owner: { login: "octo-org" } },
+    pull_request: {
+      number: 7,
+      author_association: "OWNER",
+      user: { login: "trusted-dev" }
+    },
+    comment: {
+      id: 12345,
+      user: { login: "copilot-pull-request-reviewer[bot]" },
+      body: "This variable is never used.",
+      path: "src/x.ts",
+      diff_hunk: "@@ -1 +1 @@",
+      ...commentOverrides
+    },
+    ...overrides
+  };
+}
+
+function anthropicReply(decision: string): Response {
+  return Response.json({
+    content: [{ type: "text", text: `{"decision":"${decision}"}` }]
+  });
+}
+
+describe("Copilot comment triage", () => {
+  it("is disabled when no LLM key is configured", async () => {
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not call any API when triage is disabled");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      { ...env, GITHUB_WEBHOOK_SECRET: "shh" },
+      injected
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({ ok: true, triage: "disabled" });
+  });
+
+  it("ignores comments not authored by Copilot", async () => {
+    const payload = reviewCommentPayload({}, { user: { login: "a-human" } });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not classify non-Copilot comments");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({ ok: true, not_copilot: true });
+  });
+
+  it("classifies a Copilot comment and dismisses it by resolving the thread", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        anthropicReply("dismiss"), // classification
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "THREAD_1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 12345 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql: review threads
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }) // graphql: resolve mutation
+      ]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "dismiss",
+      dismissed: true
+    });
+    expect(calls[0].url).toContain("api.anthropic.com");
+    expect(calls[3].url).toContain("/graphql");
+    expect(calls[4].url).toContain("/graphql");
+  });
+
+  it("treats skip as a no-op (classification only, no GitHub calls)", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [anthropicReply("skip")]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
+    expect(calls.length).toBe(1);
+  });
+
+  it("recognises fix but defers it (no signing path yet)", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [anthropicReply("fix")]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "fix",
+      action: "deferred"
+    });
+  });
+
+  it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          choices: [{ message: { content: '{"decision":"skip"}' } }]
+        })
+      ]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      {
+        ...triageEnv,
+        TRIAGE_LLM_PROVIDER: "deepseek",
+        TRIAGE_LLM_MODEL: "deepseek-chat"
+      },
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
+    expect(calls[0].url).toContain("api.deepseek.com");
+    expect(calls[0].url).toContain("/chat/completions");
+  });
+
+  it("skips PRs from untrusted authors", async () => {
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "NONE",
+        user: { login: "random-person" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not classify an untrusted author's PR");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      skipped: "untrusted_author"
+    });
+  });
+
+  it("allows an untrusted association when the author is on TRIAGE_TRUSTED_USERS", async () => {
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "NONE",
+        user: { login: "trusted-contractor" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps({
+      githubResponses: [anthropicReply("skip")]
+    });
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      { ...triageEnv, TRIAGE_TRUSTED_USERS: "trusted-contractor" },
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
+  });
+});
 // ─── /copilot-oauth ──────────────────────────────────────────────────────────
 
 describe("copilot-oauth flow", () => {
@@ -1306,6 +1560,126 @@ describe("copilot-oauth flow", () => {
       user: "calebsargeant",
       connected_at: "2026-05-01T12:00:00.000Z",
       refresh_token_expires_at: "2026-11-01T00:00:00.000Z"
+    });
+  });
+});
+
+// ─── POST /process (manual PR re-walk) ───────────────────────────────────────
+
+function processRequest(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): Request {
+  return new Request("https://broker.example.com/process", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body)
+  });
+}
+
+const PR_URL = "https://github.com/octo-org/octo-repo/pull/7";
+
+describe("POST /process", () => {
+  it("is disabled (503) when PROCESS_TRIGGER_SECRET is unset", async () => {
+    const response = await handleRequest(processRequest({ pr_url: PR_URL }), env);
+    expect(response.status).toBe(503);
+    expect(await readJson(response)).toEqual({ error: "process_disabled" });
+  });
+
+  it("rejects a wrong bearer with 401", async () => {
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer nope" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(401);
+    expect(await readJson(response)).toEqual({ error: "unauthorized" });
+  });
+
+  it("returns 400 when neither pr_url nor owner/repo/pull_number is given", async () => {
+    const response = await handleRequest(
+      processRequest({}, { authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "missing_required_fields" });
+  });
+
+  it("reports triage disabled when no LLM key is configured", async () => {
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({ ok: true, triage: "disabled" });
+  });
+
+  it("walks the PR's Copilot comments, dismissing and skipping, ignoring humans", async () => {
+    const processEnv: BrokerEnv = {
+      ...env,
+      PROCESS_TRIGGER_SECRET: "trigger",
+      TRIAGE_LLM_API_KEY: "sk-test",
+      TRIAGE_LLM_PROVIDER: "anthropic"
+    };
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          },
+          { id: 222, user: { login: "a-human" }, body: "nit" },
+          {
+            id: 333,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "is this right?"
+          }
+        ]), // list review comments
+        anthropicReply("dismiss"), // classify #111
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql query
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }), // graphql mutation
+        anthropicReply("skip") // classify #333
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      processEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 2,
+      counts: { fix: 0, dismiss: 1, skip: 1 },
+      results: [
+        { comment_id: 111, decision: "dismiss", dismissed: true },
+        { comment_id: 333, decision: "skip" }
+      ]
     });
   });
 });
