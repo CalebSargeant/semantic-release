@@ -33,6 +33,12 @@ export type BrokerEnv = Env & {
   COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   COPILOT_WEBHOOK_REVIEW_GAP_SECONDS?: string;
+  // /webhook pull_request_review_comment → triage Copilot review comments.
+  // Bring-your-own-key: no API key ⇒ triage disabled (no free AI).
+  TRIAGE_LLM_PROVIDER?: string; // anthropic (default) | openai | deepseek | openrouter (latter three = OpenAI-compatible)
+  TRIAGE_LLM_API_KEY?: string;
+  TRIAGE_LLM_MODEL?: string; // default claude-haiku-4-5 for anthropic
+  TRIAGE_LLM_BASE_URL?: string; // override for OpenAI-compatible providers
 };
 
 interface TokenRequest {
@@ -718,7 +724,11 @@ async function handleWebhookRequest(
 
   // Only the events we care about; everything else is acknowledged so
   // GitHub stops retrying, but doesn't touch state.
-  if (event !== "pull_request" && event !== "pull_request_review") {
+  if (
+    event !== "pull_request" &&
+    event !== "pull_request_review" &&
+    event !== "pull_request_review_comment"
+  ) {
     return json({ ok: true, ignored: event }, 200);
   }
 
@@ -730,6 +740,12 @@ async function handleWebhookRequest(
   }
   if (!isRecord(payload)) {
     return jsonError(400, "invalid_request");
+  }
+
+  // pull_request_review_comment → Copilot comment triage. Independent of the
+  // Copilot-quota KV signal handled below.
+  if (event === "pull_request_review_comment") {
+    return await handleReviewCommentEvent(payload, env, dependencies);
   }
 
   const owner = extractOwnerFromWebhook(payload);
@@ -881,6 +897,388 @@ function constantTimeEquals(a: string, b: string): boolean {
     mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return mismatch === 0;
+}
+
+// ─── Copilot comment triage ──────────────────────────────────────────────────
+// On a Copilot `pull_request_review_comment`, classify it (fix | dismiss | skip)
+// with a bring-your-own-key LLM, then act: `dismiss` resolves the review thread
+// via GraphQL; `skip` is a no-op; `fix` is recognised but deferred until the
+// signing/dispatch path lands. No LLM key ⇒ triage is disabled (no free AI).
+// Classifier is provider-agnostic: anthropic (Messages API) or any
+// OpenAI-compatible endpoint (OpenAI, DeepSeek, OpenRouter) via base URL.
+
+type TriageDecision = "fix" | "dismiss" | "skip";
+
+const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
+
+const TRIAGE_SYSTEM_PROMPT =
+  "You triage GitHub Copilot pull request review comments. For the comment, decide:\n" +
+  '- "fix": it identifies a real, actionable problem that should be changed in code.\n' +
+  '- "dismiss": it is wrong, not applicable, or a false positive.\n' +
+  '- "skip": you cannot decide from the provided context alone.\n' +
+  'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
+
+type TriageConfig =
+  | { kind: "anthropic"; apiKey: string; model: string }
+  | { kind: "openai"; apiKey: string; model: string; baseUrl: string };
+
+function resolveTriageConfig(env: BrokerEnv): TriageConfig | null {
+  const apiKey = env.TRIAGE_LLM_API_KEY?.trim();
+  if (!apiKey) return null; // bring-your-own-key: no key ⇒ triage disabled.
+
+  const provider = (env.TRIAGE_LLM_PROVIDER ?? "anthropic").trim().toLowerCase();
+  const model = env.TRIAGE_LLM_MODEL?.trim();
+
+  if (provider === "anthropic" || provider === "") {
+    return { kind: "anthropic", apiKey, model: model || DEFAULT_ANTHROPIC_MODEL };
+  }
+
+  // Everything else is OpenAI-compatible — same /chat/completions shape,
+  // differing only by base URL and model.
+  const baseUrl =
+    env.TRIAGE_LLM_BASE_URL?.trim() ||
+    (provider === "deepseek"
+      ? "https://api.deepseek.com/v1"
+      : provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : "https://api.openai.com/v1");
+  const defaultModel =
+    provider === "deepseek"
+      ? "deepseek-chat"
+      : provider === "openai"
+        ? "gpt-4o-mini"
+        : "";
+  return { kind: "openai", apiKey, model: model || defaultModel, baseUrl };
+}
+
+async function handleReviewCommentEvent(
+  payload: Record<string, unknown>,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  const config = resolveTriageConfig(env);
+  if (!config) {
+    return json({ ok: true, triage: "disabled" }, 200);
+  }
+  if (!config.model) {
+    return json({ ok: true, triage: "no_model" }, 200);
+  }
+
+  if (asString(payload.action) !== "created") {
+    return json(
+      { ok: true, ignored_action: asString(payload.action) ?? null },
+      200
+    );
+  }
+
+  const comment = payload.comment;
+  if (!isRecord(comment)) {
+    return json({ ok: true, no_comment: true }, 200);
+  }
+
+  const author = isRecord(comment.user) ? asString(comment.user.login) : undefined;
+  if (!author || !COPILOT_LOGIN_PATTERN.test(author)) {
+    return json({ ok: true, not_copilot: true }, 200);
+  }
+
+  const repo = extractRepoFromWebhook(payload);
+  const pr = isRecord(payload.pull_request) ? payload.pull_request : null;
+  const prNumber = pr && typeof pr.number === "number" ? pr.number : null;
+  const commentId = typeof comment.id === "number" ? comment.id : null;
+  const body = asString(comment.body) ?? "";
+  if (!repo || prNumber === null || commentId === null) {
+    return json({ ok: true, incomplete: true }, 200);
+  }
+
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return json({ ok: true, app: "unconfigured" }, 200);
+  }
+
+  try {
+    const decision = await classifyComment(dependencies.fetch, config, body, {
+      path: asString(comment.path),
+      diffHunk: asString(comment.diff_hunk)
+    });
+
+    if (decision === "dismiss") {
+      const token = await mintInstallationToken(
+        env,
+        dependencies,
+        repo.owner,
+        repo.repo
+      );
+      const dismissed = await dismissReviewComment(
+        dependencies.fetch,
+        token,
+        repo.owner,
+        repo.repo,
+        prNumber,
+        commentId
+      );
+      return json({ ok: true, decision, dismissed }, 200);
+    }
+
+    // "fix" is recognised but deferred until the signing/dispatch path exists;
+    // "skip" is a no-op.
+    return json(
+      { ok: true, decision, action: decision === "fix" ? "deferred" : "none" },
+      200
+    );
+  } catch (error) {
+    const code = error instanceof HttpError ? error.code : "triage_failed";
+    return json({ ok: true, error: code }, 200);
+  }
+}
+
+async function classifyComment(
+  doFetch: typeof fetch,
+  config: TriageConfig,
+  comment: string,
+  context: { path?: string; diffHunk?: string }
+): Promise<TriageDecision> {
+  const user = buildTriageUserMessage(comment, context);
+  const text =
+    config.kind === "anthropic"
+      ? await callAnthropic(doFetch, config, TRIAGE_SYSTEM_PROMPT, user)
+      : await callOpenAiCompatible(doFetch, config, TRIAGE_SYSTEM_PROMPT, user);
+  return parseDecision(text);
+}
+
+function buildTriageUserMessage(
+  comment: string,
+  context: { path?: string; diffHunk?: string }
+): string {
+  const parts: string[] = [];
+  if (context.path) parts.push(`File: ${context.path}`);
+  if (context.diffHunk) parts.push(`Diff hunk:\n${context.diffHunk}`);
+  parts.push(`Copilot review comment:\n${comment}`);
+  return parts.join("\n\n");
+}
+
+async function callAnthropic(
+  doFetch: typeof fetch,
+  config: { apiKey: string; model: string },
+  system: string,
+  user: string
+): Promise<string> {
+  const response = await doFetch(ANTHROPIC_API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": config.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: 256,
+      system,
+      messages: [{ role: "user", content: user }]
+    })
+  });
+  if (!response.ok) throw new HttpError(502, "triage_llm_failed");
+  const body = await response.json();
+  if (isRecord(body) && Array.isArray(body.content)) {
+    for (const block of body.content) {
+      if (isRecord(block) && block.type === "text") {
+        const text = asString(block.text);
+        if (text) return text;
+      }
+    }
+  }
+  throw new HttpError(502, "triage_llm_bad_response");
+}
+
+async function callOpenAiCompatible(
+  doFetch: typeof fetch,
+  config: { apiKey: string; model: string; baseUrl: string },
+  system: string,
+  user: string
+): Promise<string> {
+  const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const response = await doFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: 256,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ]
+    })
+  });
+  if (!response.ok) throw new HttpError(502, "triage_llm_failed");
+  const body = await response.json();
+  if (isRecord(body) && Array.isArray(body.choices) && body.choices.length > 0) {
+    const choice = body.choices[0];
+    if (isRecord(choice) && isRecord(choice.message)) {
+      const content = asString(choice.message.content);
+      if (content) return content;
+    }
+  }
+  throw new HttpError(502, "triage_llm_bad_response");
+}
+
+function parseDecision(text: string): TriageDecision {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (isRecord(parsed)) {
+        const decision = asString(parsed.decision)?.toLowerCase();
+        if (decision === "fix" || decision === "dismiss" || decision === "skip") {
+          return decision;
+        }
+      }
+    } catch {
+      // fall through to keyword scan
+    }
+  }
+  const match = text.toLowerCase().match(/\b(fix|dismiss|skip)\b/);
+  if (match) return match[1] as TriageDecision;
+  return "skip";
+}
+
+async function mintInstallationToken(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  owner: string,
+  repo: string
+): Promise<string> {
+  const appJwt = await dependencies.createGitHubAppJwt(
+    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    dependencies.now()
+  );
+  const installationId = await findInstallationId(
+    dependencies.fetch,
+    appJwt,
+    owner,
+    repo
+  );
+  const { token } = await createInstallationToken(
+    dependencies.fetch,
+    appJwt,
+    installationId,
+    repo,
+    DEFAULT_PERMISSIONS
+  );
+  return token;
+}
+
+interface TriageRepoRef {
+  owner: string;
+  repo: string;
+}
+
+function extractRepoFromWebhook(
+  payload: Record<string, unknown>
+): TriageRepoRef | null {
+  const repository = payload.repository;
+  if (!isRecord(repository)) return null;
+  const ownerObj = repository.owner;
+  if (!isRecord(ownerObj)) return null;
+  const owner = asString(ownerObj.login) ?? asString(ownerObj.name);
+  const repo = asString(repository.name);
+  if (!owner || !repo) return null;
+  try {
+    assertRepositoryParts(owner, repo);
+  } catch {
+    return null;
+  }
+  return { owner, repo };
+}
+
+async function dismissReviewComment(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commentDatabaseId: number
+): Promise<boolean> {
+  const query =
+    "query($owner:String!,$repo:String!,$pr:Int!){" +
+    "repository(owner:$owner,name:$repo){pullRequest(number:$pr){" +
+    "reviewThreads(first:100){nodes{id isResolved " +
+    "comments(first:100){nodes{databaseId}}}}}}}";
+  const data = await githubGraphql(doFetch, token, query, {
+    owner,
+    repo,
+    pr: prNumber
+  });
+  const threadId = findThreadIdForComment(data, commentDatabaseId);
+  if (!threadId) return false;
+
+  const mutation =
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
+  const result = await githubGraphql(doFetch, token, mutation, { id: threadId });
+  const resolved = isRecord(result.resolveReviewThread)
+    ? result.resolveReviewThread
+    : null;
+  const thread = resolved && isRecord(resolved.thread) ? resolved.thread : null;
+  return thread?.isResolved === true;
+}
+
+function findThreadIdForComment(
+  data: Record<string, unknown>,
+  commentDatabaseId: number
+): string | null {
+  const repository = isRecord(data.repository) ? data.repository : null;
+  const pullRequest =
+    repository && isRecord(repository.pullRequest)
+      ? repository.pullRequest
+      : null;
+  const reviewThreads =
+    pullRequest && isRecord(pullRequest.reviewThreads)
+      ? pullRequest.reviewThreads
+      : null;
+  const nodes =
+    reviewThreads && Array.isArray(reviewThreads.nodes)
+      ? reviewThreads.nodes
+      : [];
+  for (const node of nodes) {
+    if (!isRecord(node)) continue;
+    const comments =
+      isRecord(node.comments) && Array.isArray(node.comments.nodes)
+        ? node.comments.nodes
+        : [];
+    for (const comment of comments) {
+      if (isRecord(comment) && comment.databaseId === commentDatabaseId) {
+        const id = asString(node.id);
+        if (id) return id;
+      }
+    }
+  }
+  return null;
+}
+
+async function githubGraphql(
+  doFetch: typeof fetch,
+  token: string,
+  query: string,
+  variables: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const response = await doFetch(GITHUB_GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      ...githubHeaders(token),
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  if (!response.ok) throw new HttpError(502, "github_graphql_failed");
+  const body = await response.json();
+  if (!isRecord(body) || !isRecord(body.data)) {
+    throw new HttpError(502, "github_graphql_failed");
+  }
+  return body.data;
 }
 
 async function webhookSignalForOwner(

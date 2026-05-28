@@ -1053,3 +1053,204 @@ describe("scheduled cron refresh", () => {
     expect(cached.rate_limited).toBe(true);
   });
 });
+
+// ─── Copilot comment triage (pull_request_review_comment) ────────────────────
+
+function reviewCommentRequest(
+  body: Record<string, unknown>,
+  sig: string
+): Request {
+  return new Request("https://broker.example.com/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request_review_comment",
+      "x-hub-signature-256": sig
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+const triageEnv: BrokerEnv = {
+  ...env,
+  GITHUB_WEBHOOK_SECRET: "shh",
+  TRIAGE_LLM_API_KEY: "sk-test",
+  TRIAGE_LLM_PROVIDER: "anthropic"
+};
+
+function reviewCommentPayload(
+  overrides: Record<string, unknown> = {},
+  commentOverrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    action: "created",
+    repository: { name: "octo-repo", owner: { login: "octo-org" } },
+    pull_request: { number: 7 },
+    comment: {
+      id: 12345,
+      user: { login: "copilot-pull-request-reviewer[bot]" },
+      body: "This variable is never used.",
+      path: "src/x.ts",
+      diff_hunk: "@@ -1 +1 @@",
+      ...commentOverrides
+    },
+    ...overrides
+  };
+}
+
+function anthropicReply(decision: string): Response {
+  return Response.json({
+    content: [{ type: "text", text: `{"decision":"${decision}"}` }]
+  });
+}
+
+describe("Copilot comment triage", () => {
+  it("is disabled when no LLM key is configured", async () => {
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not call any API when triage is disabled");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      { ...env, GITHUB_WEBHOOK_SECRET: "shh" },
+      injected
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({ ok: true, triage: "disabled" });
+  });
+
+  it("ignores comments not authored by Copilot", async () => {
+    const payload = reviewCommentPayload({}, { user: { login: "a-human" } });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not classify non-Copilot comments");
+    };
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({ ok: true, not_copilot: true });
+  });
+
+  it("classifies a Copilot comment and dismisses it by resolving the thread", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        anthropicReply("dismiss"), // classification
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "THREAD_1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 12345 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql: review threads
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }) // graphql: resolve mutation
+      ]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "dismiss",
+      dismissed: true
+    });
+    expect(calls[0].url).toContain("api.anthropic.com");
+    expect(calls[3].url).toContain("/graphql");
+    expect(calls[4].url).toContain("/graphql");
+  });
+
+  it("treats skip as a no-op (classification only, no GitHub calls)", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [anthropicReply("skip")]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
+    expect(calls.length).toBe(1);
+  });
+
+  it("recognises fix but defers it (no signing path yet)", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [anthropicReply("fix")]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      triageEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "fix",
+      action: "deferred"
+    });
+  });
+
+  it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          choices: [{ message: { content: '{"decision":"skip"}' } }]
+        })
+      ]
+    });
+    const payload = reviewCommentPayload();
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      {
+        ...triageEnv,
+        TRIAGE_LLM_PROVIDER: "deepseek",
+        TRIAGE_LLM_MODEL: "deepseek-chat"
+      },
+      injected
+    );
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "skip",
+      action: "none"
+    });
+    expect(calls[0].url).toContain("api.deepseek.com");
+    expect(calls[0].url).toContain("/chat/completions");
+  });
+});
