@@ -256,12 +256,13 @@ returned after every source has been consulted.
    month boundary (matching GitHub's reset cadence). Checked for both
    `owner` and `requester`, so flipping the flag on the user account
    suffices even when PRs land under multiple orgs.
-2. **GitHub Billing Usage API (user-scoped)** — when `requester` is
-   set and the broker App is installed on the requester's personal
-   account with `Plan: read`, the worker fetches
-   `/users/{requester}/settings/billing/usage` and looks for an
-   exhausted Copilot premium-request item. This is the most direct
-   signal for individual quota exhaustion. Cached in KV for one hour.
+2. **OAuth-backed user billing** — when the PR author (passed as
+   `requester`) has connected to release-runner via
+   `/copilot-oauth/connect`, the worker uses their stored refresh
+   token to mint a user access token and queries
+   `/users/{requester}/settings/billing/premium_request/usage`. This
+   is the only direct, real-time signal for individual quota
+   exhaustion. See the "OAuth User-Billing Setup" section below.
 3. **GitHub Billing Usage API (org-scoped)** — when the broker App
    has billing permissions on the owner, the worker fetches
    `/orgs/{owner}/settings/billing/usage` and scans for a Copilot
@@ -281,7 +282,11 @@ returned after every source has been consulted.
    Copilot review delivery clears the backlog automatically. Inferred
    purely from observed behavior — no extra App permissions beyond
    what PR/review event subscriptions already grant. Checked for
-   both `owner` and `requester`.
+   both `owner` and `requester`. **Caveat**: GitHub's
+   `copilot_code_review` ruleset auto-requests Copilot via a separate
+   path that does NOT fire `review_requested` events, so this layer
+   only helps for repos that *manually* request Copilot review (e.g.
+   via a workflow that calls the request-review API).
 5. **Copilot Metrics API** — falls through to
    `/orgs/{owner}/copilot/metrics` (and the user-scoped variant),
    which returns daily Copilot activity reports. If
@@ -297,6 +302,59 @@ The action treats `rate_limited: false` as "no signal, stay strict" — the
 worker never weakens enforcement, it only relaxes it on a positive
 signal.
 
+### OAuth User-Billing Setup (Layer 2, recommended)
+
+The most reliable detection layer is OAuth-backed user billing. Each
+contributor authorizes the broker once; from then on, every PR they
+open gets quota-checked against the GitHub Billing API in real time.
+
+**One-time deployer setup** (per broker):
+
+1. Open the App's settings at
+   `https://github.com/settings/apps/release-runner` (or your fork's
+   slug if self-hosting).
+2. Under **Identifying and authorizing users**, set
+   - **User authorization callback URL**: `${broker-url}/copilot-oauth/callback`
+     (e.g. `https://release-runner.sargeant.workers.dev/copilot-oauth/callback`)
+   - **Request user authorization (OAuth) during installation**:
+     leave unchecked (we want a separate authorize flow per contributor)
+   - **Enable Device Flow**: unchecked
+3. Under **Client secrets**, click **Generate a new client secret**.
+   Copy the secret.
+4. Set the secret on the worker:
+   ```bash
+   wrangler secret put GITHUB_APP_CLIENT_SECRET   # paste when prompted
+   wrangler secret put GITHUB_APP_CLIENT_ID       # paste the App's client ID (visible on the App settings page)
+   ```
+5. Redeploy: `wrangler deploy`.
+
+**Per-contributor authorize** (any developer whose PRs hit the gate):
+
+1. Visit `${broker-url}/copilot-oauth/connect` once.
+2. GitHub shows an authorization page listing the App's User
+   permission (`Plan: read`). Click **Authorize**.
+3. Worker stores the refresh token in KV with a ~6-month TTL. The
+   connection auto-renews each time the contributor opens a PR.
+
+**Verify a connection**:
+
+```bash
+curl https://release-runner.sargeant.workers.dev/copilot-oauth/status?user=CalebSargeant
+# → {"connected":true,"user":"CalebSargeant","connected_at":"...","refresh_token_expires_at":"..."}
+```
+
+When a connected contributor opens a PR, the worker's response gains
+the new layer:
+
+```json
+{"rate_limited":true,"source":"github-oauth-user-billing","resets_at":"2026-06-01T00:00:00Z",...}
+```
+
+If the contributor hasn't authorized, Layer 2 silently no-ops and the
+chain falls through to org billing / webhook / metrics / default.
+
+### Manual Override (Layer 1)
+
 Set the manual flag from anywhere:
 
 ```bash
@@ -307,7 +365,10 @@ curl -fsSL -X POST \
   https://release-runner.sargeant.workers.dev/copilot-quota
 ```
 
-Clear it again with the same call and `"rate_limited": false`.
+Clear it again with the same call and `"rate_limited": false`. The
+manual override is the operator's emergency knob for the rare case
+where Layer 2 is unavailable and the gate must pass for a specific
+PR; the OAuth-backed Layer 2 is the right long-term path.
 
 ### Deployer setup
 
