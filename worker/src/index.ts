@@ -48,6 +48,8 @@ export type BrokerEnv = Env & {
   // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
   // unset disables the endpoint.
   PROCESS_TRIGGER_SECRET?: string;
+  // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
+  AUTO_UPDATE_BRANCHES?: string;
 };
 
 interface TokenRequest {
@@ -1254,6 +1256,7 @@ async function handleWebhookRequest(
   // Only the events we care about; everything else is acknowledged so
   // GitHub stops retrying, but doesn't touch state.
   if (
+    event !== "push" &&
     event !== "pull_request" &&
     event !== "pull_request_review" &&
     event !== "pull_request_review_comment"
@@ -1273,6 +1276,9 @@ async function handleWebhookRequest(
 
   // pull_request_review_comment → Copilot comment triage. Independent of the
   // Copilot-quota KV signal handled below.
+  if (event === "push") {
+    return await handlePushEvent(payload, env, dependencies);
+  }
   if (event === "pull_request_review_comment") {
     return await handleReviewCommentEvent(payload, env, dependencies);
   }
@@ -2588,3 +2594,175 @@ function asString(value: unknown): string | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+// ─── Auto-update branches ────────────────────────────────────────────────────
+// On a push to a base branch, fast-forward every open PR that targets it via
+// GitHub's "update branch" API. Opt-in through AUTO_UPDATE_BRANCHES; unset or
+// falsey disables it so existing deployments are unaffected. Worker-only: the
+// whole flow is GitHub REST calls — no git checkout — so it runs on the free
+// (Cloudflare-Worker) tier.
+
+const AUTO_UPDATE_MAX_PULLS = 100;
+
+function autoUpdateEnabled(env: BrokerEnv): boolean {
+  const raw = env.AUTO_UPDATE_BRANCHES;
+  if (!raw) return false;
+  const value = raw.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+interface AutoUpdateResult {
+  updated: number[];
+  skipped: { number: number; reason: string }[];
+}
+
+async function handlePushEvent(
+  payload: Record<string, unknown>,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (!autoUpdateEnabled(env)) {
+    return json({ ok: true, auto_update: "disabled" }, 200);
+  }
+
+  const ref = asString(payload.ref);
+  if (!ref || !ref.startsWith("refs/heads/")) {
+    return json({ ok: true, ignored_ref: ref ?? null }, 200);
+  }
+  if (payload.deleted === true) {
+    return json({ ok: true, branch_deleted: true }, 200);
+  }
+  const base = ref.slice("refs/heads/".length);
+
+  const repo = extractRepoFromWebhook(payload);
+  if (!repo) {
+    return json({ ok: true, no_repo: true }, 200);
+  }
+
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return json({ ok: true, app: "unconfigured" }, 200);
+  }
+
+  try {
+    const result = await updateOpenPullRequestsForBase(
+      env,
+      dependencies,
+      repo.owner,
+      repo.repo,
+      base
+    );
+    return json({ ok: true, branch: base, ...result }, 200);
+  } catch (error) {
+    // Acknowledge the delivery (200) so GitHub stops retrying, but surface the
+    // failure code for observability.
+    const code = error instanceof HttpError ? error.code : "auto_update_failed";
+    return json({ ok: true, branch: base, error: code }, 200);
+  }
+}
+
+async function updateOpenPullRequestsForBase(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  owner: string,
+  repo: string,
+  base: string
+): Promise<AutoUpdateResult> {
+  const appJwt = await dependencies.createGitHubAppJwt(
+    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    dependencies.now()
+  );
+  const installationId = await findInstallationId(
+    dependencies.fetch,
+    appJwt,
+    owner,
+    repo
+  );
+  const { token } = await createInstallationToken(
+    dependencies.fetch,
+    appJwt,
+    installationId,
+    repo,
+    DEFAULT_PERMISSIONS
+  );
+
+  const pulls = await listOpenPullRequestsForBase(
+    dependencies.fetch,
+    token,
+    owner,
+    repo,
+    base
+  );
+
+  const updated: number[] = [];
+  const skipped: { number: number; reason: string }[] = [];
+  for (const pullNumber of pulls) {
+    const outcome = await updatePullRequestBranch(
+      dependencies.fetch,
+      token,
+      owner,
+      repo,
+      pullNumber
+    );
+    if (outcome === "updated") {
+      updated.push(pullNumber);
+    } else {
+      skipped.push({ number: pullNumber, reason: outcome });
+    }
+  }
+  return { updated, skipped };
+}
+
+async function listOpenPullRequestsForBase(
+  githubFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  base: string
+): Promise<number[]> {
+  const url =
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/` +
+    `${encodeURIComponent(repo)}/pulls?state=open&base=${encodeURIComponent(base)}` +
+    `&per_page=${AUTO_UPDATE_MAX_PULLS}`;
+  const response = await githubFetch(url, { headers: githubHeaders(token) });
+  if (!response.ok) {
+    throw new HttpError(502, "github_pull_list_failed");
+  }
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  const numbers: number[] = [];
+  for (const entry of body) {
+    if (isRecord(entry) && typeof entry.number === "number") {
+      numbers.push(entry.number);
+    }
+  }
+  return numbers;
+}
+
+async function updatePullRequestBranch(
+  githubFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<"updated" | string> {
+  const response = await githubFetch(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/` +
+      `${encodeURIComponent(repo)}/pulls/${pullNumber}/update-branch`,
+    {
+      method: "PUT",
+      headers: {
+        ...githubHeaders(token),
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({})
+    }
+  );
+
+  if (response.status === 202) return "updated";
+  // 422 → already current or not fast-forwardable (conflict / fork head).
+  if (response.status === 422) return "not_updatable";
+  if (response.status === 403) return "forbidden";
+  return `error_${response.status}`;
+}
+
