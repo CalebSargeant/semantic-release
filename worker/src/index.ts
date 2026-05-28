@@ -45,6 +45,9 @@ export type BrokerEnv = Env & {
   // Trusted-author gate for automatic triage: untrusted PRs are skipped.
   TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
   TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
+  // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
+  // unset disables the endpoint.
+  PROCESS_TRIGGER_SECRET?: string;
 };
 
 interface TokenRequest {
@@ -124,6 +127,8 @@ export async function handleRequest(
         return await handleCopilotQuotaRequest(request, env, dependencies, url);
       case "/webhook":
         return await handleWebhookRequest(request, env, dependencies);
+      case "/process":
+        return await handleProcessRequest(request, env, dependencies);
       case "/copilot-oauth/connect":
         return await handleOAuthConnect(env, dependencies, url);
       case "/copilot-oauth/callback":
@@ -1839,6 +1844,173 @@ async function githubGraphql(
     throw new HttpError(502, "github_graphql_failed");
   }
   return body.data;
+}
+
+// ─── POST /process ───────────────────────────────────────────────────────────
+// Manual re-walk of a pull request's Copilot review comments — the surface the
+// Lava Pro dashboard calls. Bearer-gated (PROCESS_TRIGGER_SECRET). Reuses the
+// same classify/dismiss logic as the webhook triage path, but processes every
+// Copilot comment on the PR rather than reacting to a single delivery.
+
+interface ProcessTarget {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+}
+
+interface ReviewComment {
+  id: number;
+  body: string;
+  path?: string;
+  diffHunk?: string;
+  isCopilot: boolean;
+}
+
+async function handleProcessRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonError(405, "method_not_allowed");
+  }
+
+  const secret = env.PROCESS_TRIGGER_SECRET;
+  if (!secret || secret.trim() === "") {
+    return jsonError(503, "process_disabled");
+  }
+  const authorization = request.headers.get("authorization") ?? "";
+  const provided = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  if (!constantTimeEquals(provided, secret)) {
+    return jsonError(401, "unauthorized");
+  }
+
+  const target = await readProcessTarget(request);
+
+  const config = resolveTriageConfig(env);
+  if (!config || !config.model) {
+    return json({ ok: true, triage: "disabled" }, 200);
+  }
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return jsonError(503, "app_unconfigured");
+  }
+
+  const token = await mintInstallationToken(
+    env,
+    dependencies,
+    target.owner,
+    target.repo
+  );
+  const comments = await listReviewComments(
+    dependencies.fetch,
+    token,
+    target.owner,
+    target.repo,
+    target.pullNumber
+  );
+
+  const counts = { fix: 0, dismiss: 0, skip: 0 };
+  const results: {
+    comment_id: number;
+    decision: TriageDecision;
+    dismissed?: boolean;
+  }[] = [];
+
+  for (const comment of comments) {
+    if (!comment.isCopilot) continue;
+    const decision = await classifyComment(
+      dependencies.fetch,
+      config,
+      comment.body,
+      { path: comment.path, diffHunk: comment.diffHunk }
+    );
+    counts[decision] += 1;
+    if (decision === "dismiss") {
+      const dismissed = await dismissReviewComment(
+        dependencies.fetch,
+        token,
+        target.owner,
+        target.repo,
+        target.pullNumber,
+        comment.id
+      );
+      results.push({ comment_id: comment.id, decision, dismissed });
+    } else {
+      results.push({ comment_id: comment.id, decision });
+    }
+  }
+
+  return json(
+    { ok: true, pull: target.pullNumber, processed: results.length, counts, results },
+    200
+  );
+}
+
+async function readProcessTarget(request: Request): Promise<ProcessTarget> {
+  let value: unknown;
+  try {
+    value = await request.json();
+  } catch {
+    throw new HttpError(400, "invalid_json");
+  }
+  if (!isRecord(value)) {
+    throw new HttpError(400, "invalid_request");
+  }
+
+  const prUrl = asString(value.pr_url);
+  if (prUrl) {
+    const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+    if (!match) {
+      throw new HttpError(400, "invalid_pr_url");
+    }
+    const owner = match[1];
+    const repo = match[2];
+    assertRepositoryParts(owner, repo);
+    return { owner, repo, pullNumber: Number(match[3]) };
+  }
+
+  const owner = asString(value.owner);
+  const repo = asString(value.repo);
+  const pullNumber = value.pull_number;
+  if (!owner || !repo || typeof pullNumber !== "number") {
+    throw new HttpError(400, "missing_required_fields");
+  }
+  assertRepositoryParts(owner, repo);
+  return { owner, repo, pullNumber };
+}
+
+async function listReviewComments(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<ReviewComment[]> {
+  const url =
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/` +
+    `${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=100`;
+  const response = await doFetch(url, { headers: githubHeaders(token) });
+  if (!response.ok) {
+    throw new HttpError(502, "github_pull_comments_failed");
+  }
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  const comments: ReviewComment[] = [];
+  for (const entry of body) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.id !== "number") continue;
+    const author = isRecord(entry.user) ? asString(entry.user.login) : undefined;
+    comments.push({
+      id: entry.id,
+      body: asString(entry.body) ?? "",
+      path: asString(entry.path),
+      diffHunk: asString(entry.diff_hunk),
+      isCopilot: !!author && COPILOT_LOGIN_PATTERN.test(author)
+    });
+  }
+  return comments;
 }
 
 async function webhookSignalForOwner(
