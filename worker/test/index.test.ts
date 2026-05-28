@@ -1254,3 +1254,123 @@ describe("Copilot comment triage", () => {
     expect(calls[0].url).toContain("/chat/completions");
   });
 });
+
+// ─── POST /process (manual PR re-walk) ───────────────────────────────────────
+
+function processRequest(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): Request {
+  return new Request("https://broker.example.com/process", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body)
+  });
+}
+
+const PR_URL = "https://github.com/octo-org/octo-repo/pull/7";
+
+describe("POST /process", () => {
+  it("is disabled (503) when PROCESS_TRIGGER_SECRET is unset", async () => {
+    const response = await handleRequest(processRequest({ pr_url: PR_URL }), env);
+    expect(response.status).toBe(503);
+    expect(await readJson(response)).toEqual({ error: "process_disabled" });
+  });
+
+  it("rejects a wrong bearer with 401", async () => {
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer nope" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(401);
+    expect(await readJson(response)).toEqual({ error: "unauthorized" });
+  });
+
+  it("returns 400 when neither pr_url nor owner/repo/pull_number is given", async () => {
+    const response = await handleRequest(
+      processRequest({}, { authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "missing_required_fields" });
+  });
+
+  it("reports triage disabled when no LLM key is configured", async () => {
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({ ok: true, triage: "disabled" });
+  });
+
+  it("walks the PR's Copilot comments, dismissing and skipping, ignoring humans", async () => {
+    const processEnv: BrokerEnv = {
+      ...env,
+      PROCESS_TRIGGER_SECRET: "trigger",
+      TRIAGE_LLM_API_KEY: "sk-test",
+      TRIAGE_LLM_PROVIDER: "anthropic"
+    };
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          },
+          { id: 222, user: { login: "a-human" }, body: "nit" },
+          {
+            id: 333,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "is this right?"
+          }
+        ]), // list review comments
+        anthropicReply("dismiss"), // classify #111
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql query
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }), // graphql mutation
+        anthropicReply("skip") // classify #333
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      processEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 2,
+      counts: { fix: 0, dismiss: 1, skip: 1 },
+      results: [
+        { comment_id: 111, decision: "dismiss", dismissed: true },
+        { comment_id: 333, decision: "skip" }
+      ]
+    });
+  });
+});
