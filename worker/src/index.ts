@@ -33,6 +33,9 @@ export type BrokerEnv = Env & {
   COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   COPILOT_WEBHOOK_REVIEW_GAP_SECONDS?: string;
+  // /copilot-oauth (App user-access-token flow)
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
   // /webhook pull_request_review_comment → triage Copilot review comments.
   // Bring-your-own-key: no API key ⇒ triage disabled (no free AI).
   TRIAGE_LLM_PROVIDER?: string; // anthropic (default) | openai | deepseek | openrouter (latter three = OpenAI-compatible)
@@ -123,6 +126,12 @@ export async function handleRequest(
         return await handleWebhookRequest(request, env, dependencies);
       case "/process":
         return await handleProcessRequest(request, env, dependencies);
+      case "/copilot-oauth/connect":
+        return await handleOAuthConnect(env, dependencies, url);
+      case "/copilot-oauth/callback":
+        return await handleOAuthCallback(env, dependencies, url);
+      case "/copilot-oauth/status":
+        return await handleOAuthStatus(env, url);
       default:
         return jsonError(404, "not_found");
     }
@@ -211,6 +220,7 @@ interface CopilotQuotaState {
   resets_at?: string;
   source:
     | "manual"
+    | "github-oauth-user-billing"
     | "github-billing-api"
     | "github-webhook"
     | "github-copilot-metrics"
@@ -289,13 +299,16 @@ async function handleCopilotQuotaGet(
     }
   }
 
-  // 3. User-level Billing API for the requester. GitHub tracks Copilot
-  // premium-request usage at the user account level (the broker App must
-  // be installed on the requester's personal account with Plan:read).
-  // This is the most direct signal for individual quota exhaustion.
+  // 3. OAuth-backed user billing for the requester. Most reliable
+  // detection path for individual quota exhaustion when the requester
+  // has authorized release-runner via /copilot-oauth/connect. Uses a
+  // user access token (not the App installation token) to query
+  // /users/{requester}/settings/billing/premium_request/usage, which
+  // requires the "Plan" account permission. No-op when the requester
+  // hasn't authorized — falls through to the next layer.
   let userBilling: CopilotQuotaState | null = null;
   if (requester) {
-    userBilling = await tryBillingApiLookup(
+    userBilling = await tryOAuthUserBillingLookup(
       env,
       dependencies,
       requester,
@@ -514,6 +527,13 @@ async function performBillingApiLookup(
     return null;
   }
 
+  // Extract fetch off `dependencies` into a local. Calling
+  // `dependencies.fetch(...)` is a method call with `this=dependencies`,
+  // which Cloudflare's native fetch rejects ("Illegal invocation"). The
+  // existing `findInstallationIdForOwner` path passes fetch as a plain
+  // argument and so avoids the bind; mirror that here.
+  const fetchFn: typeof fetch = dependencies.fetch;
+
   let appJwt: string;
   try {
     appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
@@ -522,7 +542,7 @@ async function performBillingApiLookup(
   }
 
   const installationId = await findInstallationIdForOwner(
-    dependencies.fetch,
+    fetchFn,
     appJwt,
     owner
   );
@@ -530,11 +550,12 @@ async function performBillingApiLookup(
     return null;
   }
 
-  // Permissions are configured on the App itself (Plan: read or
-  // Billing: read for orgs; user-level billing for user installations).
-  // We request whatever the App ships with — if it has billing perms,
-  // the token will carry them.
-  const tokenResponse = await dependencies.fetch(
+  // Permissions are configured on the App itself ("Plan" account /
+  // organization permissions for billing usage endpoints). The
+  // installation token carries whichever subset the installation
+  // has accepted — a stale installation that pre-dates a new App
+  // permission needs to be re-approved to surface it.
+  const tokenResponse = await fetchFn(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
@@ -549,15 +570,22 @@ async function performBillingApiLookup(
     return null;
   }
 
-  // Try the org endpoint first; fall back to user endpoint. The 404 from
-  // the wrong scope is harmless.
+  // GitHub exposes Copilot premium-request usage under a dedicated
+  // /premium_request/usage endpoint, distinct from the general
+  // /billing/usage SKU dump (which surfaces only Actions / Storage /
+  // Packages, not Copilot). Try both — premium_request first — and
+  // accept whichever returns a usable shape. 404 from the wrong scope
+  // is harmless; the loop just continues.
+  const enc = encodeURIComponent(owner);
   const endpoints = [
-    `https://api.github.com/orgs/${encodeURIComponent(owner)}/settings/billing/usage`,
-    `https://api.github.com/users/${encodeURIComponent(owner)}/settings/billing/usage`
+    `https://api.github.com/organizations/${enc}/settings/billing/premium_request/usage`,
+    `https://api.github.com/users/${enc}/settings/billing/premium_request/usage`,
+    `https://api.github.com/orgs/${enc}/settings/billing/usage`,
+    `https://api.github.com/users/${enc}/settings/billing/usage`
   ];
 
   for (const endpoint of endpoints) {
-    const usageResponse = await dependencies.fetch(endpoint, {
+    const usageResponse = await fetchFn(endpoint, {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
@@ -687,6 +715,499 @@ function nextUtcMonthBoundary(now: Date): Date {
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0)
   );
+}
+
+// ─── /copilot-oauth ──────────────────────────────────────────────────────────
+// OAuth user-access-token flow against the release-runner GitHub App. Each
+// contributor authorizes once; the worker stores a refresh token in KV
+// keyed by their github login. The /copilot-quota resolver mints fresh
+// user access tokens on demand and queries the user-scoped billing API —
+// the only way to get a real "Copilot premium-request quota exhausted"
+// signal for individual contributors, since installation tokens never
+// carry account-level "Plan" permissions.
+//
+// GitHub App user-access-token docs:
+//   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
+//
+// Endpoints:
+//   GET /copilot-oauth/connect[?return_to=URL]
+//     Initiates the OAuth dance. Generates a CSRF state, stashes it in
+//     KV with a 10 min TTL, then 302s to github.com/login/oauth/authorize.
+//
+//   GET /copilot-oauth/callback?code=…&state=…
+//     Receives GitHub's auth code. Validates state, exchanges code for
+//     access_token + refresh_token, fetches /user to learn the login,
+//     stores the refresh_token in KV. Returns an HTML success page.
+//
+//   GET /copilot-oauth/status?user=LOGIN
+//     Returns whether KV holds a non-expired refresh token for that user.
+//     No auth — connection state isn't sensitive (just a boolean).
+
+const OAUTH_STATE_TTL_SECONDS = 600;            // 10 minutes
+const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 180; // ~6 months
+const OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+const OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token";
+
+interface OAuthStateRecord {
+  return_to?: string;
+  created_at: string;
+}
+
+interface OAuthUserRecord {
+  refresh_token: string;
+  refresh_token_expires_at: string;
+  // Most recent access_token issued, plus its expiry. Cached to avoid
+  // refreshing on every PR check during a short window (access tokens
+  // expire in 8 hours). Not strictly required — we can always refresh
+  // — but a cheap optimization.
+  access_token?: string;
+  access_token_expires_at?: string;
+  connected_at: string;
+  last_used_at?: string;
+}
+
+function oauthStateKey(state: string): string {
+  return `copilot-oauth:state:${state}`;
+}
+
+function oauthUserKey(login: string): string {
+  return `copilot-oauth:user:${login.toLowerCase()}`;
+}
+
+function callbackUrl(env: BrokerEnv, requestUrl: URL): string {
+  // Build the callback URL from the request origin, so the worker
+  // works under workers.dev preview deploys without env tweaks.
+  return `${requestUrl.origin}/copilot-oauth/callback`;
+}
+
+function randomState(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function handleOAuthConnect(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  url: URL
+): Promise<Response> {
+  const clientId = env.GITHUB_APP_CLIENT_ID;
+  if (!clientId) {
+    return jsonError(503, "oauth_disabled");
+  }
+  if (!env.COPILOT_QUOTA_KV) {
+    return jsonError(503, "kv_not_configured");
+  }
+
+  const state = randomState();
+  const returnTo = url.searchParams.get("return_to") ?? "";
+  const stateRecord: OAuthStateRecord = {
+    return_to: returnTo || undefined,
+    created_at: dependencies.now().toISOString()
+  };
+  await env.COPILOT_QUOTA_KV.put(
+    oauthStateKey(state),
+    JSON.stringify(stateRecord),
+    { expirationTtl: OAUTH_STATE_TTL_SECONDS }
+  );
+
+  const redirectTo = new URL(OAUTH_AUTHORIZE_URL);
+  redirectTo.searchParams.set("client_id", clientId);
+  redirectTo.searchParams.set("redirect_uri", callbackUrl(env, url));
+  redirectTo.searchParams.set("state", state);
+  // No `scope` parameter — GitHub App user access tokens are scoped to
+  // the App's declared user permissions, not OAuth scopes.
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: redirectTo.toString(),
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+async function handleOAuthCallback(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  url: URL
+): Promise<Response> {
+  // Surface GitHub-reported errors (e.g. user clicked "Cancel") before
+  // any worker-config checks, so the user gets a useful page even if
+  // the worker is misconfigured.
+  const ghError = url.searchParams.get("error");
+  if (ghError) {
+    return oauthHtmlResponse(
+      "Authorization cancelled",
+      `GitHub reported: <code>${escapeHtml(ghError)}</code>. Close this tab and try again from the connect link.`,
+      400
+    );
+  }
+
+  const clientId = env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = env.GITHUB_APP_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return jsonError(503, "oauth_disabled");
+  }
+  if (!env.COPILOT_QUOTA_KV) {
+    return jsonError(503, "kv_not_configured");
+  }
+
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) {
+    return jsonError(400, "missing_code_or_state");
+  }
+
+  // Validate state (CSRF + replay protection)
+  const stateRaw = await env.COPILOT_QUOTA_KV.get(oauthStateKey(state));
+  if (!stateRaw) {
+    return oauthHtmlResponse(
+      "Authorization expired",
+      "The authorization link is missing or expired. Open <code>/copilot-oauth/connect</code> again to restart the flow.",
+      400
+    );
+  }
+  // One-shot — burn the state regardless of what happens next.
+  await env.COPILOT_QUOTA_KV.delete(oauthStateKey(state));
+
+  // Exchange code for tokens
+  const fetchFn: typeof fetch = dependencies.fetch;
+  const tokenResponse = await fetchFn(OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "release-runner-broker"
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: callbackUrl(env, url)
+    })
+  });
+  if (!tokenResponse.ok) {
+    const t = await tokenResponse.text().catch(() => "");
+    return oauthHtmlResponse(
+      "Token exchange failed",
+      `GitHub returned HTTP ${tokenResponse.status}. Body: <code>${escapeHtml(t.slice(0, 200))}</code>`,
+      502
+    );
+  }
+  const tokenBody = (await tokenResponse.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+  if (tokenBody.error || !tokenBody.access_token || !tokenBody.refresh_token) {
+    const detail = tokenBody.error_description ?? tokenBody.error ?? "no token in response";
+    return oauthHtmlResponse(
+      "Token exchange failed",
+      `GitHub: <code>${escapeHtml(detail)}</code>. This usually means the App's client secret is wrong or the redirect URL doesn't match what's configured on the App.`,
+      502
+    );
+  }
+
+  // Learn the user's login from the access token
+  const userResponse = await fetchFn("https://api.github.com/user", {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${tokenBody.access_token}`,
+      "X-GitHub-Api-Version": GITHUB_API_VERSION,
+      "User-Agent": "release-runner-broker"
+    }
+  });
+  if (!userResponse.ok) {
+    const t = await userResponse.text().catch(() => "");
+    return oauthHtmlResponse(
+      "Couldn't identify the GitHub user",
+      `GitHub /user returned HTTP ${userResponse.status}. Body: <code>${escapeHtml(t.slice(0, 200))}</code>`,
+      502
+    );
+  }
+  const userBody = (await userResponse.json()) as { login?: string };
+  if (!userBody.login) {
+    return oauthHtmlResponse(
+      "Couldn't identify the GitHub user",
+      "GitHub /user response had no login.",
+      502
+    );
+  }
+  const login = userBody.login;
+  try {
+    assertOwnerName(login);
+  } catch {
+    return oauthHtmlResponse(
+      "Invalid GitHub login",
+      `GitHub returned an unusable login: <code>${escapeHtml(login)}</code>`,
+      400
+    );
+  }
+
+  const now = dependencies.now();
+  const accessTokenExpiresAt = new Date(
+    now.getTime() + (Number(tokenBody.expires_in) || 8 * 3600) * 1000
+  );
+  const refreshTokenExpiresAt = new Date(
+    now.getTime() + (Number(tokenBody.refresh_token_expires_in) || OAUTH_REFRESH_TOKEN_TTL_SECONDS) * 1000
+  );
+  const userRecord: OAuthUserRecord = {
+    refresh_token: tokenBody.refresh_token,
+    refresh_token_expires_at: refreshTokenExpiresAt.toISOString(),
+    access_token: tokenBody.access_token,
+    access_token_expires_at: accessTokenExpiresAt.toISOString(),
+    connected_at: now.toISOString()
+  };
+  const ttlSeconds = Math.max(
+    60,
+    Math.floor((refreshTokenExpiresAt.getTime() - now.getTime()) / 1000)
+  );
+  await env.COPILOT_QUOTA_KV.put(oauthUserKey(login), JSON.stringify(userRecord), {
+    expirationTtl: ttlSeconds
+  });
+
+  // Parse state record for optional return_to
+  let returnTo: string | undefined;
+  try {
+    const parsed = JSON.parse(stateRaw) as OAuthStateRecord;
+    if (parsed.return_to && /^https?:\/\//.test(parsed.return_to)) {
+      returnTo = parsed.return_to;
+    }
+  } catch {
+    // ignore
+  }
+
+  return oauthHtmlResponse(
+    "Connected ✓",
+    `Release Runner can now check your Copilot premium-request quota when you open pull requests. You're connected as <strong>${escapeHtml(login)}</strong>; the connection is good for ~6 months and auto-renews each time you push a PR. You can close this tab.` +
+      (returnTo ? `<p><a href="${escapeAttr(returnTo)}">Return to ${escapeHtml(returnTo)}</a></p>` : ""),
+    200
+  );
+}
+
+async function handleOAuthStatus(
+  env: BrokerEnv,
+  url: URL
+): Promise<Response> {
+  const user = url.searchParams.get("user");
+  if (!user) {
+    return jsonError(400, "missing_user");
+  }
+  try {
+    assertOwnerName(user);
+  } catch {
+    return jsonError(400, "invalid_user");
+  }
+  if (!env.COPILOT_QUOTA_KV) {
+    return jsonError(503, "kv_not_configured");
+  }
+  const raw = await env.COPILOT_QUOTA_KV.get(oauthUserKey(user));
+  if (!raw) {
+    return json({ connected: false, user }, 200);
+  }
+  try {
+    const parsed = JSON.parse(raw) as OAuthUserRecord;
+    return json(
+      {
+        connected: true,
+        user,
+        connected_at: parsed.connected_at,
+        refresh_token_expires_at: parsed.refresh_token_expires_at
+      },
+      200
+    );
+  } catch {
+    return json({ connected: false, user, parse_error: true }, 200);
+  }
+}
+
+// Mint a fresh user access token for `login` using the stored refresh
+// token. Rotates the refresh token (GitHub returns a new one each call)
+// and writes the updated record back to KV. Returns null when no
+// connection exists, the refresh fails, or the refresh token has
+// expired.
+async function getUserAccessToken(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  login: string,
+  now: Date
+): Promise<string | null> {
+  if (!env.COPILOT_QUOTA_KV) return null;
+  const clientId = env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = env.GITHUB_APP_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+
+  const raw = await env.COPILOT_QUOTA_KV.get(oauthUserKey(login));
+  if (!raw) return null;
+  let record: OAuthUserRecord;
+  try {
+    record = JSON.parse(raw) as OAuthUserRecord;
+  } catch {
+    return null;
+  }
+
+  // Reuse cached access_token if it's still good for >5 min
+  if (record.access_token && record.access_token_expires_at) {
+    const expiresAt = new Date(record.access_token_expires_at).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt - now.getTime() > 5 * 60 * 1000) {
+      return record.access_token;
+    }
+  }
+
+  // Check refresh token hasn't expired
+  const refreshExpires = new Date(record.refresh_token_expires_at).getTime();
+  if (!Number.isFinite(refreshExpires) || refreshExpires <= now.getTime()) {
+    return null;
+  }
+
+  // Refresh
+  const fetchFn: typeof fetch = dependencies.fetch;
+  const refreshResponse = await fetchFn(OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "release-runner-broker"
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: record.refresh_token
+    })
+  });
+  if (!refreshResponse.ok) return null;
+  const refreshBody = (await refreshResponse.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
+    error?: string;
+  };
+  if (refreshBody.error || !refreshBody.access_token || !refreshBody.refresh_token) {
+    return null;
+  }
+
+  const accessTokenExpiresAt = new Date(
+    now.getTime() + (Number(refreshBody.expires_in) || 8 * 3600) * 1000
+  );
+  const refreshTokenExpiresAt = new Date(
+    now.getTime() + (Number(refreshBody.refresh_token_expires_in) || OAUTH_REFRESH_TOKEN_TTL_SECONDS) * 1000
+  );
+  const updated: OAuthUserRecord = {
+    refresh_token: refreshBody.refresh_token,
+    refresh_token_expires_at: refreshTokenExpiresAt.toISOString(),
+    access_token: refreshBody.access_token,
+    access_token_expires_at: accessTokenExpiresAt.toISOString(),
+    connected_at: record.connected_at,
+    last_used_at: now.toISOString()
+  };
+  const ttlSeconds = Math.max(
+    60,
+    Math.floor((refreshTokenExpiresAt.getTime() - now.getTime()) / 1000)
+  );
+  await env.COPILOT_QUOTA_KV.put(oauthUserKey(login), JSON.stringify(updated), {
+    expirationTtl: ttlSeconds
+  });
+  return refreshBody.access_token;
+}
+
+// Query /users/{login}/settings/billing/premium_request/usage with a
+// fresh user access token. Returns a rate-limited verdict when the
+// requester is over Copilot premium-request quota, false when they
+// have quota remaining, or null when we can't tell (no connection,
+// API failure, unexpected shape).
+async function tryOAuthUserBillingLookup(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  login: string,
+  now: Date
+): Promise<CopilotQuotaState | null> {
+  const accessToken = await getUserAccessToken(env, dependencies, login, now);
+  if (!accessToken) return null;
+
+  const fetchFn: typeof fetch = dependencies.fetch;
+  // premium_request/usage is the dedicated Copilot endpoint. Fall back
+  // to the general usage endpoint if it 404s (older accounts may not
+  // have the new endpoint enabled).
+  const endpoints = [
+    `https://api.github.com/users/${encodeURIComponent(login)}/settings/billing/premium_request/usage`,
+    `https://api.github.com/users/${encodeURIComponent(login)}/settings/billing/usage`
+  ];
+  for (const endpoint of endpoints) {
+    const response = await fetchFn(endpoint, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${accessToken}`,
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        "User-Agent": "release-runner-broker"
+      }
+    });
+    if (response.status === 404) continue;
+    if (!response.ok) continue;
+    const body = (await response.json()) as unknown;
+    const verdict = interpretBillingUsage(body, now);
+    if (verdict) {
+      return {
+        ...verdict,
+        source: "github-oauth-user-billing"
+      };
+    }
+  }
+  return null;
+}
+
+// ─── /copilot-oauth HTML helpers ─────────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(s: string): string {
+  return escapeHtml(s);
+}
+
+function oauthHtmlResponse(
+  title: string,
+  body: string,
+  status: number
+): Response {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtml(title)} — Release Runner</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 540px; margin: 4rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    code { background: rgba(127,127,127,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <p>${body}</p>
+</body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
 }
 
 // ─── /webhook ────────────────────────────────────────────────────────────────
@@ -1102,7 +1623,9 @@ async function callOpenAiCompatible(
   system: string,
   user: string
 ): Promise<string> {
-  const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  let base = config.baseUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
+  const url = `${base}/chat/completions`;
   const response = await doFetch(url, {
     method: "POST",
     headers: {
@@ -1578,6 +2101,11 @@ async function tryMetricsApiLookup(
   const privateKey = env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) return null;
 
+  // See performBillingApiLookup — calling `dependencies.fetch(...)`
+  // directly binds `this=dependencies` and Cloudflare's native fetch
+  // rejects with "Illegal invocation". Extract to a local first.
+  const fetchFn: typeof fetch = dependencies.fetch;
+
   let appJwt: string;
   try {
     appJwt = await dependencies.createGitHubAppJwt(appId, privateKey, now);
@@ -1586,13 +2114,13 @@ async function tryMetricsApiLookup(
   }
 
   const installationId = await findInstallationIdForOwner(
-    dependencies.fetch,
+    fetchFn,
     appJwt,
     owner
   );
   if (installationId === null) return null;
 
-  const tokenResponse = await dependencies.fetch(
+  const tokenResponse = await fetchFn(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
@@ -1609,7 +2137,7 @@ async function tryMetricsApiLookup(
   ];
 
   for (const endpoint of endpoints) {
-    const response = await dependencies.fetch(endpoint, {
+    const response = await fetchFn(endpoint, {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
