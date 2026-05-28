@@ -1053,3 +1053,165 @@ describe("scheduled cron refresh", () => {
     expect(cached.rate_limited).toBe(true);
   });
 });
+
+// ─── auto-update branches (push webhook) ─────────────────────────────────────
+
+function pushRequest(body: Record<string, unknown>, sig: string): Request {
+  return new Request("https://broker.example.com/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "push",
+      "x-hub-signature-256": sig
+    },
+    body: JSON.stringify(body)
+  });
+}
+
+const pushEnv: BrokerEnv = {
+  ...env,
+  GITHUB_WEBHOOK_SECRET: "shh",
+  AUTO_UPDATE_BRANCHES: "true"
+};
+
+const pushPayload = {
+  ref: "refs/heads/main",
+  repository: { name: "octo-repo", owner: { login: "octo-org" } }
+};
+
+describe("auto-update branches (push webhook)", () => {
+  it("does nothing when AUTO_UPDATE_BRANCHES is unset", async () => {
+    const body = JSON.stringify(pushPayload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not call GitHub when disabled");
+    };
+    const response = await handleRequest(
+      pushRequest(pushPayload, sig),
+      { ...env, GITHUB_WEBHOOK_SECRET: "shh" },
+      injected
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      auto_update: "disabled"
+    });
+  });
+
+  it("ignores tag pushes", async () => {
+    const payload = { ...pushPayload, ref: "refs/tags/v1.2.3" };
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not call GitHub for tags");
+    };
+    const response = await handleRequest(
+      pushRequest(payload, sig),
+      pushEnv,
+      injected
+    );
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      ignored_ref: "refs/tags/v1.2.3"
+    });
+  });
+
+  it("ignores branch deletions", async () => {
+    const payload = { ...pushPayload, deleted: true };
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not call GitHub on delete");
+    };
+    const response = await handleRequest(
+      pushRequest(payload, sig),
+      pushEnv,
+      injected
+    );
+    expect(await readJson(response)).toEqual({ ok: true, branch_deleted: true });
+  });
+
+  it("updates every open PR targeting the pushed branch", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([{ number: 1 }, { number: 2 }]), // open PRs
+        new Response("{}", { status: 202 }), // update PR #1
+        new Response("{}", { status: 202 }) // update PR #2
+      ]
+    });
+    const body = JSON.stringify(pushPayload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      pushRequest(pushPayload, sig),
+      pushEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      branch: "main",
+      updated: [1, 2],
+      skipped: []
+    });
+
+    // PR list query targets the pushed base branch.
+    expect(calls[2].url).toContain("state=open");
+    expect(calls[2].url).toContain("base=main");
+    // update-branch PUT per PR.
+    expect(calls[3].method).toBe("PUT");
+    expect(calls[3].url).toContain("/pulls/1/update-branch");
+    expect(calls[4].url).toContain("/pulls/2/update-branch");
+  });
+
+  it("records PRs that can't be fast-forwarded as skipped", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([{ number: 5 }]),
+        new Response('{"message":"merge conflict"}', { status: 422 })
+      ]
+    });
+    const body = JSON.stringify(pushPayload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      pushRequest(pushPayload, sig),
+      pushEnv,
+      injected
+    );
+
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      branch: "main",
+      updated: [],
+      skipped: [{ number: 5, reason: "not_updatable" }]
+    });
+  });
+
+  it("acknowledges (200) with an error code when the app is not installed", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [new Response("{}", { status: 404 })]
+    });
+    const body = JSON.stringify(pushPayload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      pushRequest(pushPayload, sig),
+      pushEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      branch: "main",
+      error: "app_not_installed"
+    });
+  });
+});
