@@ -49,8 +49,12 @@ export type BrokerEnv = Env & {
   TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
   TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
   // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
-  // unset disables the endpoint.
+  // unset disables the endpoint. Also gates /dispatch and /sign.
   PROCESS_TRIGGER_SECRET?: string;
+  // POST /dispatch enqueues an autonomous code-writing task and POSTs it to
+  // DISPATCH_TRIGGER_URL to start a Claude Code Web session (a Routines
+  // webhook). Unset ⇒ the task is queued only (no session started).
+  DISPATCH_TRIGGER_URL?: string;
   // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
   AUTO_UPDATE_BRANCHES?: string;
 };
@@ -134,6 +138,10 @@ export async function handleRequest(
         return await handleWebhookRequest(request, env, dependencies);
       case "/process":
         return await handleProcessRequest(request, env, dependencies);
+      case "/dispatch":
+        return await handleDispatchRequest(request, env, dependencies);
+      case "/sign":
+        return await handleSignRequest(request, env, dependencies);
       case "/releases":
         return await handleReleasesRequest(request, env, dependencies);
       case "/oauth/connect":
@@ -1598,12 +1606,23 @@ async function handleReviewCommentEvent(
       return json({ ok: true, decision, dismissed }, 200);
     }
 
-    // "fix" is recognised but deferred until the signing/dispatch path exists;
-    // "skip" is a no-op.
-    return json(
-      { ok: true, decision, action: decision === "fix" ? "deferred" : "none" },
-      200
-    );
+    // "skip" is a no-op; "fix" enqueues an autonomous dispatch (and starts a
+    // Claude Code Web session when DISPATCH_TRIGGER_URL is configured).
+    if (decision === "fix") {
+      const dispatched = await enqueueDispatch(env, dependencies, {
+        repo: `${repo.owner}/${repo.repo}`,
+        pr: prNumber,
+        instruction:
+          `Address this Copilot review comment on ` +
+          `${repo.owner}/${repo.repo}#${prNumber}` +
+          (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
+          `: ${body}`,
+        user: prAuthor,
+        source: "triage"
+      });
+      return json({ ok: true, decision, action: "dispatched", ...dispatched }, 200);
+    }
+    return json({ ok: true, decision, action: "none" }, 200);
   } catch (error) {
     const code = error instanceof HttpError ? error.code : "triage_failed";
     return json({ ok: true, error: code }, 200);
@@ -2983,5 +3002,248 @@ async function getLatestRelease(
     draft: body.draft === true,
     prerelease: body.prerelease === true
   };
+}
+
+// ─── /dispatch + /sign ───────────────────────────────────────────────────────
+// /dispatch enqueues an autonomous code-writing task (issue→PR, a non-trivial
+// triage "fix", a Tier-2 conflict) and POSTs it to DISPATCH_TRIGGER_URL to
+// start a Claude Code Web session. /sign turns a set of file changes into a
+// GitHub-signed, user-attributed commit via the user's OAuth token (GraphQL
+// createCommitOnBranch) — the "broker re-signs" primitive that keeps signing
+// authority in the worker and the signing credential out of the Web session.
+// Both Bearer-gated on PROCESS_TRIGGER_SECRET.
+
+const DISPATCH_TASK_TTL_SECONDS = 24 * 60 * 60;
+
+interface DispatchTask {
+  repo: string;
+  instruction: string;
+  issue?: number;
+  pr?: number;
+  user?: string;
+  source?: string;
+}
+
+function dispatchKey(id: string): string {
+  return `dispatch:task:${id}`;
+}
+
+function bearerOk(request: Request, secret: string): boolean {
+  const auth = request.headers.get("authorization") ?? "";
+  const provided = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+  return constantTimeEquals(provided, secret);
+}
+
+async function enqueueDispatch(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  task: DispatchTask
+): Promise<{ dispatch_id: string; status: string }> {
+  const id = crypto.randomUUID();
+  const record = {
+    id,
+    ...task,
+    status: "queued",
+    created_at: dependencies.now().toISOString()
+  };
+
+  if (env.COPILOT_QUOTA_KV) {
+    await env.COPILOT_QUOTA_KV.put(dispatchKey(id), JSON.stringify(record), {
+      expirationTtl: DISPATCH_TASK_TTL_SECONDS
+    });
+  }
+
+  const triggerUrl = env.DISPATCH_TRIGGER_URL;
+  if (!triggerUrl) {
+    return {
+      dispatch_id: id,
+      status: env.COPILOT_QUOTA_KV ? "queued_no_trigger" : "queued_no_kv"
+    };
+  }
+
+  try {
+    const resp = await dependencies.fetch(triggerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(record)
+    });
+    return {
+      dispatch_id: id,
+      status: resp.ok ? "triggered" : `trigger_error_${resp.status}`
+    };
+  } catch {
+    return { dispatch_id: id, status: "trigger_failed" };
+  }
+}
+
+async function handleDispatchRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+  const secret = env.PROCESS_TRIGGER_SECRET;
+  if (!secret || secret.trim() === "") return jsonError(503, "dispatch_disabled");
+  if (!bearerOk(request, secret)) return jsonError(401, "unauthorized");
+
+  let value: unknown;
+  try {
+    value = await request.json();
+  } catch {
+    return jsonError(400, "invalid_json");
+  }
+  if (!isRecord(value)) return jsonError(400, "invalid_request");
+
+  const repo = asString(value.repo);
+  const instruction = asString(value.instruction);
+  if (!repo || !instruction) return jsonError(400, "missing_required_fields");
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) return jsonError(400, "invalid_repo");
+  try {
+    assertRepositoryParts(owner, name);
+  } catch {
+    return jsonError(400, "invalid_repo");
+  }
+
+  const result = await enqueueDispatch(env, dependencies, {
+    repo,
+    instruction,
+    issue: typeof value.issue === "number" ? value.issue : undefined,
+    pr: typeof value.pr === "number" ? value.pr : undefined,
+    user: asString(value.user),
+    source: asString(value.source) ?? "api"
+  });
+  return json({ ok: true, ...result }, 202);
+}
+
+async function handleSignRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+  const secret = env.PROCESS_TRIGGER_SECRET;
+  if (!secret || secret.trim() === "") return jsonError(503, "sign_disabled");
+  if (!bearerOk(request, secret)) return jsonError(401, "unauthorized");
+
+  let value: unknown;
+  try {
+    value = await request.json();
+  } catch {
+    return jsonError(400, "invalid_json");
+  }
+  if (!isRecord(value)) return jsonError(400, "invalid_request");
+
+  const user = asString(value.user);
+  const repo = asString(value.repo);
+  const branch = asString(value.branch);
+  const expectedHeadOid = asString(value.expected_head_oid);
+  const message = isRecord(value.message) ? value.message : null;
+  const headline = message ? asString(message.headline) : undefined;
+  if (!user || !repo || !branch || !expectedHeadOid || !headline) {
+    return jsonError(400, "missing_required_fields");
+  }
+  const additions = normalizeFileAdditions(value.additions);
+  const deletions = normalizeFileDeletions(value.deletions);
+  if (additions.length === 0 && deletions.length === 0) {
+    return jsonError(400, "no_file_changes");
+  }
+
+  // The user's OAuth token makes GitHub sign the commit (web-flow GPG key) and
+  // attribute it to them. null ⇒ they haven't authorised (or lack the perms).
+  const token = await getUserAccessToken(env, dependencies, user, dependencies.now());
+  if (!token) return jsonError(409, "user_not_connected");
+
+  try {
+    const commit = await createSignedCommitOnBranch(dependencies.fetch, token, {
+      repoNameWithOwner: repo,
+      branchName: branch,
+      expectedHeadOid,
+      headline,
+      body: message ? asString(message.body) : undefined,
+      additions,
+      deletions
+    });
+    return json({ ok: true, commit }, 200);
+  } catch (error) {
+    if (error instanceof HttpError) return jsonError(error.status, error.code);
+    return jsonError(502, "sign_failed");
+  }
+}
+
+function normalizeFileAdditions(
+  value: unknown
+): { path: string; contents: string }[] {
+  if (!Array.isArray(value)) return [];
+  const out: { path: string; contents: string }[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const path = asString(entry.path);
+    const contents = asString(entry.contents); // base64
+    if (path && typeof contents === "string") out.push({ path, contents });
+  }
+  return out;
+}
+
+function normalizeFileDeletions(value: unknown): { path: string }[] {
+  if (!Array.isArray(value)) return [];
+  const out: { path: string }[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const path = asString(entry.path);
+    if (path) out.push({ path });
+  }
+  return out;
+}
+
+async function createSignedCommitOnBranch(
+  doFetch: typeof fetch,
+  userToken: string,
+  input: {
+    repoNameWithOwner: string;
+    branchName: string;
+    expectedHeadOid: string;
+    headline: string;
+    body?: string;
+    additions: { path: string; contents: string }[];
+    deletions: { path: string }[];
+  }
+): Promise<{ oid: string; url: string | null }> {
+  const mutation =
+    "mutation($input: CreateCommitOnBranchInput!) {" +
+    "createCommitOnBranch(input: $input) { commit { oid url } } }";
+  const variables = {
+    input: {
+      branch: {
+        repositoryNameWithOwner: input.repoNameWithOwner,
+        branchName: input.branchName
+      },
+      expectedHeadOid: input.expectedHeadOid,
+      message: { headline: input.headline, body: input.body ?? "" },
+      fileChanges: { additions: input.additions, deletions: input.deletions }
+    }
+  };
+  const response = await doFetch(GITHUB_GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${userToken}`,
+      "content-type": "application/json",
+      "user-agent": "calebsargeant-diatreme"
+    },
+    body: JSON.stringify({ query: mutation, variables })
+  });
+  if (!response.ok) throw new HttpError(502, "github_graphql_failed");
+  const out = await response.json();
+  if (!isRecord(out)) throw new HttpError(502, "github_graphql_failed");
+  if (Array.isArray(out.errors) && out.errors.length > 0) {
+    throw new HttpError(422, "createcommit_rejected");
+  }
+  const data = isRecord(out.data) ? out.data : null;
+  const ccob =
+    data && isRecord(data.createCommitOnBranch) ? data.createCommitOnBranch : null;
+  const commit = ccob && isRecord(ccob.commit) ? ccob.commit : null;
+  const oid = commit ? asString(commit.oid) : undefined;
+  if (!oid) throw new HttpError(502, "createcommit_no_oid");
+  return { oid, url: (commit && asString(commit.url)) ?? null };
 }
 
