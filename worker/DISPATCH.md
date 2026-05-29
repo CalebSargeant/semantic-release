@@ -47,25 +47,41 @@ a repository, an optional issue/PR number, an instruction, and a Diatreme
 dispatch id.
 
 1. Work in the repository named in the brief.
-2. Create a branch named diatreme/dispatch-<first 8 chars of the dispatch id>.
-3. Implement the instruction. Keep the change focused; follow the repo's
-   CLAUDE.md and conventions; run the repo's tests if it has them.
-4. Open a pull request against the default branch. In the PR body include a
-   short summary, the line "Diatreme dispatch: <dispatch id>", and a link to
-   this Claude Code session.
-5. If the task is ambiguous or can't be completed safely, open a DRAFT PR (or a
+2. Create branch  diatreme/dispatch-<first 8 chars of the dispatch id>  from the
+   default branch and push it immediately, empty, at the base:
+       git push origin HEAD
+3. Implement the instruction in the working tree — but DO NOT run `git commit`.
+   Keep the change focused; follow the repo's CLAUDE.md; run its tests if any.
+4. Create the commit THROUGH Diatreme so GitHub signs it and attributes it to
+   the user (not the session). Download and run the signer:
+       curl -fsSL https://raw.githubusercontent.com/magmamoose/diatreme/main/scripts/diatreme-sign.py -o /tmp/diatreme-sign.py
+       python3 /tmp/diatreme-sign.py --repo <owner/name> --branch <branch> --message "<conventional-commit headline>"
+5. Open a pull request against the default branch (the branch now carries your
+   signed commit). In the PR body include a short summary, the line
+   "Diatreme dispatch: <dispatch id>", and a link to this Claude Code session.
+6. If the task is ambiguous or can't be completed safely, open a DRAFT PR (or a
    comment) explaining what's blocked — do not guess.
 
 Never modify CI secrets or workflow permissions, and never force-push a shared
 branch.
 ```
 
-## Signed, attributed commits (optional layer)
+## Signed, attributed commits (the default)
 
-Sessions run with no secrets store, so the signing credential must not live in
-the session. For GitHub-**Verified**, you-attributed commits, the session (or a
-follow-up step) POSTs its file changes to the worker's `POST /sign`, which calls
-`createCommitOnBranch` with your stored OAuth user token — GitHub then signs the
-commit and attributes it to you. This requires the GitHub App to grant
-**Contents: write as a user permission** (a re-authorisation). Until that's
-wired, dispatched PRs carry the session's own commits.
+Step 4 above creates the commit via `scripts/diatreme-sign.py`, which POSTs the
+working-tree changes to the worker's `POST /sign` → `createCommitOnBranch` with
+your stored OAuth token, so GitHub signs the commit and attributes it to **you**
+("Verified"). The signing credential never enters the (secret-less) session.
+
+Set these on the **routine's environment** (env vars). Note they are *not* the
+signing key — that stays in the worker; the session only needs the worker URL,
+the trigger bearer, and the login to attribute to:
+
+    DIATREME_BASE_URL    https://diatreme.magmamoose.com
+    DIATREME_SIGN_TOKEN  <the worker's PROCESS_TRIGGER_SECRET>
+    DIATREME_USER        <your GitHub login>
+
+**Prereq:** the Diatreme App must grant **Contents: write as a *user*
+permission** and you must have authorised it via `/oauth/connect` — that's what
+lets `createCommitOnBranch` write as you. Without it, `/sign` returns
+`409 user_not_connected` and the session should fall back to a draft PR.
