@@ -1,6 +1,6 @@
-name: Release Runner (with concurrency)
+name: Lava Flow (with concurrency)
 
-# Reusable workflow wrapper around magmamoose/release-runner.
+# Reusable workflow wrapper around magmamoose/lava.
 #
 # Why this exists alongside the composite action:
 #   The action is a composite action — it runs *inside* a job that the
@@ -22,7 +22,7 @@ name: Release Runner (with concurrency)
 #
 #   jobs:
 #     release:
-#       uses: magmamoose/release-runner/.github/workflows/release-runner.yaml@v1
+#       uses: magmamoose/lava/.github/workflows/lava-flow.yaml@v1
 #       permissions:
 #         contents: read
 #         id-token: write
@@ -35,7 +35,7 @@ name: Release Runner (with concurrency)
 #       secrets:
 #         app-private-key: ${{ secrets.SEMANTIC_RELEASE_APP_PRIVATE_KEY }}
 #
-# Direct action usage (`uses: magmamoose/release-runner@v1`) still
+# Direct action usage (`uses: magmamoose/lava@v1`) still
 # works and is unchanged — pick this wrapper when you want the lock
 # without thinking about it, pick the action when you have a more
 # unusual setup.
@@ -48,7 +48,7 @@ on:
       concurrency-group:
         description: |
           Concurrency group key. Defaults to
-          `release-runner-${target-branch}` where target-branch comes
+          `lava-flow-${target-branch}` where target-branch comes
           from `pull_request.base.ref` (promotion-PR merges) or
           `github.ref_name` (push / workflow_dispatch). Override only if
           you need a more or less aggressive grouping.
@@ -75,10 +75,10 @@ on:
         default: 'public-app'
       token-broker-url:
         type: string
-        default: 'https://release-runner.sargeant.workers.dev'
+        default: 'https://lava.magmamoose.com'
       oidc-audience:
         type: string
-        default: 'release-runner'
+        default: 'lava-flow'
       versioning-tool:
         type: string
         default: 'semantic-release-python'
@@ -162,7 +162,7 @@ on:
         default: 'commit-status'
       copilot-review-check-name:
         type: string
-        default: 'Release Runner / Require Copilot Review'
+        default: 'Lava Flow / Require Copilot Review'
       admin-required-from:
         type: string
         default: '@last'
@@ -255,7 +255,7 @@ on:
 # THE LOCK
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# `release-runner-<target-branch>` groups every run that targets the same
+# `lava-flow-<target-branch>` groups every run that targets the same
 # branch — push, workflow_dispatch, and pull_request:closed (promotion
 # PR merges) all resolve to the same key:
 #
@@ -267,7 +267,7 @@ on:
 # for the in-flight one to finish (tag, version-file push-back, Docker
 # promotion, promotion-PR creation) instead of being killed.
 concurrency:
-  group: ${{ inputs.concurrency-group != '' && inputs.concurrency-group || format('release-runner-{0}', github.event.pull_request.base.ref || github.ref_name) }}
+  group: ${{ inputs.concurrency-group != '' && inputs.concurrency-group || format('lava-flow-{0}', github.event.pull_request.base.ref || github.ref_name) }}
   cancel-in-progress: ${{ inputs.cancel-in-progress }}
 
 jobs:
@@ -287,7 +287,7 @@ jobs:
       resolved-environment: ${{ steps.run.outputs.resolved-environment }}
     steps:
       - id: run
-        uses: magmamoose/release-runner@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
+        uses: magmamoose/lava@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
         with:
           mode: ${{ inputs.mode }}
           auth-mode: ${{ inputs.auth-mode }}

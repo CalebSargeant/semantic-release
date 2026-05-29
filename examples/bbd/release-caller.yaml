@@ -11,7 +11,7 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         with:
           mode: release
           deployment-model: bbd

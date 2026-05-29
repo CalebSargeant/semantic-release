@@ -1,6 +1,6 @@
 name: TBD Release — Version & Promote
 
-# Thin wrapper around magmamoose/release-runner@v1 (mode: release).
+# Thin wrapper around magmamoose/lava@v1 (mode: release).
 # Prefer using the action directly for full control:
 #
 #   jobs:
@@ -11,7 +11,7 @@ name: TBD Release — Version & Promote
 #         packages: write
 #         id-token: write
 #       steps:
-#         - uses: magmamoose/release-runner@v1
+#         - uses: magmamoose/lava@v1
 #           with:
 #             mode: release
 #             deployment-model: tbd-pr
@@ -35,11 +35,11 @@ on:
       token-broker-url:
         required: false
         type: string
-        default: 'https://release-runner.sargeant.workers.dev'
+        default: 'https://lava.magmamoose.com'
       oidc-audience:
         required: false
         type: string
-        default: 'release-runner'
+        default: 'lava-flow'
 
       # ── Environment model ────────────────────────────────────────────────────
       environment:
@@ -194,7 +194,7 @@ jobs:
       prerelease-identifier: ${{ steps.tbd.outputs.prerelease-identifier }}
       resolved-environment: ${{ steps.tbd.outputs.resolved-environment }}
     steps:
-      - uses: magmamoose/release-runner@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
+      - uses: magmamoose/lava@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
         id: tbd
         with:
           mode:                        release

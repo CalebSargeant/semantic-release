@@ -1,11 +1,11 @@
-site_name: Release Runner
-site_description: Setup and reference documentation for calebsargeant/semantic-release@v1.
-repo_name: calebsargeant/semantic-release
-repo_url: https://github.com/calebsargeant/semantic-release
+site_name: Lava Flow
+site_description: Setup and reference documentation for magmamoose/lava@v1.
+repo_name: magmamoose/lava
+repo_url: https://github.com/magmamoose/lava
 theme:
   name: material
-  logo: release-runner-logo.png
-  favicon: release-runner-logo.png
+  logo: lava-flow-logo.png
+  favicon: lava-flow-logo.png
   features:
     - navigation.tabs
     - navigation.top

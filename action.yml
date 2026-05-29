@@ -1,4 +1,4 @@
-name: 'Release Runner'
+name: 'Lava Flow'
 description: 'Semantic release orchestration for TBD/BBD pipelines with Docker image promotion and promotion PR automation.'
 
 branding:
@@ -16,7 +16,7 @@ inputs:
       Pipeline mode. One of:
         ci                 Build Docker image and push pr-<N> to GHCR (run on pull_request events).
         release            (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true).
-        enable-auto-merge  Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Release Runner ones.
+        enable-auto-merge  Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Lava Flow ones.
     required: false
     default: 'release'
 
@@ -24,7 +24,7 @@ inputs:
   auth-mode:
     description: |
       Token source for git/release operations. One of:
-        public-app    (default) Use the Release Runner GitHub App installed on the repository or organization.
+        public-app    (default) Use the Lava Flow GitHub App installed on the repository or organization.
         auto          Use private-app when app-id/app-private-key are set, otherwise use github-token/GITHUB_TOKEN.
         github-token  Use github-token or the workflow GITHUB_TOKEN.
         private-app   Generate a token from app-id/app-private-key.
@@ -33,15 +33,15 @@ inputs:
 
   token-broker-url:
     description: |
-      Advanced override for the hosted Release Runner GitHub App auth service.
+      Advanced override for the hosted Lava Flow GitHub App auth service.
       Most repositories should not set this.
     required: false
-    default: 'https://release-runner.sargeant.workers.dev'
+    default: 'https://lava.magmamoose.com'
 
   oidc-audience:
     description: 'Advanced override for public-app authentication. Most repositories should not set this.'
     required: false
-    default: 'release-runner'
+    default: 'lava-flow'
 
   # ── Versioning tool ──────────────────────────────────────────────────────
   versioning-tool:
@@ -171,7 +171,7 @@ inputs:
   submodules:
     description: |
       Pass-through to actions/checkout's `submodules` input on
-      release-runner's internal checkout step.
+      lava-flow's internal checkout step.
 
       When set non-false in `auth-mode: private-app` or `auth-mode:
       auto` with App credentials, the App installation token is also
@@ -278,10 +278,10 @@ inputs:
     description: |
       Enforce GitHub Copilot PR Review as a required PR policy (mode: ci).
 
-      When true, Release Runner reads pull request reviews, detects a
+      When true, Lava Flow reads pull request reviews, detects a
       configured Copilot reviewer identity, verifies that the review covers
       the current PR head, and reports a stable required status named
-      `Release Runner / Require Copilot Review` by default.
+      `Lava Flow / Require Copilot Review` by default.
 
       This does not request Copilot review automatically. Configure GitHub's
       automatic Copilot review separately in repository or organization
@@ -317,7 +317,7 @@ inputs:
   copilot-review-fail-on-unknown-identity:
     description: |
       When true, fail closed unless a submitted review matches
-      `copilot-review-allowed-logins`. When false, Release Runner may accept
+      `copilot-review-allowed-logins`. When false, Lava Flow may accept
       a submitted reviewer login containing `copilot` as a compatibility
       fallback for environments with different bot names.
     required: false
@@ -365,7 +365,7 @@ inputs:
       Add this exact value to branch protection or rulesets when making the
       gate required.
     required: false
-    default: 'Release Runner / Require Copilot Review'
+    default: 'Lava Flow / Require Copilot Review'
 
   copilot-review-quota-check-url:
     description: |
@@ -401,7 +401,7 @@ inputs:
         - Repository: Pull requests: Write (to edit promotion PR bodies)
         - Organization or User: Projects: Read
 
-      With auth-mode: public-app, the default Release Runner App ships
+      With auth-mode: public-app, the default Lava Flow App ships
       with only the permissions needed for tagging and Releases. Issues,
       Pull requests, and Projects must be granted on the App settings
       AND re-accepted on each installation; otherwise the GraphQL probe
@@ -488,7 +488,7 @@ inputs:
         ''        → no guardrail
 
       The auth token must allow Repository: Administration: Read. With
-      auth-mode: public-app, grant the permission on the Release Runner App
+      auth-mode: public-app, grant the permission on the Lava Flow App
       and accept it on the installation.
     required: false
     default: '@last'
@@ -544,7 +544,7 @@ inputs:
       Explicit version to release/build. Accepts SemVer with optional `v`
       prefix, e.g. `3.20.0` or `v3.20.0-rc.1`.
 
-      When set, release-runner skips automatic version calculation and uses
+      When set, lava-flow skips automatic version calculation and uses
       this value for release tag/image versioning. The optional `v` prefix is
       stripped only for `${VERSION}` substitution in bake/build args.
 
@@ -565,7 +565,7 @@ inputs:
       File format is detected from the extension: `.yaml`/`.yml` files are
       processed with `yq`; all other files are processed with `jq`.
 
-      The commit uses the resolved release auth token (Release Runner App,
+      The commit uses the resolved release auth token (Lava Flow App,
       private app, or `github-token`), so it can bypass branch-protection
       rulesets when the App is in the bypass list. The commit message ends
       with `[skip ci]` so the push does not retrigger the release workflow.
@@ -604,7 +604,7 @@ inputs:
       the auto-opened promotion PR body when one exists.
 
       The auth token must allow editing release notes and PR bodies. With
-      auth-mode: public-app this is already covered by the Release Runner App.
+      auth-mode: public-app this is already covered by the Lava Flow App.
     required: false
     default: 'false'
 
@@ -1060,7 +1060,7 @@ runs:
                  --jq '.permission' 2>/dev/null || echo "")
         if [ -z "${PERM}" ]; then
           echo "::error::Could not check repo permission for ${ACTOR} on ${OWNER}/${REPO}."
-          echo "::error::The auth token needs Repository: Administration: Read. With auth-mode: public-app, grant that permission on the Release Runner App and accept it on the installation. To opt out of this guardrail, set admin-required-from: ''."
+          echo "::error::The auth token needs Repository: Administration: Read. With auth-mode: public-app, grant that permission on the Lava Flow App and accept it on the installation. To opt out of this guardrail, set admin-required-from: ''."
           exit 1
         fi
         if [ "${PERM}" != "admin" ]; then
@@ -1468,7 +1468,7 @@ runs:
     # only when a release was created.
     #
     # The push uses the resolved release auth token, so it bypasses branch
-    # protection rulesets when the Release Runner App (or your private app)
+    # protection rulesets when the Lava Flow App (or your private app)
     # is in the bypass list. The commit message ends with `[skip ci]` so
     # the push does not retrigger the release workflow.
 
@@ -1556,7 +1556,7 @@ runs:
         # between our fetch and our push. We rebase, push, and on
         # rejection re-fetch and retry up to MAX_ATTEMPTS times with
         # short backoff. The reusable workflow at
-        # .github/workflows/release-runner.yaml serialises runs at the
+        # .github/workflows/lava-flow.yaml serialises runs at the
         # workflow level via a `concurrency:` group; this loop closes
         # the small window the lock can't cover (e.g. concurrent commits
         # from automation outside the workflow group).

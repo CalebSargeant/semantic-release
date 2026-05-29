@@ -7,7 +7,7 @@ on:
 jobs:
   deploy-staging:
     name: Deploy to Staging
-    uses: calebsargeant/semantic-release/.github/workflows/tbd-deploy-cloud-run.yaml@main
+    uses: magmamoose/lava/.github/workflows/tbd-deploy-cloud-run.yaml@main
     environment: staging
     with:
       image_name: my-app
@@ -33,7 +33,7 @@ jobs:
   deploy-prod:
     name: Deploy to Production
     needs: deploy-staging
-    uses: calebsargeant/semantic-release/.github/workflows/tbd-deploy-cloud-run.yaml@main
+    uses: magmamoose/lava/.github/workflows/tbd-deploy-cloud-run.yaml@main
     environment: production
     with:
       image_name: my-app

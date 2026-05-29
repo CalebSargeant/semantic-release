@@ -7,12 +7,12 @@
 #   - At least one branch protection rule on the target branch with a
 #     required status check (GitHub refuses to engage auto-merge on
 #     unprotected branches)
-# Both are upstream GitHub prerequisites, not Release Runner ones.
+# Both are upstream GitHub prerequisites, not Lava Flow ones.
 #
 # Required env:
 #   GH_TOKEN     - auth token with `pull-requests: write` on the repo
 #   OWNER        - repository owner (e.g., MagmaMoose)
-#   REPO         - repository name (e.g., release-runner)
+#   REPO         - repository name (e.g., lava-flow)
 #   PR_NUMBER    - pull request number
 #
 # Optional env:

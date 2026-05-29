@@ -18,9 +18,9 @@ Template files live in `examples/config/` in the repository.
 
 ## 2. Choose Docker Or Version-Only
 
-If Release Runner should only create versions, tags, and GitHub Releases, do not set `image_name`.
+If Lava Flow should only create versions, tags, and GitHub Releases, do not set `image_name`.
 
-If Release Runner should build and promote container images, add:
+If Lava Flow should build and promote container images, add:
 
 - a Docker Bake file, usually `docker-bake.hcl`
 - a PR workflow using `mode: ci`
@@ -63,7 +63,7 @@ Add these inputs to **both** your CI workflow (Section 3) and your release
 workflow (Section 4), and store the credentials as repo or org secrets:
 
 ```yaml
-- uses: calebsargeant/semantic-release@v1
+- uses: magmamoose/lava@v1
   with:
     mode: release   # or ci
     image_name: my-app
@@ -85,13 +85,13 @@ defaults.
 
 ### Fetch git submodules
 
-Release Runner runs its own `actions/checkout` internally before any
+Lava Flow runs its own `actions/checkout` internally before any
 build step, so adding `actions/checkout` with `submodules: recursive`
-in the caller workflow doesn't help — release-runner's checkout
+in the caller workflow doesn't help — lava-flow's checkout
 overwrites it. Use the `submodules` input instead:
 
 ```yaml
-- uses: calebsargeant/semantic-release@v1
+- uses: magmamoose/lava@v1
   with:
     mode: release   # or ci
     image_name: my-app
@@ -133,7 +133,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         with:
           mode: ci
           image_name: my-app
@@ -158,7 +158,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         with:
           mode: ci
           image_name: my-app
@@ -168,7 +168,7 @@ jobs:
 
 ## 4. Optional: Require Copilot Review
 
-Release Runner can publish a merge gate that requires GitHub Copilot PR Review
+Lava Flow can publish a merge gate that requires GitHub Copilot PR Review
 to have reviewed the current PR head.
 
 ```yaml
@@ -188,14 +188,14 @@ jobs:
       pull-requests: read
       statuses: write
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         with:
           mode: ci
           enforce_branch_naming: 'false'
           require-copilot-review: 'true'
 ```
 
-Then add `Release Runner / Require Copilot Review` as a required status check
+Then add `Lava Flow / Require Copilot Review` as a required status check
 in branch protection or repository rulesets. Configure GitHub automatic
 Copilot review separately if you want Copilot to be requested automatically.
 
@@ -222,7 +222,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         id: release
         with:
           mode: release
@@ -265,7 +265,7 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         id: release
         with:
           mode: release
@@ -298,7 +298,7 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         id: release
         with:
           mode: release
@@ -313,7 +313,7 @@ Remove `packages: write` and `image_name` for a version-only flow.
 
 ## 6. Use Outputs In Later Jobs
 
-Later jobs can consume Release Runner outputs such as `tag`, `version`, and
+Later jobs can consume Lava Flow outputs such as `tag`, `version`, and
 `released`.
 
 ```yaml
@@ -328,7 +328,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       released: ${{ steps.release.outputs.released }}
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         id: release
         with:
           mode: release

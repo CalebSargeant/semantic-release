@@ -1,11 +1,11 @@
 # Concepts
 
-This page explains the ideas behind Release Runner. Use the README when you
+This page explains the ideas behind Lava Flow. Use the README when you
 only need a workflow snippet.
 
-## What Release Runner Does
+## What Lava Flow Does
 
-Release Runner is a composite GitHub Action that runs inside your workflow. In
+Lava Flow is a composite GitHub Action that runs inside your workflow. In
 release mode it:
 
 1. gets a token that can write release artifacts
@@ -20,7 +20,7 @@ In CI mode it only builds pull request Docker images tagged as `pr-<number>`.
 
 ## Version Creation
 
-Release Runner does not decide version numbers by parsing commits itself. It
+Lava Flow does not decide version numbers by parsing commits itself. It
 delegates that work to the selected versioning tool.
 
 | Tool | How versions are decided |
@@ -63,7 +63,7 @@ on:
 jobs:
   release:
     steps:
-      - uses: calebsargeant/semantic-release@v1
+      - uses: magmamoose/lava@v1
         with:
           force-bump: ${{ github.event.inputs.bump }}
 ```
@@ -75,7 +75,7 @@ increment=Major|Minor|Patch`). Ignored by `semantic-release-npm` and
 
 ## Release Models
 
-Release Runner supports two release models.
+Lava Flow supports two release models.
 
 ### Trunk-Based Development
 
@@ -153,7 +153,7 @@ prerelease-identifiers: '{}'
 
 Docker support is enabled by setting `image_name`.
 
-In CI mode, Release Runner builds your Docker Bake target or group and pushes
+In CI mode, Lava Flow builds your Docker Bake target or group and pushes
 images tagged as `pr-<number>`.
 
 In release mode, the semantic version becomes the image tag. For example:
@@ -179,7 +179,7 @@ Some apps need to know their own version at runtime — a .NET service
 that displays "v1.2.3" in its footer reads it from `appsettings.json`,
 a Node service from a generated `version.json`, a Helm chart from
 `Chart.yaml`'s `appVersion`. Set `version-file` (and optionally the
-path input) and Release Runner will:
+path input) and Lava Flow will:
 
 1. Inject the resolved version into the file at the given path.
 2. Commit with `[skip ci]`.
@@ -228,7 +228,7 @@ instead of just listing them it moves every linked Projects v2 item to
 production environment by default, widen with
 `github-projects-move-on-environments`.
 
-Both require token scopes that go beyond the Release Runner App's
+Both require token scopes that go beyond the Lava Flow App's
 defaults — see the input documentation in
 [Action reference](reference/action-inputs-outputs.md).
 
@@ -247,11 +247,11 @@ this action sees in the wild. Typical sources:
   `pull_request:closed` *and* `push` — both legitimate entry points for
   the same release event.
 
-Release Runner gives you two layers of defence:
+Lava Flow gives you two layers of defence:
 
 ### 1. The reusable workflow wrapper (the actual lock)
 
-A composite action like Release Runner runs *inside* a job that the
+A composite action like Lava Flow runs *inside* a job that the
 caller defines, so it can't declare workflow-level `concurrency:`
 itself. To get GitHub-enforced serialisation in a single line, call
 the bundled reusable workflow instead of the action:
@@ -259,7 +259,7 @@ the bundled reusable workflow instead of the action:
 ```yaml
 jobs:
   release:
-    uses: calebsargeant/semantic-release/.github/workflows/release-runner.yaml@v1
+    uses: magmamoose/lava/.github/workflows/lava-flow.yaml@v1
     permissions:
       contents: read
       id-token: write
@@ -276,7 +276,7 @@ The wrapper declares:
 
 ```yaml
 concurrency:
-  group: release-runner-${{ github.event.pull_request.base.ref || github.ref_name }}
+  group: lava-flow-${{ github.event.pull_request.base.ref || github.ref_name }}
   cancel-in-progress: false
 ```
 
@@ -284,9 +284,9 @@ Group key resolution:
 
 | Trigger | Resolves to |
 |---|---|
-| Push to `develop` | `release-runner-develop` |
-| `workflow_dispatch` on `develop` | `release-runner-develop` |
-| `pull_request:closed` targeting `main` | `release-runner-main` |
+| Push to `develop` | `lava-flow-develop` |
+| `workflow_dispatch` on `develop` | `lava-flow-develop` |
+| `pull_request:closed` targeting `main` | `lava-flow-main` |
 
 So a promotion-PR merge that fires both `pull_request:closed` *and*
 `push` ends up in the same group — the second event waits for the
@@ -325,7 +325,7 @@ Release mode needs a token because it may write Git tags, GitHub Releases,
 release commits, promotion PR branches, and GHCR images.
 
 Most repositories should use the default `auth-mode: public-app`, which uses
-the Release Runner GitHub App. Use `auth-mode: github-token` only when
+the Lava Flow GitHub App. Use `auth-mode: github-token` only when
 `GITHUB_TOKEN` is allowed to perform the required writes. Use
 `auth-mode: private-app` when your organization owns the GitHub App.
 
@@ -354,7 +354,7 @@ Production protection by default means an out-of-the-box install of this
 action does not let a non-admin force a production release, regardless of
 naming. To make this work, the auth token needs
 `Repository: Administration: Read`. With `auth-mode: public-app` (the
-default), grant that permission on the Release Runner App and accept it on
+default), grant that permission on the Lava Flow App and accept it on
 each consuming installation. If the auth token can't read the permission,
 the run fails loudly with a pointer to this section.
 
@@ -391,7 +391,7 @@ documents, and the version-decision logic relies on the same ordering.
 ## ClickUp Integration
 
 ClickUp's native GitHub integration runs the other direction: GitHub events
-flow into ClickUp tasks. Release Runner adds the missing reverse direction:
+flow into ClickUp tasks. Lava Flow adds the missing reverse direction:
 when `aggregate-clickup-tickets` is `true`, after a release is published the
 action scans the commits in the release range and the bodies of any PRs
 referenced from those commits for `https://app.clickup.com/t/...` URLs. Any

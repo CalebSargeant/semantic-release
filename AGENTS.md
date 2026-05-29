@@ -105,11 +105,11 @@ Run from repository root unless noted.
   - Outputs are rendered without internal implementation details (no `Value:` step references).
   - Update generated docs by running `python scripts/generate-action-reference.py` after changing action inputs/outputs.
 - `mkdocs.yml` + `requirements-docs.txt` define docs build used by the Pages workflow.
-- `docs/release-runner-logo.png` is used as the MkDocs theme logo/favicon and displayed in the docs index and README.
+- `docs/lava-flow-logo.png` is used as the MkDocs theme logo/favicon and displayed in the docs index and README.
 
 ### 6) README conventions
 - The README is scoped to the GitHub Marketplace action; detailed guides live in `docs/`.
-- The first line must be an H1 heading (`# Release Runner`) to satisfy the MD041 markdownlint rule.
+- The first line must be an H1 heading (`# Lava Flow`) to satisfy the MD041 markdownlint rule.
 - Badges (CI, Release, Docs, Marketplace, License) and logo follow the heading.
 - Docs links in the README must match actual MkDocs heading anchors (e.g., `#release-write-token`, `#branch-protection-checklist`, `#2-choose-docker-or-version-only`).
 - Inline links are preferred over standalone "see the docs" sentences.
