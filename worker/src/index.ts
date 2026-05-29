@@ -51,10 +51,15 @@ export type BrokerEnv = Env & {
   // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
   // unset disables the endpoint. Also gates /dispatch and /sign.
   PROCESS_TRIGGER_SECRET?: string;
-  // POST /dispatch enqueues an autonomous code-writing task and POSTs it to
-  // DISPATCH_TRIGGER_URL to start a Claude Code Web session (a Routines
-  // webhook). Unset ⇒ the task is queued only (no session started).
+  // POST /dispatch enqueues an autonomous code-writing task and fires a Claude
+  // Code on the Web Routine to do it. DISPATCH_TRIGGER_URL is the routine's
+  // fire URL (https://api.anthropic.com/v1/claude_code/routines/<id>/fire);
+  // DISPATCH_ROUTINE_TOKEN is its per-routine bearer token. With the token set
+  // we POST {text:<brief>} + the Anthropic beta headers and capture the
+  // returned session URL; without it we fall back to a plain webhook POST (for
+  // a self-hosted runner). Unset URL ⇒ the task is queued only.
   DISPATCH_TRIGGER_URL?: string;
+  DISPATCH_ROUTINE_TOKEN?: string;
   // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
   AUTO_UPDATE_BRANCHES?: string;
 };
@@ -3014,6 +3019,8 @@ async function getLatestRelease(
 // Both Bearer-gated on PROCESS_TRIGGER_SECRET.
 
 const DISPATCH_TASK_TTL_SECONDS = 24 * 60 * 60;
+// Beta header for the Claude Code "fire a routine" API (experimental).
+const ROUTINE_FIRE_BETA = "experimental-cc-routine-2026-04-01";
 
 interface DispatchTask {
   repo: string;
@@ -3034,24 +3041,34 @@ function bearerOk(request: Request, secret: string): boolean {
   return constantTimeEquals(provided, secret);
 }
 
+interface DispatchResult {
+  dispatch_id: string;
+  status: string;
+  session_id?: string;
+  session_url?: string;
+}
+
 async function enqueueDispatch(
   env: BrokerEnv,
   dependencies: Dependencies,
   task: DispatchTask
-): Promise<{ dispatch_id: string; status: string }> {
+): Promise<DispatchResult> {
   const id = crypto.randomUUID();
-  const record = {
+  const record: Record<string, unknown> = {
     id,
     ...task,
     status: "queued",
     created_at: dependencies.now().toISOString()
   };
 
-  if (env.COPILOT_QUOTA_KV) {
-    await env.COPILOT_QUOTA_KV.put(dispatchKey(id), JSON.stringify(record), {
-      expirationTtl: DISPATCH_TASK_TTL_SECONDS
-    });
-  }
+  const persist = async () => {
+    if (env.COPILOT_QUOTA_KV) {
+      await env.COPILOT_QUOTA_KV.put(dispatchKey(id), JSON.stringify(record), {
+        expirationTtl: DISPATCH_TASK_TTL_SECONDS
+      });
+    }
+  };
+  await persist();
 
   const triggerUrl = env.DISPATCH_TRIGGER_URL;
   if (!triggerUrl) {
@@ -3062,6 +3079,37 @@ async function enqueueDispatch(
   }
 
   try {
+    // With a routine token, fire the Claude Code on the Web routine: POST
+    // {text} + the Anthropic beta headers; the routine's saved prompt clones,
+    // implements, and opens the PR. We capture the returned session id/url for
+    // traceability (and to put in the eventual PR body).
+    if (env.DISPATCH_ROUTINE_TOKEN) {
+      const resp = await dependencies.fetch(triggerUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.DISPATCH_ROUTINE_TOKEN}`,
+          "anthropic-beta": ROUTINE_FIRE_BETA,
+          "anthropic-version": ANTHROPIC_VERSION,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ text: buildDispatchBrief(id, task) })
+      });
+      if (!resp.ok) {
+        record.status = `trigger_error_${resp.status}`;
+        await persist();
+        return { dispatch_id: id, status: `trigger_error_${resp.status}` };
+      }
+      const fired = await resp.json().catch(() => null);
+      const sessionId = isRecord(fired) ? asString(fired.claude_code_session_id) : undefined;
+      const sessionUrl = isRecord(fired) ? asString(fired.claude_code_session_url) : undefined;
+      record.status = "triggered";
+      if (sessionId) record.session_id = sessionId;
+      if (sessionUrl) record.session_url = sessionUrl;
+      await persist();
+      return { dispatch_id: id, status: "triggered", session_id: sessionId, session_url: sessionUrl };
+    }
+
+    // No routine token → plain webhook POST (self-hosted runner).
     const resp = await dependencies.fetch(triggerUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3074,6 +3122,22 @@ async function enqueueDispatch(
   } catch {
     return { dispatch_id: id, status: "trigger_failed" };
   }
+}
+
+// The freeform task brief handed to the routine (its saved prompt owns the
+// "clone → implement → open a signed PR" mechanics; this carries the specifics).
+function buildDispatchBrief(id: string, task: DispatchTask): string {
+  const lines = [
+    `Repository: ${task.repo}`,
+    task.issue !== undefined ? `GitHub issue: #${task.issue}` : "",
+    task.pr !== undefined ? `Pull request: #${task.pr}` : "",
+    "",
+    "Task:",
+    task.instruction,
+    "",
+    `Diatreme dispatch id: ${id}. Include it in the pull request body when done.`
+  ];
+  return lines.filter((line) => line !== "").join("\n");
 }
 
 async function handleDispatchRequest(
