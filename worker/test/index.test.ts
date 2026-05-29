@@ -1845,3 +1845,97 @@ describe("auto-update branches (push webhook)", () => {
     });
   });
 });
+
+// ─── GET /releases ───────────────────────────────────────────────────────────
+
+function releasesRequest(headers: Record<string, string> = {}): Request {
+  return new Request("https://broker.example.com/releases", {
+    method: "GET",
+    headers
+  });
+}
+
+describe("GET /releases", () => {
+  it("is disabled (503) when PROCESS_TRIGGER_SECRET is unset", async () => {
+    const response = await handleRequest(releasesRequest(), env);
+    expect(response.status).toBe(503);
+    expect(await readJson(response)).toEqual({ error: "releases_disabled" });
+  });
+
+  it("rejects a wrong bearer with 401", async () => {
+    const response = await handleRequest(
+      releasesRequest({ authorization: "Bearer nope" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" }
+    );
+    expect(response.status).toBe(401);
+    expect(await readJson(response)).toEqual({ error: "unauthorized" });
+  });
+
+  it("aggregates the latest release across the App's installed repos", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json([{ id: 42 }]), // GET /app/installations
+        Response.json({ token: "ghs_x", expires_at: "2026-05-29T13:00:00Z" }), // access_tokens
+        Response.json({
+          repositories: [
+            { full_name: "octo/repo-a" },
+            { full_name: "octo/repo-b" }
+          ]
+        }), // /installation/repositories
+        Response.json({
+          tag_name: "v1.2.0",
+          name: "1.2.0",
+          published_at: "2026-05-20T10:00:00Z",
+          html_url: "https://github.com/octo/repo-a/releases/tag/v1.2.0",
+          draft: false,
+          prerelease: false
+        }), // repo-a latest
+        new Response("{}", { status: 404 }) // repo-b: no releases
+      ]
+    });
+
+    const response = await handleRequest(
+      releasesRequest({ authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger" },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.cached).toBe(false);
+    expect(body.truncated).toBe(false);
+    const repos = body.repos as Array<Record<string, unknown>>;
+    expect(repos).toHaveLength(2);
+    // repo-a (has a release) sorts ahead of repo-b (none)
+    expect(repos[0].repo).toBe("octo/repo-a");
+    expect((repos[0].latest as Record<string, unknown>).tag).toBe("v1.2.0");
+    expect(repos[1].repo).toBe("octo/repo-b");
+    expect(repos[1].latest).toBeNull();
+  });
+
+  it("serves a warm KV cache without re-hitting GitHub", async () => {
+    const { kv, store } = makeKv();
+    store.set("releases:aggregate", {
+      value: JSON.stringify({
+        generated_at: "2026-05-29T12:00:00Z",
+        repos: [{ repo: "octo/cached", latest: null }],
+        truncated: false
+      })
+    });
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("should not hit GitHub when cache is warm");
+    };
+
+    const response = await handleRequest(
+      releasesRequest({ authorization: "Bearer trigger" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trigger", COPILOT_QUOTA_KV: kv },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.cached).toBe(true);
+    expect((body.repos as unknown[])[0]).toEqual({ repo: "octo/cached", latest: null });
+  });
+});

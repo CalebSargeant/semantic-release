@@ -134,6 +134,8 @@ export async function handleRequest(
         return await handleWebhookRequest(request, env, dependencies);
       case "/process":
         return await handleProcessRequest(request, env, dependencies);
+      case "/releases":
+        return await handleReleasesRequest(request, env, dependencies);
       case "/oauth/connect":
         return await handleOAuthConnect(env, dependencies, url);
       case "/oauth/callback":
@@ -2770,5 +2772,216 @@ async function updatePullRequestBranch(
   if (response.status === 422) return "not_updatable";
   if (response.status === 403) return "forbidden";
   return `error_${response.status}`;
+}
+
+// ─── GET /releases ───────────────────────────────────────────────────────────
+// Aggregates the latest release across every repo the Diatreme GitHub App is
+// installed on — the data behind the Diatreme Pro dashboard's release view.
+// Bearer-gated (PROCESS_TRIGGER_SECRET, same as /process). The App private key
+// never leaves the worker, so the dashboard reads releases THROUGH this
+// endpoint instead of holding the key itself. KV-cached so the dashboard's
+// poll stays cheap and we don't hammer the GitHub API (or the Workers
+// subrequest budget). Caps are surfaced via `truncated` — never silent.
+
+const RELEASES_CACHE_KEY = "releases:aggregate";
+const RELEASES_CACHE_TTL_SECONDS = 300;
+const RELEASES_MAX_INSTALLATIONS = 10;
+const RELEASES_MAX_REPOS = 40;
+
+interface RepoReleaseLatest {
+  tag: string;
+  name: string | null;
+  published_at: string | null;
+  url: string | null;
+  draft: boolean;
+  prerelease: boolean;
+}
+
+interface RepoRelease {
+  repo: string; // owner/name
+  latest: RepoReleaseLatest | null;
+}
+
+async function handleReleasesRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return jsonError(405, "method_not_allowed");
+  }
+  const secret = env.PROCESS_TRIGGER_SECRET;
+  if (!secret || secret.trim() === "") {
+    return jsonError(503, "releases_disabled");
+  }
+  const authorization = request.headers.get("authorization") ?? "";
+  const provided = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  if (!constantTimeEquals(provided, secret)) {
+    return jsonError(401, "unauthorized");
+  }
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return jsonError(503, "app_unconfigured");
+  }
+
+  // Serve from the warm cache when present.
+  if (env.COPILOT_QUOTA_KV) {
+    const cached = await env.COPILOT_QUOTA_KV.get(RELEASES_CACHE_KEY);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (isRecord(parsed)) {
+          return json({ ...parsed, cached: true }, 200);
+        }
+      } catch {
+        // fall through and refresh
+      }
+    }
+  }
+
+  const result = await aggregateReleases(env, dependencies);
+  if (env.COPILOT_QUOTA_KV) {
+    await env.COPILOT_QUOTA_KV.put(RELEASES_CACHE_KEY, JSON.stringify(result), {
+      expirationTtl: RELEASES_CACHE_TTL_SECONDS
+    });
+  }
+  return json({ ...result, cached: false }, 200);
+}
+
+async function aggregateReleases(
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<{ generated_at: string; repos: RepoRelease[]; truncated: boolean }> {
+  const appJwt = await dependencies.createGitHubAppJwt(
+    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    dependencies.now()
+  );
+
+  const installations = await listAppInstallations(dependencies.fetch, appJwt);
+  let truncated = installations.length > RELEASES_MAX_INSTALLATIONS;
+  const repos: RepoRelease[] = [];
+
+  for (const installationId of installations.slice(0, RELEASES_MAX_INSTALLATIONS)) {
+    const token = await createInstallationTokenAllRepos(
+      dependencies.fetch,
+      appJwt,
+      installationId
+    ).catch(() => null);
+    if (!token) continue;
+    const repoFullNames = await listInstallationRepos(
+      dependencies.fetch,
+      token
+    ).catch(() => [] as string[]);
+    for (const full of repoFullNames) {
+      if (repos.length >= RELEASES_MAX_REPOS) {
+        truncated = true;
+        break;
+      }
+      const [owner, name] = full.split("/");
+      if (!owner || !name) continue;
+      const latest = await getLatestRelease(
+        dependencies.fetch,
+        token,
+        owner,
+        name
+      ).catch(() => null);
+      repos.push({ repo: full, latest });
+    }
+    if (repos.length >= RELEASES_MAX_REPOS) {
+      truncated = true;
+      break;
+    }
+  }
+
+  // Newest release first; repos without a release sink to the bottom.
+  repos.sort((a, b) => {
+    const ta = a.latest?.published_at ? Date.parse(a.latest.published_at) : 0;
+    const tb = b.latest?.published_at ? Date.parse(b.latest.published_at) : 0;
+    return tb - ta;
+  });
+
+  return { generated_at: dependencies.now().toISOString(), repos, truncated };
+}
+
+async function listAppInstallations(
+  githubFetch: typeof fetch,
+  appJwt: string
+): Promise<number[]> {
+  const response = await githubFetch(
+    "https://api.github.com/app/installations?per_page=100",
+    { headers: githubHeaders(appJwt) }
+  );
+  if (!response.ok) throw new HttpError(502, "github_installations_failed");
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  return body
+    .filter(isRecord)
+    .map((i) => i.id)
+    .filter((id): id is number => typeof id === "number");
+}
+
+async function createInstallationTokenAllRepos(
+  githubFetch: typeof fetch,
+  appJwt: string,
+  installationId: number
+): Promise<string> {
+  const response = await githubFetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: { ...githubHeaders(appJwt), "content-type": "application/json" },
+      // Read-only, all repos in the installation. No `repositories` field.
+      body: JSON.stringify({ permissions: { contents: "read", metadata: "read" } })
+    }
+  );
+  if (!response.ok) throw new HttpError(502, "github_token_create_failed");
+  const body = await response.json();
+  if (!isRecord(body) || typeof body.token !== "string") {
+    throw new HttpError(502, "github_token_create_failed");
+  }
+  return body.token;
+}
+
+async function listInstallationRepos(
+  githubFetch: typeof fetch,
+  token: string
+): Promise<string[]> {
+  const response = await githubFetch(
+    "https://api.github.com/installation/repositories?per_page=100",
+    { headers: githubHeaders(token) }
+  );
+  if (!response.ok) throw new HttpError(502, "github_repos_failed");
+  const body = await response.json();
+  const list =
+    isRecord(body) && Array.isArray(body.repositories) ? body.repositories : [];
+  return list
+    .filter(isRecord)
+    .map((r) => asString(r.full_name))
+    .filter((n): n is string => !!n);
+}
+
+async function getLatestRelease(
+  githubFetch: typeof fetch,
+  token: string,
+  owner: string,
+  name: string
+): Promise<RepoReleaseLatest | null> {
+  const response = await githubFetch(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/latest`,
+    { headers: githubHeaders(token) }
+  );
+  if (!response.ok) return null; // 404 = no releases yet; anything else = skip
+  const body = await response.json();
+  if (!isRecord(body)) return null;
+  return {
+    tag: asString(body.tag_name) ?? "",
+    name: asString(body.name) ?? null,
+    published_at: asString(body.published_at) ?? null,
+    url: asString(body.html_url) ?? null,
+    draft: body.draft === true,
+    prerelease: body.prerelease === true
+  };
 }
 
