@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-broker_url="${TOKEN_BROKER_URL:-https://lava.magmamoose.com}"
-audience="${OIDC_AUDIENCE:-lava-flow}"
+broker_url="${TOKEN_BROKER_URL:-https://diatreme.magmamoose.com}"
+audience="${OIDC_AUDIENCE:-diatreme}"
 request_url="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
 request_token="${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
 repository="${GITHUB_REPOSITORY:-}"

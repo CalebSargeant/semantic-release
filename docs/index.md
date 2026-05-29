@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="lava-flow-logo.png" alt="Lava Flow" width="200">
+  <img src="diatreme-logo.png" alt="Diatreme" width="200">
 </p>
 
-# Lava Flow
+# Diatreme
 
-Lava Flow is the GitHub Marketplace Action published as
-`magmamoose/lava@v1`.
+Diatreme is the GitHub Marketplace Action published as
+`magmamoose/diatreme@v1`.
 
 It creates semantic version releases from GitHub Actions. It can also build pull
 request Docker images and promote or rebuild those images with release tags in
@@ -15,7 +15,7 @@ GHCR.
 
 | If you need | Read |
 |---|---|
-| A quick Marketplace usage example | [GitHub README](https://github.com/magmamoose/lava) |
+| A quick Marketplace usage example | [GitHub README](https://github.com/magmamoose/diatreme) |
 | The concepts behind the action | [Concepts](concepts.md) |
 | Organization-level auth setup | [Organization setup](organization-setup.md) |
 | Which inputs match your release flow | [Choose your setup](choose-your-setup.md) |

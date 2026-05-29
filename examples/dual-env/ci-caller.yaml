@@ -14,7 +14,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: magmamoose/lava@v1
+      - uses: magmamoose/diatreme@v1
         with:
           mode: ci
           image_name: my-app
