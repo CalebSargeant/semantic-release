@@ -1305,7 +1305,7 @@ describe("Copilot comment triage", () => {
     expect(calls.length).toBe(1);
   });
 
-  it("recognises fix but defers it (no signing path yet)", async () => {
+  it("dispatches an autonomous task when a comment classifies as fix", async () => {
     const { deps: injected } = deps({
       githubResponses: [anthropicReply("fix")]
     });
@@ -1317,11 +1317,10 @@ describe("Copilot comment triage", () => {
       triageEnv,
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "fix",
-      action: "deferred"
-    });
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix");
+    expect(out.action).toBe("dispatched");
+    expect(typeof out.dispatch_id).toBe("string");
   });
 
   it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
@@ -1937,5 +1936,141 @@ describe("GET /releases", () => {
     const body = await readJson(response);
     expect(body.cached).toBe(true);
     expect((body.repos as unknown[])[0]).toEqual({ repo: "octo/cached", latest: null });
+  });
+});
+
+// ─── POST /dispatch ──────────────────────────────────────────────────────────
+
+function dispatchReq(body: unknown, headers: Record<string, string> = {}): Request {
+  return new Request("https://broker.example.com/dispatch", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body)
+  });
+}
+
+describe("POST /dispatch", () => {
+  it("is disabled (503) without PROCESS_TRIGGER_SECRET", async () => {
+    const r = await handleRequest(dispatchReq({}), env);
+    expect(r.status).toBe(503);
+    expect(await readJson(r)).toEqual({ error: "dispatch_disabled" });
+  });
+
+  it("rejects a wrong bearer with 401", async () => {
+    const r = await handleRequest(
+      dispatchReq({ repo: "o/r", instruction: "x" }, { authorization: "Bearer nope" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trig" }
+    );
+    expect(r.status).toBe(401);
+  });
+
+  it("400 on missing fields", async () => {
+    const r = await handleRequest(
+      dispatchReq({ repo: "o/r" }, { authorization: "Bearer trig" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trig" }
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it("enqueues the task and triggers a session", async () => {
+    const { kv, store } = makeKv();
+    const { deps: injected } = deps({ githubResponses: [new Response("{}", { status: 200 })] });
+    const r = await handleRequest(
+      dispatchReq(
+        { repo: "octo/repo", instruction: "fix the thing", pr: 7, user: "caleb" },
+        { authorization: "Bearer trig" }
+      ),
+      { ...env, PROCESS_TRIGGER_SECRET: "trig", DISPATCH_TRIGGER_URL: "https://routines.example/run", COPILOT_QUOTA_KV: kv },
+      injected
+    );
+    expect(r.status).toBe(202);
+    const body = await readJson(r);
+    expect(body.status).toBe("triggered");
+    expect(typeof body.dispatch_id).toBe("string");
+    expect([...store.keys()].some((k) => k.startsWith("dispatch:task:"))).toBe(true);
+  });
+
+  it("queues without a trigger URL configured", async () => {
+    const { kv } = makeKv();
+    const { deps: injected } = deps();
+    injected.fetch = async () => {
+      throw new Error("no trigger expected");
+    };
+    const r = await handleRequest(
+      dispatchReq({ repo: "octo/repo", instruction: "x" }, { authorization: "Bearer trig" }),
+      { ...env, PROCESS_TRIGGER_SECRET: "trig", COPILOT_QUOTA_KV: kv },
+      injected
+    );
+    expect((await readJson(r)).status).toBe("queued_no_trigger");
+  });
+});
+
+// ─── POST /sign (GitHub-signed, user-attributed commit) ──────────────────────
+
+describe("POST /sign", () => {
+  const signEnv: BrokerEnv = {
+    ...env,
+    PROCESS_TRIGGER_SECRET: "trig",
+    GITHUB_APP_CLIENT_ID: "Iv1",
+    GITHUB_APP_CLIENT_SECRET: "sec"
+  };
+  const body = {
+    user: "caleb",
+    repo: "octo/repo",
+    branch: "feature",
+    expected_head_oid: "abc123",
+    message: { headline: "fix: thing" },
+    additions: [{ path: "a.ts", contents: "Y29uc3Q=" }]
+  };
+  function signReq(headers: Record<string, string> = { authorization: "Bearer trig" }): Request {
+    return new Request("https://broker.example.com/sign", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body)
+    });
+  }
+
+  it("is disabled (503) without PROCESS_TRIGGER_SECRET", async () => {
+    const r = await handleRequest(signReq({}), env);
+    expect(r.status).toBe(503);
+    expect(await readJson(r)).toEqual({ error: "sign_disabled" });
+  });
+
+  it("returns 409 when the user has no OAuth connection", async () => {
+    const { deps: injected } = deps();
+    const r = await handleRequest(signReq(), signEnv, injected);
+    expect(r.status).toBe(409);
+    expect(await readJson(r)).toEqual({ error: "user_not_connected" });
+  });
+
+  it("creates a GitHub-signed commit via createCommitOnBranch", async () => {
+    const { kv, store } = makeKv();
+    store.set("copilot-oauth:user:caleb", {
+      value: JSON.stringify({
+        refresh_token: "ghr",
+        refresh_token_expires_at: "2099-01-01T00:00:00Z",
+        access_token: "ghu_live",
+        access_token_expires_at: "2099-01-01T00:00:00Z"
+      })
+    });
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          data: {
+            createCommitOnBranch: {
+              commit: { oid: "deadbeef", url: "https://github.com/octo/repo/commit/deadbeef" }
+            }
+          }
+        })
+      ]
+    });
+    const r = await handleRequest(signReq(), { ...signEnv, COPILOT_QUOTA_KV: kv }, injected);
+    expect(r.status).toBe(200);
+    expect((await readJson(r)).commit).toEqual({
+      oid: "deadbeef",
+      url: "https://github.com/octo/repo/commit/deadbeef"
+    });
+    // signed with the user's OAuth token, not the App installation token
+    expect(calls[0].headers.get("authorization")).toBe("Bearer ghu_live");
   });
 });
