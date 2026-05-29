@@ -1,5 +1,5 @@
 {
-  "name": "semantic-release-action-repo",
+  "name": "lava-flow",
   "private": true,
   "type": "module",
   "workspaces": [

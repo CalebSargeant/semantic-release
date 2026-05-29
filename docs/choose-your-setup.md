@@ -4,7 +4,7 @@ This page maps common release flows to action inputs. Read
 [Concepts](concepts.md) first if TBD, BBD, or Docker promotion are new to you.
 
 > **Tip:** call the reusable workflow at
-> `calebsargeant/semantic-release/.github/workflows/release-runner.yaml@v1`
+> `magmamoose/lava/.github/workflows/lava-flow.yaml@v1`
 > instead of the action directly to opt into a workflow-level
 > `concurrency:` lock. Same inputs; serialises runs on the same target
 > branch automatically. See [Concepts → Concurrency Safety](concepts.md#concurrency-safety).
@@ -196,7 +196,7 @@ with:
   github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Release Runner expands the group and builds or promotes every target.
+Lava Flow expands the group and builds or promotes every target.
 
 ## 4. Choose A Release Write Token
 
@@ -204,11 +204,11 @@ Release mode needs a token that can perform the writes required by your setup.
 
 | Choice | Inputs | Use when |
 |---|---|---|
-| Release Runner GitHub App | default `auth-mode: public-app` | You use the hosted app |
+| Lava Flow GitHub App | default `auth-mode: public-app` | You use the hosted app |
 | Private GitHub App | `auth-mode: private-app`, `app-id`, `app-private-key` | Your organization owns the app |
 | Workflow token | `auth-mode: github-token`, `github-token` | `GITHUB_TOKEN` can write release artifacts |
 
-Release Runner GitHub App example:
+Lava Flow GitHub App example:
 
 ```yaml
 permissions:
@@ -216,7 +216,7 @@ permissions:
   id-token: write
 
 steps:
-  - uses: calebsargeant/semantic-release@v1
+  - uses: magmamoose/lava@v1
     with:
       mode: release
 ```
@@ -230,7 +230,7 @@ permissions:
   packages: write
 
 steps:
-  - uses: calebsargeant/semantic-release@v1
+  - uses: magmamoose/lava@v1
     with:
       mode: release
       auth-mode: github-token
@@ -278,7 +278,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/release-runner@v1
+      - uses: magmamoose/lava@v1
         with:
           mode: enable-auto-merge
           pr-number: ${{ github.event.pull_request.number }}

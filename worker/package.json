@@ -1,5 +1,5 @@
 {
-  "name": "@calebsargeant/release-runner",
+  "name": "@calebsargeant/lava-flow",
   "private": true,
   "type": "module",
   "scripts": {

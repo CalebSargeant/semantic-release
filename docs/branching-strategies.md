@@ -1,15 +1,15 @@
 # Branching Strategies
 
-Release Runner is opinionated about *when* a release runs, not about *how*
+Lava Flow is opinionated about *when* a release runs, not about *how*
 your team commits and merges. This page maps the four common branching
-strategies onto Release Runner inputs so you can pick what fits your team.
+strategies onto Lava Flow inputs so you can pick what fits your team.
 
 If you only care about the action knobs, jump straight to
 [Configuration cheat sheet](#configuration-cheat-sheet).
 
 ## At A Glance
 
-| Strategy | Long-lived branches | Where releases tag from | Release Runner mode |
+| Strategy | Long-lived branches | Where releases tag from | Lava Flow mode |
 |---|---|---|---|
 | Trunk-Based Development (TBD) | one (`main`) | `main` | `deployment-model: tbd` or `tbd-pr` |
 | GitHub Flow | one (`main`) | every merge to `main` | `deployment-model: tbd` |
@@ -43,7 +43,7 @@ main:  ───●─────●──●────●───●──�
                      v1.2.3       → prod
 ```
 
-Two flavours in Release Runner:
+Two flavours in Lava Flow:
 
 - **Explicit env**: each workflow_dispatch picks an environment
   (`deployment-model: tbd`, pass `environment` from the dropdown). Cleanest
@@ -169,7 +169,7 @@ is dead weight if `main` is always shippable. The strategy was popularized
 in 2010 for software with discrete releases; the original author has since
 [recommended TBD or GitHub Flow for web apps](https://nvie.com/posts/a-successful-git-branching-model/#note-of-reflection-march-5-2020).
 
-### Mapping GitFlow onto Release Runner
+### Mapping GitFlow onto Lava Flow
 
 Every active branch in GitFlow can map to an environment via the BBD model
 with branch globs:
@@ -230,7 +230,7 @@ match = "hotfix/.*"
 prerelease = false
 ```
 
-Release Runner overrides `prerelease` and `prerelease_token` at runtime
+Lava Flow overrides `prerelease` and `prerelease_token` at runtime
 based on `branch-map` → `prerelease-identifiers`, so the action's view
 always wins.
 
@@ -256,7 +256,7 @@ branches:
 
 GitFlow ships discrete releases through a stabilization branch. If your
 `appsettings.json` (or any other build artifact) needs to embed the
-release version, set `version-file` so Release Runner injects the version
+release version, set `version-file` so Lava Flow injects the version
 post-tag and pushes the change back to the active branch. The Release
 Runner App is in your branch protection bypass list (see
 [Setup → Organization](organization-setup.md#branch-protection-checklist)),
@@ -265,7 +265,7 @@ so the push works even on `main` and `develop`.
 The Docker image is *retagged* from the merged-PR image (`pr-N`) to the
 release tag — it is not rebuilt. If you need a freshly-built image with
 the version baked in, build it in a separate job that runs after the
-release publishes, and let Release Runner only handle the tag/release.
+release publishes, and let Lava Flow only handle the tag/release.
 
 ## Configuration cheat sheet
 

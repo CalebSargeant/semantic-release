@@ -6,7 +6,7 @@ on:
 
 jobs:
   deploy:
-    uses: calebsargeant/semantic-release/.github/workflows/tbd-deploy-cloud-run.yaml@main
+    uses: magmamoose/lava/.github/workflows/tbd-deploy-cloud-run.yaml@main
     with:
       image_name: my-app
       service: my-app-api

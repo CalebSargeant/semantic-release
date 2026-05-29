@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "release-runner",
+  "name": "lava-flow",
   "main": "src/index.ts",
   "compatibility_date": "2026-05-05",
   "compatibility_flags": [
@@ -13,12 +13,17 @@
     "head_sampling_rate": 1
   },
   // KV namespace backing /copilot-quota (manual override + billing/metrics
-  // cache + webhook signal). Add the IDs locally; not committed here so
-  // the endpoint degrades gracefully when KV is absent.
+  // cache + webhook signal). Binding name MUST be COPILOT_QUOTA_KV —
+  // env.COPILOT_QUOTA_KV is read.
   //   wrangler kv namespace create COPILOT_QUOTA_KV
   //   wrangler kv namespace create COPILOT_QUOTA_KV --preview
-  // Binding name MUST be COPILOT_QUOTA_KV — env.COPILOT_QUOTA_KV is read.
-  //
+  "kv_namespaces": [
+    {
+      "binding": "COPILOT_QUOTA_KV",
+      "id": "f38ea21ec43f41d285a4526794ec7811",
+      "preview_id": "1aec7bdcd497405f8ffe5ebc949166e3"
+    }
+  ],
   // Cron trigger: every 15 minutes refresh the billing cache for owners
   // we've already seen (manual override, webhook event, or prior cache).
   // This keeps `GET /copilot-quota` fast and offloads billing-API hits

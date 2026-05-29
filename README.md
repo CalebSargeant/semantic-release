@@ -1,26 +1,26 @@
-# Release Runner
+# Lava Flow
 
 <p align="center">
-  <img src="docs/release-runner-logo.png" alt="Release Runner" width="200">
+  <img src="docs/lava-flow-logo.png" alt="Lava Flow" width="200">
 </p>
 
-[![CI](https://github.com/magmamoose/release-runner/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/release-runner/actions/workflows/ci.yaml)
-[![Release](https://github.com/magmamoose/release-runner/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/release-runner/actions/workflows/release.yaml)
-[![Docs](https://github.com/magmamoose/release-runner/actions/workflows/docs-pages.yaml/badge.svg)](https://releaserunner.dev/docs)
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Release%20Runner-purple?logo=github)](https://github.com/marketplace/actions/release-runner)
-[![License](https://img.shields.io/github/license/magmamoose/release-runner)](https://github.com/magmamoose/release-runner/blob/main/LICENSE)
+[![CI](https://github.com/magmamoose/lava/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/lava/actions/workflows/ci.yaml)
+[![Release](https://github.com/magmamoose/lava/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/lava/actions/workflows/release.yaml)
+[![Docs](https://github.com/magmamoose/lava/actions/workflows/docs-pages.yaml/badge.svg)](https://releaserunner.dev/docs)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Lava%20Flow-purple?logo=github)](https://github.com/marketplace/actions/lava-flow)
+[![License](https://img.shields.io/github/license/magmamoose/lava)](https://github.com/magmamoose/lava/blob/main/LICENSE)
 
 Instead of composing `cycjimmy/semantic-release-action` + `docker/metadata-action` + `cloudposse/github-action-docker-promote` + ~200 lines of glue YAML, use one action.
 
 <!-- TODO: 30-second GIF showing PR→merge→release→Docker promotion -->
 
-I run release management across three different orgs. I got tired of composing `cycjimmy/semantic-release-action` plus `docker/metadata-action` plus `cloudposse/github-action-docker-promote` plus 200 lines of glue YAML in every repo. So I built Release Runner — one action that consolidates the lot, with the multi-environment and promotion-PR patterns I actually needed in production.
+I run release management across three different orgs. I got tired of composing `cycjimmy/semantic-release-action` plus `docker/metadata-action` plus `cloudposse/github-action-docker-promote` plus 200 lines of glue YAML in every repo. So I built Lava Flow — one action that consolidates the lot, with the multi-environment and promotion-PR patterns I actually needed in production.
 
-Release Runner runs my production releases today. If you're managing release tooling across multiple repos or orgs and you're tired of the same dance every time, this is for you.
+Lava Flow runs my production releases today. If you're managing release tooling across multiple repos or orgs and you're tired of the same dance every time, this is for you.
 
 ## 60-Second Quickstart
 
-A production-only release from `main`, using the Release Runner GitHub App:
+A production-only release from `main`, using the Lava Flow GitHub App:
 
 ```yaml
 name: Release
@@ -36,14 +36,14 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: magmamoose/release-runner@v1
+      - uses: magmamoose/lava@v1
         with:
           environment: prod
           environments: '["prod"]'
           prerelease-identifiers: '{}'
 ```
 
-Install the [Release Runner GitHub App](https://github.com/apps/release-runner/installations/new) on the repo or org, add a `pyproject.toml` (default tool: `python-semantic-release`), and merge a conventional commit. You get a Git tag, a GitHub Release, and a `CHANGELOG.md` entry.
+Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installations/new) on the repo or org, add a `pyproject.toml` (default tool: `python-semantic-release`), and merge a conventional commit. You get a Git tag, a GitHub Release, and a `CHANGELOG.md` entry.
 
 ### Scale up
 
@@ -54,7 +54,7 @@ Install the [Release Runner GitHub App](https://github.com/apps/release-runner/i
   ```yaml
   jobs:
     release:
-      uses: magmamoose/release-runner/.github/workflows/release-runner.yaml@v1
+      uses: magmamoose/lava/.github/workflows/lava-flow.yaml@v1
       permissions:
         contents: read
         id-token: write
@@ -64,7 +64,7 @@ Install the [Release Runner GitHub App](https://github.com/apps/release-runner/i
         prerelease-identifiers: '{}'
   ```
 
-  Same inputs; adds an automatic `concurrency: release-runner-<target-branch>` lock with FIFO queueing.
+  Same inputs; adds an automatic `concurrency: lava-flow-<target-branch>` lock with FIFO queueing.
 
 ## What You Get
 
@@ -72,16 +72,16 @@ Install the [Release Runner GitHub App](https://github.com/apps/release-runner/i
 - **Retag-not-rebuild Docker promotion.** The image that passed PR CI as `pr-42` becomes `v1.2.3` via registry retag. No fresh build, no binary drift between staging and prod. Falls back to a Docker Bake rebuild only when the source image is missing.
 - **Per-environment prerelease identifiers.** `{"dev":"dev","staging":"rc"}` → tags land as `v1.2.3-dev.1`, `v1.2.3-rc.1`, `v1.2.3`. Production sheds the suffix.
 - **Promotion PRs auto-open.** In `deployment-model: tbd-pr` with `create-promotion-pr: 'true'`, each release publish opens the promotion PR for the next environment. Merging `promote/staging/<version>` cuts the staging tag and opens `promote/prod/<version>`; merging that cuts the stable prod tag. The cascade chains through every entry in `environments`.
-- **Require Copilot Review.** In `mode: ci`, Release Runner can publish `Release Runner / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
+- **Require Copilot Review.** In `mode: ci`, Lava Flow can publish `Lava Flow / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
 - **ClickUp + GitHub Projects v2 in release notes.** Scans commits and PR bodies in the release range for `app.clickup.com/t/...` URLs and issue/PR refs (`#NNN`), appends grouped sections to the GitHub Release notes and to any open promotion PR body.
 - **Production guardrail on by default.** `admin-required-from: '@last'` makes manual `workflow_dispatch` runs targeting production require `permission: admin` on the repository. Push and promotion-PR-merge triggers are unaffected.
-- **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: release-runner-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
+- **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: lava-flow-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
 
 ## Compared to Alternatives
 
 | Action | Versioning | Docker build | Promote (retag) | Multi-env prerelease | Promotion PRs | ClickUp | Projects v2 | Admin gate | Concurrency lock |
 |---|---|---|---|---|---|---|---|---|---|
-| **Release Runner** | all 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Lava Flow** | all 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | cycjimmy/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
 | codfish/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
 | googleapis/release-please-action | release-please | — | — | — | — | — | — | — | — |

@@ -2,13 +2,13 @@
 
 Do this once before onboarding repositories.
 
-## Recommended Auth: Release Runner GitHub App
+## Recommended Auth: Lava Flow GitHub App
 
 Most repositories should use the default `auth-mode: public-app`.
 
 For users, this means:
 
-1. Install the [Release Runner GitHub App](https://github.com/apps/release-runner/installations/new) on the organization or selected repository.
+1. Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installations/new) on the organization or selected repository.
 2. Allow the app through branch protection or repository rulesets if releases write protected refs.
 3. Grant release jobs `id-token: write`.
 4. Keep the default auth inputs.
@@ -31,7 +31,7 @@ Release job:
 
 ```yaml
 steps:
-  - uses: calebsargeant/semantic-release@v1
+  - uses: magmamoose/lava@v1
     with:
       mode: release
 ```
@@ -40,14 +40,14 @@ steps:
 
 | Auth mode | Use it when | What users configure |
 |---|---|---|
-| `public-app` | You install the Release Runner GitHub App | App installation and `id-token: write` |
+| `public-app` | You install the Lava Flow GitHub App | App installation and `id-token: write` |
 | `private-app` | Your organization owns the GitHub App | App ID and private key secrets |
 | `github-token` | Branch protection allows `GITHUB_TOKEN` to release | `contents: write` and optional `pull-requests: write` |
 | `auto` | You want private app auth when secrets exist, otherwise workflow token | Private app secrets or workflow token permissions |
 
 ## Private GitHub App
 
-Use this when your organization does not want to use the Release Runner GitHub App.
+Use this when your organization does not want to use the Lava Flow GitHub App.
 
 Create a GitHub App with repository permissions:
 
@@ -71,7 +71,7 @@ Then:
 Workflow input:
 
 ```yaml
-- uses: calebsargeant/semantic-release@v1
+- uses: magmamoose/lava@v1
   with:
     mode: release
     auth-mode: private-app
@@ -90,7 +90,7 @@ permissions:
   packages: write
 
 steps:
-  - uses: calebsargeant/semantic-release@v1
+  - uses: magmamoose/lava@v1
     with:
       mode: release
       auth-mode: github-token

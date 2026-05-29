@@ -10,7 +10,10 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL =
   "https://token.actions.githubusercontent.com/.well-known/jwks";
 const GITHUB_API_VERSION = "2022-11-28";
-const DEFAULT_AUDIENCE = "release-runner";
+const DEFAULT_AUDIENCE = "lava-flow";
+// Legacy audience accepted during the release-runner → lava-flow migration so
+// OIDC tokens minted by older pinned action versions still verify.
+const LEGACY_AUDIENCE = "release-runner";
 const DEFAULT_PERMISSIONS: TokenPermissions = {
   contents: "write",
   pull_requests: "write"
@@ -58,7 +61,7 @@ interface Dependencies {
   fetch: typeof fetch;
   verifyOidcToken: (
     token: string,
-    audience: string
+    audience: string | string[]
   ) => Promise<VerifiedOidcPayload>;
   createGitHubAppJwt: (
     appId: string,
@@ -153,7 +156,7 @@ async function handleTokenRequest(
   const repository = `${body.owner}/${body.repo}`;
   assertRepositoryParts(body.owner, body.repo);
 
-  const audience = env.OIDC_AUDIENCE || DEFAULT_AUDIENCE;
+  const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
   const oidcPayload = await verifyOidc(body.oidcToken, audience, dependencies);
   if (oidcPayload.repository !== repository) {
     return jsonError(403, "repo_mismatch");
@@ -194,7 +197,7 @@ async function handleTokenRequest(
 
 // ─── /copilot-quota ──────────────────────────────────────────────────────────
 // Reports whether a GitHub account has exhausted its Copilot premium-request
-// allowance. The signal is consumed by release-runner's require-copilot-review
+// allowance. The signal is consumed by Lava Flow's require-copilot-review
 // gate so it can pass gracefully when no review will ever arrive.
 //
 // State sources, in order of preference:
@@ -293,7 +296,7 @@ async function handleCopilotQuotaGet(
 
   // 3. OAuth-backed user billing for the requester. Most reliable
   // detection path for individual quota exhaustion when the requester
-  // has authorized release-runner via /copilot-oauth/connect. Uses a
+  // has authorized Lava Flow via /copilot-oauth/connect. Uses a
   // user access token (not the App installation token) to query
   // /users/{requester}/settings/billing/premium_request/usage, which
   // requires the "Plan" account permission. No-op when the requester
@@ -582,7 +585,7 @@ async function performBillingApiLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "release-runner-broker"
+        "User-Agent": "lava-flow-broker"
       }
     });
     if (usageResponse.status === 404) continue;
@@ -710,7 +713,7 @@ function nextUtcMonthBoundary(now: Date): Date {
 }
 
 // ─── /copilot-oauth ──────────────────────────────────────────────────────────
-// OAuth user-access-token flow against the release-runner GitHub App. Each
+// OAuth user-access-token flow against the Lava Flow GitHub App. Each
 // contributor authorizes once; the worker stores a refresh token in KV
 // keyed by their github login. The /copilot-quota resolver mints fresh
 // user access tokens on demand and queries the user-scoped billing API —
@@ -872,7 +875,7 @@ async function handleOAuthCallback(
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      "User-Agent": "release-runner-broker"
+      "User-Agent": "lava-flow-broker"
     },
     body: JSON.stringify({
       client_id: clientId,
@@ -912,7 +915,7 @@ async function handleOAuthCallback(
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${tokenBody.access_token}`,
       "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      "User-Agent": "release-runner-broker"
+      "User-Agent": "lava-flow-broker"
     }
   });
   if (!userResponse.ok) {
@@ -977,7 +980,7 @@ async function handleOAuthCallback(
 
   return oauthHtmlResponse(
     "Connected ✓",
-    `Release Runner can now check your Copilot premium-request quota when you open pull requests. You're connected as <strong>${escapeHtml(login)}</strong>; the connection is good for ~6 months and auto-renews each time you push a PR. You can close this tab.` +
+    `Lava Flow can now check your Copilot premium-request quota when you open pull requests. You're connected as <strong>${escapeHtml(login)}</strong>; the connection is good for ~6 months and auto-renews each time you push a PR. You can close this tab.` +
       (returnTo ? `<p><a href="${escapeAttr(returnTo)}">Return to ${escapeHtml(returnTo)}</a></p>` : ""),
     200
   );
@@ -1065,7 +1068,7 @@ async function getUserAccessToken(
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      "User-Agent": "release-runner-broker"
+      "User-Agent": "lava-flow-broker"
     },
     body: JSON.stringify({
       client_id: clientId,
@@ -1138,7 +1141,7 @@ async function tryOAuthUserBillingLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${accessToken}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "release-runner-broker"
+        "User-Agent": "lava-flow-broker"
       }
     });
     if (response.status === 404) continue;
@@ -1180,7 +1183,7 @@ function oauthHtmlResponse(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${escapeHtml(title)} — Release Runner</title>
+  <title>${escapeHtml(title)} — Lava Flow</title>
   <style>
     :root { color-scheme: light dark; }
     body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 540px; margin: 4rem auto; padding: 0 1rem; }
@@ -1203,7 +1206,7 @@ function oauthHtmlResponse(
 }
 
 // ─── /webhook ────────────────────────────────────────────────────────────────
-// Receives GitHub webhook deliveries for the release-runner App. We verify
+// Receives GitHub webhook deliveries for the Lava Flow App. We verify
 // HMAC-SHA256 against GITHUB_WEBHOOK_SECRET, then accumulate per-owner
 // Copilot review request/delivery timestamps in KV. The /copilot-quota GET
 // path reads these as a third signal in its resolution chain.
@@ -1777,7 +1780,7 @@ async function tryMetricsApiLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "release-runner-broker"
+        "User-Agent": "lava-flow-broker"
       }
     });
     if (response.status === 404) continue;
@@ -1877,7 +1880,7 @@ async function readTokenRequest(request: Request): Promise<TokenRequest> {
 
 async function verifyOidc(
   token: string,
-  audience: string,
+  audience: string | string[],
   deps: Dependencies
 ): Promise<VerifiedOidcPayload> {
   try {
@@ -1889,7 +1892,7 @@ async function verifyOidc(
 
 async function verifyOidcToken(
   token: string,
-  audience: string
+  audience: string | string[]
 ): Promise<VerifiedOidcPayload> {
   const { payload } = await jwtVerify(token, remoteJwks, {
     issuer: GITHUB_OIDC_ISSUER,
@@ -1992,7 +1995,7 @@ function githubHeaders(appJwt: string): HeadersInit {
   return {
     accept: "application/vnd.github+json",
     authorization: `Bearer ${appJwt}`,
-    "user-agent": "calebsargeant-release-runner",
+    "user-agent": "calebsargeant-lava-flow",
     "x-github-api-version": GITHUB_API_VERSION
   };
 }

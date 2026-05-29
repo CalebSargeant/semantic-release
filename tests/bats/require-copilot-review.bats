@@ -312,7 +312,7 @@ run_policy() {
 
   [ "$status" -eq 1 ]
   grep -Fq "state=failure" "${STATUS_LOG}"
-  grep -Fq "context=Release Runner / Require Copilot Review" "${STATUS_LOG}"
+  grep -Fq "context=Lava Flow / Require Copilot Review" "${STATUS_LOG}"
   grep -Fq "description=Copilot has not reviewed this pull request yet." "${STATUS_LOG}"
 }
 
@@ -412,7 +412,7 @@ run_policy() {
 }
 
 @test "body-pattern: bypasses with warning when Copilot posts a quota decline review" {
-  # The exact wording observed on release-runner PR #39: Copilot was
+  # The exact wording observed on lava-flow PR #39: Copilot was
   # requested as a reviewer, the user's quota was exhausted, Copilot
   # posted a real review on the head commit with this body.
   write_reviews_page 1 '[
