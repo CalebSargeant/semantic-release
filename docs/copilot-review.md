@@ -258,7 +258,7 @@ returned after every source has been consulted.
    suffices even when PRs land under multiple orgs.
 2. **OAuth-backed user billing** — when the PR author (passed as
    `requester`) has connected to diatreme via
-   `/copilot-oauth/connect`, the worker uses their stored refresh
+   `/oauth/connect`, the worker uses their stored refresh
    token to mint a user access token and queries
    `/users/{requester}/settings/billing/premium_request/usage`. This
    is the only direct, real-time signal for individual quota
@@ -314,8 +314,8 @@ open gets quota-checked against the GitHub Billing API in real time.
    `https://github.com/settings/apps/diatreme` (or your fork's
    slug if self-hosting).
 2. Under **Identifying and authorizing users**, set
-   - **User authorization callback URL**: `${broker-url}/copilot-oauth/callback`
-     (e.g. `https://diatreme.magmamoose.com/copilot-oauth/callback`)
+   - **User authorization callback URL**: `${broker-url}/oauth/callback`
+     (e.g. `https://diatreme.magmamoose.com/oauth/callback`)
    - **Request user authorization (OAuth) during installation**:
      leave unchecked (we want a separate authorize flow per contributor)
    - **Enable Device Flow**: unchecked
@@ -330,7 +330,7 @@ open gets quota-checked against the GitHub Billing API in real time.
 
 **Per-contributor authorize** (any developer whose PRs hit the gate):
 
-1. Visit `${broker-url}/copilot-oauth/connect` once.
+1. Visit `${broker-url}/oauth/connect` once.
 2. GitHub shows an authorization page listing the App's User
    permission (`Plan: read`). Click **Authorize**.
 3. Worker stores the refresh token in KV with a ~6-month TTL. The
@@ -339,7 +339,7 @@ open gets quota-checked against the GitHub Billing API in real time.
 **Verify a connection**:
 
 ```bash
-curl https://diatreme.magmamoose.com/copilot-oauth/status?user=CalebSargeant
+curl https://diatreme.magmamoose.com/oauth/status?user=CalebSargeant
 # → {"connected":true,"user":"CalebSargeant","connected_at":"...","refresh_token_expires_at":"..."}
 ```
 

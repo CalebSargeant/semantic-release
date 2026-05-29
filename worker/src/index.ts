@@ -36,7 +36,7 @@ export type BrokerEnv = Env & {
   COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   COPILOT_WEBHOOK_REVIEW_GAP_SECONDS?: string;
-  // /copilot-oauth (App user-access-token flow)
+  // /oauth (App user-access-token flow)
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
   // /webhook pull_request_review_comment → triage Copilot review comments.
@@ -134,11 +134,13 @@ export async function handleRequest(
         return await handleWebhookRequest(request, env, dependencies);
       case "/process":
         return await handleProcessRequest(request, env, dependencies);
-      case "/copilot-oauth/connect":
+      case "/releases":
+        return await handleReleasesRequest(request, env, dependencies);
+      case "/oauth/connect":
         return await handleOAuthConnect(env, dependencies, url);
-      case "/copilot-oauth/callback":
+      case "/oauth/callback":
         return await handleOAuthCallback(env, dependencies, url);
-      case "/copilot-oauth/status":
+      case "/oauth/status":
         return await handleOAuthStatus(env, url);
       default:
         return jsonError(404, "not_found");
@@ -309,7 +311,7 @@ async function handleCopilotQuotaGet(
 
   // 3. OAuth-backed user billing for the requester. Most reliable
   // detection path for individual quota exhaustion when the requester
-  // has authorized Diatreme via /copilot-oauth/connect. Uses a
+  // has authorized Diatreme via /oauth/connect. Uses a
   // user access token (not the App installation token) to query
   // /users/{requester}/settings/billing/premium_request/usage, which
   // requires the "Plan" account permission. No-op when the requester
@@ -725,7 +727,7 @@ function nextUtcMonthBoundary(now: Date): Date {
   );
 }
 
-// ─── /copilot-oauth ──────────────────────────────────────────────────────────
+// ─── /oauth ──────────────────────────────────────────────────────────
 // OAuth user-access-token flow against the Diatreme GitHub App. Each
 // contributor authorizes once; the worker stores a refresh token in KV
 // keyed by their github login. The /copilot-quota resolver mints fresh
@@ -738,16 +740,16 @@ function nextUtcMonthBoundary(now: Date): Date {
 //   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
 //
 // Endpoints:
-//   GET /copilot-oauth/connect[?return_to=URL]
+//   GET /oauth/connect[?return_to=URL]
 //     Initiates the OAuth dance. Generates a CSRF state, stashes it in
 //     KV with a 10 min TTL, then 302s to github.com/login/oauth/authorize.
 //
-//   GET /copilot-oauth/callback?code=…&state=…
+//   GET /oauth/callback?code=…&state=…
 //     Receives GitHub's auth code. Validates state, exchanges code for
 //     access_token + refresh_token, fetches /user to learn the login,
 //     stores the refresh_token in KV. Returns an HTML success page.
 //
-//   GET /copilot-oauth/status?user=LOGIN
+//   GET /oauth/status?user=LOGIN
 //     Returns whether KV holds a non-expired refresh token for that user.
 //     No auth — connection state isn't sensitive (just a boolean).
 
@@ -774,6 +776,9 @@ interface OAuthUserRecord {
   last_used_at?: string;
 }
 
+// NB: the URL routes are /oauth/* but these KV key prefixes stay
+// `copilot-oauth:` on purpose — renaming them would orphan connections already
+// stored in the (shared) KV namespace. Internal-only; never user-visible.
 function oauthStateKey(state: string): string {
   return `copilot-oauth:state:${state}`;
 }
@@ -785,7 +790,7 @@ function oauthUserKey(login: string): string {
 function callbackUrl(env: BrokerEnv, requestUrl: URL): string {
   // Build the callback URL from the request origin, so the worker
   // works under workers.dev preview deploys without env tweaks.
-  return `${requestUrl.origin}/copilot-oauth/callback`;
+  return `${requestUrl.origin}/oauth/callback`;
 }
 
 function randomState(): string {
@@ -874,7 +879,7 @@ async function handleOAuthCallback(
   if (!stateRaw) {
     return oauthHtmlResponse(
       "Authorization expired",
-      "The authorization link is missing or expired. Open <code>/copilot-oauth/connect</code> again to restart the flow.",
+      "The authorization link is missing or expired. Open <code>/oauth/connect</code> again to restart the flow.",
       400
     );
   }
@@ -1171,7 +1176,7 @@ async function tryOAuthUserBillingLookup(
   return null;
 }
 
-// ─── /copilot-oauth HTML helpers ─────────────────────────────────────────────
+// ─── /oauth HTML helpers ─────────────────────────────────────────────
 
 function escapeHtml(s: string): string {
   return s
@@ -2767,5 +2772,216 @@ async function updatePullRequestBranch(
   if (response.status === 422) return "not_updatable";
   if (response.status === 403) return "forbidden";
   return `error_${response.status}`;
+}
+
+// ─── GET /releases ───────────────────────────────────────────────────────────
+// Aggregates the latest release across every repo the Diatreme GitHub App is
+// installed on — the data behind the Diatreme Pro dashboard's release view.
+// Bearer-gated (PROCESS_TRIGGER_SECRET, same as /process). The App private key
+// never leaves the worker, so the dashboard reads releases THROUGH this
+// endpoint instead of holding the key itself. KV-cached so the dashboard's
+// poll stays cheap and we don't hammer the GitHub API (or the Workers
+// subrequest budget). Caps are surfaced via `truncated` — never silent.
+
+const RELEASES_CACHE_KEY = "releases:aggregate";
+const RELEASES_CACHE_TTL_SECONDS = 300;
+const RELEASES_MAX_INSTALLATIONS = 10;
+const RELEASES_MAX_REPOS = 40;
+
+interface RepoReleaseLatest {
+  tag: string;
+  name: string | null;
+  published_at: string | null;
+  url: string | null;
+  draft: boolean;
+  prerelease: boolean;
+}
+
+interface RepoRelease {
+  repo: string; // owner/name
+  latest: RepoReleaseLatest | null;
+}
+
+async function handleReleasesRequest(
+  request: Request,
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return jsonError(405, "method_not_allowed");
+  }
+  const secret = env.PROCESS_TRIGGER_SECRET;
+  if (!secret || secret.trim() === "") {
+    return jsonError(503, "releases_disabled");
+  }
+  const authorization = request.headers.get("authorization") ?? "";
+  const provided = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  if (!constantTimeEquals(provided, secret)) {
+    return jsonError(401, "unauthorized");
+  }
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return jsonError(503, "app_unconfigured");
+  }
+
+  // Serve from the warm cache when present.
+  if (env.COPILOT_QUOTA_KV) {
+    const cached = await env.COPILOT_QUOTA_KV.get(RELEASES_CACHE_KEY);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (isRecord(parsed)) {
+          return json({ ...parsed, cached: true }, 200);
+        }
+      } catch {
+        // fall through and refresh
+      }
+    }
+  }
+
+  const result = await aggregateReleases(env, dependencies);
+  if (env.COPILOT_QUOTA_KV) {
+    await env.COPILOT_QUOTA_KV.put(RELEASES_CACHE_KEY, JSON.stringify(result), {
+      expirationTtl: RELEASES_CACHE_TTL_SECONDS
+    });
+  }
+  return json({ ...result, cached: false }, 200);
+}
+
+async function aggregateReleases(
+  env: BrokerEnv,
+  dependencies: Dependencies
+): Promise<{ generated_at: string; repos: RepoRelease[]; truncated: boolean }> {
+  const appJwt = await dependencies.createGitHubAppJwt(
+    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    dependencies.now()
+  );
+
+  const installations = await listAppInstallations(dependencies.fetch, appJwt);
+  let truncated = installations.length > RELEASES_MAX_INSTALLATIONS;
+  const repos: RepoRelease[] = [];
+
+  for (const installationId of installations.slice(0, RELEASES_MAX_INSTALLATIONS)) {
+    const token = await createInstallationTokenAllRepos(
+      dependencies.fetch,
+      appJwt,
+      installationId
+    ).catch(() => null);
+    if (!token) continue;
+    const repoFullNames = await listInstallationRepos(
+      dependencies.fetch,
+      token
+    ).catch(() => [] as string[]);
+    for (const full of repoFullNames) {
+      if (repos.length >= RELEASES_MAX_REPOS) {
+        truncated = true;
+        break;
+      }
+      const [owner, name] = full.split("/");
+      if (!owner || !name) continue;
+      const latest = await getLatestRelease(
+        dependencies.fetch,
+        token,
+        owner,
+        name
+      ).catch(() => null);
+      repos.push({ repo: full, latest });
+    }
+    if (repos.length >= RELEASES_MAX_REPOS) {
+      truncated = true;
+      break;
+    }
+  }
+
+  // Newest release first; repos without a release sink to the bottom.
+  repos.sort((a, b) => {
+    const ta = a.latest?.published_at ? Date.parse(a.latest.published_at) : 0;
+    const tb = b.latest?.published_at ? Date.parse(b.latest.published_at) : 0;
+    return tb - ta;
+  });
+
+  return { generated_at: dependencies.now().toISOString(), repos, truncated };
+}
+
+async function listAppInstallations(
+  githubFetch: typeof fetch,
+  appJwt: string
+): Promise<number[]> {
+  const response = await githubFetch(
+    "https://api.github.com/app/installations?per_page=100",
+    { headers: githubHeaders(appJwt) }
+  );
+  if (!response.ok) throw new HttpError(502, "github_installations_failed");
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  return body
+    .filter(isRecord)
+    .map((i) => i.id)
+    .filter((id): id is number => typeof id === "number");
+}
+
+async function createInstallationTokenAllRepos(
+  githubFetch: typeof fetch,
+  appJwt: string,
+  installationId: number
+): Promise<string> {
+  const response = await githubFetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: { ...githubHeaders(appJwt), "content-type": "application/json" },
+      // Read-only, all repos in the installation. No `repositories` field.
+      body: JSON.stringify({ permissions: { contents: "read", metadata: "read" } })
+    }
+  );
+  if (!response.ok) throw new HttpError(502, "github_token_create_failed");
+  const body = await response.json();
+  if (!isRecord(body) || typeof body.token !== "string") {
+    throw new HttpError(502, "github_token_create_failed");
+  }
+  return body.token;
+}
+
+async function listInstallationRepos(
+  githubFetch: typeof fetch,
+  token: string
+): Promise<string[]> {
+  const response = await githubFetch(
+    "https://api.github.com/installation/repositories?per_page=100",
+    { headers: githubHeaders(token) }
+  );
+  if (!response.ok) throw new HttpError(502, "github_repos_failed");
+  const body = await response.json();
+  const list =
+    isRecord(body) && Array.isArray(body.repositories) ? body.repositories : [];
+  return list
+    .filter(isRecord)
+    .map((r) => asString(r.full_name))
+    .filter((n): n is string => !!n);
+}
+
+async function getLatestRelease(
+  githubFetch: typeof fetch,
+  token: string,
+  owner: string,
+  name: string
+): Promise<RepoReleaseLatest | null> {
+  const response = await githubFetch(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/latest`,
+    { headers: githubHeaders(token) }
+  );
+  if (!response.ok) return null; // 404 = no releases yet; anything else = skip
+  const body = await response.json();
+  if (!isRecord(body)) return null;
+  return {
+    tag: asString(body.tag_name) ?? "",
+    name: asString(body.name) ?? null,
+    published_at: asString(body.published_at) ?? null,
+    url: asString(body.html_url) ?? null,
+    draft: body.draft === true,
+    prerelease: body.prerelease === true
+  };
 }
 
