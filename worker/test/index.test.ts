@@ -1990,6 +1990,52 @@ describe("POST /dispatch", () => {
     expect([...store.keys()].some((k) => k.startsWith("dispatch:task:"))).toBe(true);
   });
 
+  it("fires a Claude Code routine and captures the session url", async () => {
+    const { kv, store } = makeKv();
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          type: "routine_fire",
+          claude_code_session_id: "session_abc",
+          claude_code_session_url: "https://claude.ai/code/session_abc"
+        })
+      ]
+    });
+    const r = await handleRequest(
+      dispatchReq(
+        { repo: "octo/repo", instruction: "implement issue 12", issue: 12, user: "caleb" },
+        { authorization: "Bearer trig" }
+      ),
+      {
+        ...env,
+        PROCESS_TRIGGER_SECRET: "trig",
+        DISPATCH_TRIGGER_URL: "https://api.anthropic.com/v1/claude_code/routines/r1/fire",
+        DISPATCH_ROUTINE_TOKEN: "sk-ant-oat01-routine",
+        COPILOT_QUOTA_KV: kv
+      },
+      injected
+    );
+    expect(r.status).toBe(202);
+    const body = await readJson(r);
+    expect(body.status).toBe("triggered");
+    expect(body.session_url).toBe("https://claude.ai/code/session_abc");
+    expect(body.session_id).toBe("session_abc");
+
+    // fired the routine endpoint with the per-routine bearer + beta header
+    expect(calls[0].url).toContain("/routines/r1/fire");
+    expect(calls[0].headers.get("authorization")).toBe("Bearer sk-ant-oat01-routine");
+    expect(calls[0].headers.get("anthropic-beta")).toBe("experimental-cc-routine-2026-04-01");
+    const sent = (await calls[0].json()) as Record<string, unknown>;
+    expect(typeof sent.text).toBe("string");
+    expect(sent.text as string).toContain("implement issue 12");
+
+    // session url persisted on the task for traceability
+    const taskKey = [...store.keys()].find((k) => k.startsWith("dispatch:task:"))!;
+    expect(JSON.parse(store.get(taskKey)!.value).session_url).toBe(
+      "https://claude.ai/code/session_abc"
+    );
+  });
+
   it("queues without a trigger URL configured", async () => {
     const { kv } = makeKv();
     const { deps: injected } = deps();
