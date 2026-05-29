@@ -1,4 +1,4 @@
-# docker-bake.hcl — template for use with magmamoose/lava
+# docker-bake.hcl — template for use with magmamoose/diatreme
 #
 # Standard env vars injected by tbd-ci.yaml and tbd-release.yaml:
 #   VERSION    pr-<N> during CI, semver tag during release (e.g., v1.2.3-dev.1)

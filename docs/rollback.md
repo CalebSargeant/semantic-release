@@ -3,7 +3,7 @@
 Use this guide when a release was cut but must be removed so that the previous
 version becomes the effective latest.
 
-This procedure covers repositories that use Lava Flow with FluxCD
+This procedure covers repositories that use Diatreme with FluxCD
 `ImagePolicy` and `ImageUpdateAutomation` for Kubernetes deployments. If your
 repository does not use FluxCD, skip the Flux steps.
 

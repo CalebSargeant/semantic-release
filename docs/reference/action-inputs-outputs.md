@@ -18,7 +18,7 @@ Pipeline mode. One of:
 |---|---|
 | `ci` | Build Docker image and push pr-<N> to GHCR (run on pull_request events). |
 | `release` | (default) Run versioning, promote Docker image, and optionally create a promotion PR (when deployment-model is tbd-pr and create-promotion-pr is true). |
-| `enable-auto-merge` | Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Lava Flow ones. |
+| `enable-auto-merge` | Enable native GitHub auto-merge on the PR referenced by `pr-number`. Intended for non-promotion (feature) PRs invoked from a separate `pull_request` workflow. The repository must have "Allow auto-merge" enabled and branch protection with at least one required status check on the target branch — both are GitHub prerequisites for auto-merge, not Diatreme ones. |
 
 #### `environment`
 
@@ -121,7 +121,7 @@ Allowed values:
 Explicit version to release/build. Accepts SemVer with optional `v`
 prefix, e.g. `3.20.0` or `v3.20.0-rc.1`.
 
-When set, lava-flow skips automatic version calculation and uses
+When set, diatreme skips automatic version calculation and uses
 this value for release tag/image versioning. The optional `v` prefix is
 stripped only for `${VERSION}` substitution in bake/build args.
 
@@ -212,7 +212,7 @@ Token source for git/release operations. One of:
 
 | Value | Description |
 |---|---|
-| `public-app` | (default) Use the Lava Flow GitHub App installed on the repository or organization. |
+| `public-app` | (default) Use the Diatreme GitHub App installed on the repository or organization. |
 | `auto` | Use private-app when app-id/app-private-key are set, otherwise use github-token/GITHUB_TOKEN. |
 | `github-token` | Use github-token or the workflow GITHUB_TOKEN. |
 | `private-app` | Generate a token from app-id/app-private-key. |
@@ -247,7 +247,7 @@ GitHub App private key (PEM). Required when app-id is set.
 - Default: `false`
 
 Pass-through to actions/checkout's `submodules` input on
-lava-flow's internal checkout step.
+diatreme's internal checkout step.
 
 When set non-false in `auth-mode: private-app` or `auth-mode:
 auto` with App credentials, the App installation token is also
@@ -271,15 +271,15 @@ One of:
 #### `token-broker-url`
 
 - Required: `false`
-- Default: `https://lava.magmamoose.com`
+- Default: `https://diatreme.magmamoose.com`
 
-Advanced override for the hosted Lava Flow GitHub App auth service.
+Advanced override for the hosted Diatreme GitHub App auth service.
 Most repositories should not set this.
 
 #### `oidc-audience`
 
 - Required: `false`
-- Default: `lava-flow`
+- Default: `diatreme`
 
 Advanced override for public-app authentication. Most repositories should not set this.
 
@@ -377,10 +377,10 @@ Set to false for BBD (branches are named after environments).
 
 Enforce GitHub Copilot PR Review as a required PR policy (mode: ci).
 
-When true, Lava Flow reads pull request reviews, detects a
+When true, Diatreme reads pull request reviews, detects a
 configured Copilot reviewer identity, verifies that the review covers
 the current PR head, and reports a stable required status named
-`Lava Flow / Require Copilot Review` by default.
+`Diatreme / Require Copilot Review` by default.
 
 This does not request Copilot review automatically. Configure GitHub's
 automatic Copilot review separately in repository or organization
@@ -423,7 +423,7 @@ shell-style login patterns. Keep false for exact login matching.
 - Default: `true`
 
 When true, fail closed unless a submitted review matches
-`copilot-review-allowed-logins`. When false, Lava Flow may accept
+`copilot-review-allowed-logins`. When false, Diatreme may accept
 a submitted reviewer login containing `copilot` as a compatibility
 fallback for environments with different bot names.
 
@@ -475,7 +475,7 @@ Reporter used for `require-copilot-review`. One of:
 #### `copilot-review-check-name`
 
 - Required: `false`
-- Default: `Lava Flow / Require Copilot Review`
+- Default: `Diatreme / Require Copilot Review`
 
 Stable status context or check-run name for `require-copilot-review`.
 Add this exact value to branch protection or rulesets when making the
@@ -498,7 +498,7 @@ versioning tool, not just GitVersion. Typical uses:
 File format is detected from the extension: `.yaml`/`.yml` files are
 processed with `yq`; all other files are processed with `jq`.
 
-The commit uses the resolved release auth token (Lava Flow App,
+The commit uses the resolved release auth token (Diatreme App,
 private app, or `github-token`), so it can bypass branch-protection
 rulesets when the App is in the bypass list. The commit message ends
 with `[skip ci]` so the push does not retrigger the release workflow.
@@ -551,7 +551,7 @@ The auth token must have:
   - Repository: Pull requests: Write (to edit promotion PR bodies)
   - Organization or User: Projects: Read
 
-With auth-mode: public-app, the default Lava Flow App ships
+With auth-mode: public-app, the default Diatreme App ships
 with only the permissions needed for tagging and Releases. Issues,
 Pull requests, and Projects must be granted on the App settings
 AND re-accepted on each installation; otherwise the GraphQL probe
@@ -633,7 +633,7 @@ Special values:
 | `prod` | → only prod releases require admin |
 | `staging` | → staging and prod require admin |
 | `dev` | → all envs require admin |
-| `''` | → no guardrail The auth token must allow Repository: Administration: Read. With auth-mode: public-app, grant the permission on the Lava Flow App and accept it on the installation. |
+| `''` | → no guardrail The auth token must allow Repository: Administration: Read. With auth-mode: public-app, grant the permission on the Diatreme App and accept it on the installation. |
 
 ### Integrations
 
@@ -649,7 +649,7 @@ as a "## ClickUp tickets" section to the GitHub Release notes and to
 the auto-opened promotion PR body when one exists.
 
 The auth token must allow editing release notes and PR bodies. With
-auth-mode: public-app this is already covered by the Lava Flow App.
+auth-mode: public-app this is already covered by the Diatreme App.
 
 ### GitVersion
 

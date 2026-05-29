@@ -1,12 +1,12 @@
 # Require Copilot Review
 
-Lava Flow can publish a deterministic PR gate that requires GitHub Copilot
+Diatreme can publish a deterministic PR gate that requires GitHub Copilot
 PR Review to have run against the current pull request head.
 
 The default required status name is:
 
 ```text
-Lava Flow / Require Copilot Review
+Diatreme / Require Copilot Review
 ```
 
 Add that exact status context to branch protection or repository rulesets when
@@ -26,7 +26,7 @@ you want the gate to block merges.
 
 It does not request Copilot review automatically. Configure GitHub's automatic
 Copilot review separately in repository or organization rulesets or settings,
-then use Lava Flow to enforce that a completed review exists.
+then use Diatreme to enforce that a completed review exists.
 
 ## Minimal Workflow
 
@@ -49,20 +49,20 @@ jobs:
       pull-requests: read
       statuses: write
     steps:
-      - uses: magmamoose/lava@v1
+      - uses: magmamoose/diatreme@v1
         with:
           mode: ci
           enforce_branch_naming: 'false'
           require-copilot-review: 'true'
 ```
 
-If your existing PR CI job already uses Lava Flow with `mode: ci`, add
+If your existing PR CI job already uses Diatreme with `mode: ci`, add
 `require-copilot-review: 'true'` to that step and grant `statuses: write`.
 
 ## Configuration
 
 ```yaml
-- uses: magmamoose/lava@v1
+- uses: magmamoose/diatreme@v1
   with:
     mode: ci
     require-copilot-review: 'true'
@@ -89,7 +89,7 @@ Important inputs:
 | `copilot-review-ignore-authors` | `[]` | Skip PRs from configured authors, such as Dependabot. |
 | `copilot-review-ignore-paths` | `[]` | Skip PRs when every changed file matches a configured shell-style path pattern. |
 | `copilot-review-reporter` | `commit-status` | Use `commit-status`, `check-run`, or `none`. |
-| `copilot-review-check-name` | `Lava Flow / Require Copilot Review` | Required status context or check-run name. |
+| `copilot-review-check-name` | `Diatreme / Require Copilot Review` | Required status context or check-run name. |
 
 ## Required Permissions
 
@@ -118,7 +118,7 @@ tradeoffs for untrusted fork code.
 
 The default freshness mode is `after_latest_commit`.
 
-Lava Flow prefers the deterministic GitHub review `commit_id`. When a
+Diatreme prefers the deterministic GitHub review `commit_id`. When a
 submitted Copilot review has `commit_id` equal to the current PR head SHA, the
 gate passes. When the latest matching Copilot review points at an older SHA,
 the gate fails with:
@@ -127,7 +127,7 @@ the gate fails with:
 Copilot reviewed this pull request, but new commits were pushed afterwards.
 ```
 
-If GitHub does not expose `commit_id` for a review, Lava Flow falls back to
+If GitHub does not expose `commit_id` for a review, Diatreme falls back to
 comparing the review `submitted_at` time with the latest PR commit timestamp.
 
 Use `copilot-review-freshness: exact_head_sha` when you want to fail instead of
@@ -147,11 +147,11 @@ on:
 ```
 
 Manual workflow reruns also refresh the status. A comment command such as
-`/lava-flow recheck` is not implemented yet.
+`/diatreme recheck` is not implemented yet.
 
 ## Known Limitations
 
-- Copilot must be requested by GitHub or by a user; Lava Flow only checks
+- Copilot must be requested by GitHub or by a user; Diatreme only checks
   for a completed review.
 - The gate does not parse Copilot's comments or decide whether the code is
   good. It only verifies that review happened for the current PR state.
@@ -177,7 +177,7 @@ banner is rendered from the user's private billing state and has no
 programmatic signal on the PR (no review, no comment, no check-run, no
 timeline event), so the gate cannot detect the rate limit on its own.
 
-Lava Flow handles this with two layers, in order of preference.
+Diatreme handles this with two layers, in order of preference.
 
 ### Layer 1 — Copilot's own decline notice (zero-config)
 
@@ -209,7 +209,7 @@ exists) but the user is still rate-limited, the gate consults a
 `token-broker-url`, so no configuration is required:
 
 ```yaml
-- uses: magmamoose/lava@v1
+- uses: magmamoose/diatreme@v1
   with:
     mode: ci
     require-copilot-review: 'true'
@@ -221,7 +221,7 @@ Self-hosted brokers (or callers using `auth-mode: private-app` /
 `github-token`) opt in explicitly:
 
 ```yaml
-- uses: magmamoose/lava@v1
+- uses: magmamoose/diatreme@v1
   with:
     mode: ci
     require-copilot-review: 'true'
@@ -257,7 +257,7 @@ returned after every source has been consulted.
    `owner` and `requester`, so flipping the flag on the user account
    suffices even when PRs land under multiple orgs.
 2. **OAuth-backed user billing** — when the PR author (passed as
-   `requester`) has connected to lava-flow via
+   `requester`) has connected to diatreme via
    `/copilot-oauth/connect`, the worker uses their stored refresh
    token to mint a user access token and queries
    `/users/{requester}/settings/billing/premium_request/usage`. This
@@ -311,11 +311,11 @@ open gets quota-checked against the GitHub Billing API in real time.
 **One-time deployer setup** (per broker):
 
 1. Open the App's settings at
-   `https://github.com/settings/apps/lava-flow` (or your fork's
+   `https://github.com/settings/apps/diatreme` (or your fork's
    slug if self-hosting).
 2. Under **Identifying and authorizing users**, set
    - **User authorization callback URL**: `${broker-url}/copilot-oauth/callback`
-     (e.g. `https://lava.magmamoose.com/copilot-oauth/callback`)
+     (e.g. `https://diatreme.magmamoose.com/copilot-oauth/callback`)
    - **Request user authorization (OAuth) during installation**:
      leave unchecked (we want a separate authorize flow per contributor)
    - **Enable Device Flow**: unchecked
@@ -339,7 +339,7 @@ open gets quota-checked against the GitHub Billing API in real time.
 **Verify a connection**:
 
 ```bash
-curl https://lava.magmamoose.com/copilot-oauth/status?user=CalebSargeant
+curl https://diatreme.magmamoose.com/copilot-oauth/status?user=CalebSargeant
 # → {"connected":true,"user":"CalebSargeant","connected_at":"...","refresh_token_expires_at":"..."}
 ```
 
@@ -362,7 +362,7 @@ curl -fsSL -X POST \
   -H "Authorization: Bearer ${BROKER_OVERRIDE_SECRET}" \
   -H 'Content-Type: application/json' \
   -d '{"owner":"CalebSargeant","rate_limited":true}' \
-  https://lava.magmamoose.com/copilot-quota
+  https://diatreme.magmamoose.com/copilot-quota
 ```
 
 Clear it again with the same call and `"rate_limited": false`. The

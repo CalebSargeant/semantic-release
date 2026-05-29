@@ -1,26 +1,26 @@
-# Lava Flow
+# Diatreme
 
 <p align="center">
-  <img src="docs/lava-flow-logo.png" alt="Lava Flow" width="200">
+  <img src="docs/diatreme-logo.png" alt="Diatreme" width="200">
 </p>
 
-[![CI](https://github.com/magmamoose/lava/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/lava/actions/workflows/ci.yaml)
-[![Release](https://github.com/magmamoose/lava/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/lava/actions/workflows/release.yaml)
-[![Docs](https://github.com/magmamoose/lava/actions/workflows/docs-pages.yaml/badge.svg)](https://releaserunner.dev/docs)
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Lava%20Flow-purple?logo=github)](https://github.com/marketplace/actions/lava-flow)
-[![License](https://img.shields.io/github/license/magmamoose/lava)](https://github.com/magmamoose/lava/blob/main/LICENSE)
+[![CI](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml)
+[![Release](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml)
+[![Docs](https://github.com/magmamoose/diatreme/actions/workflows/docs-pages.yaml/badge.svg)](https://diatreme.magmamoose.com/docs)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
+[![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
 Instead of composing `cycjimmy/semantic-release-action` + `docker/metadata-action` + `cloudposse/github-action-docker-promote` + ~200 lines of glue YAML, use one action.
 
 <!-- TODO: 30-second GIF showing PR→merge→release→Docker promotion -->
 
-I run release management across three different orgs. I got tired of composing `cycjimmy/semantic-release-action` plus `docker/metadata-action` plus `cloudposse/github-action-docker-promote` plus 200 lines of glue YAML in every repo. So I built Lava Flow — one action that consolidates the lot, with the multi-environment and promotion-PR patterns I actually needed in production.
+I run release management across three different orgs. I got tired of composing `cycjimmy/semantic-release-action` plus `docker/metadata-action` plus `cloudposse/github-action-docker-promote` plus 200 lines of glue YAML in every repo. So I built Diatreme — one action that consolidates the lot, with the multi-environment and promotion-PR patterns I actually needed in production.
 
-Lava Flow runs my production releases today. If you're managing release tooling across multiple repos or orgs and you're tired of the same dance every time, this is for you.
+Diatreme runs my production releases today. If you're managing release tooling across multiple repos or orgs and you're tired of the same dance every time, this is for you.
 
 ## 60-Second Quickstart
 
-A production-only release from `main`, using the Lava Flow GitHub App:
+A production-only release from `main`, using the Diatreme GitHub App:
 
 ```yaml
 name: Release
@@ -36,25 +36,25 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: magmamoose/lava@v1
+      - uses: magmamoose/diatreme@v1
         with:
           environment: prod
           environments: '["prod"]'
           prerelease-identifiers: '{}'
 ```
 
-Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installations/new) on the repo or org, add a `pyproject.toml` (default tool: `python-semantic-release`), and merge a conventional commit. You get a Git tag, a GitHub Release, and a `CHANGELOG.md` entry.
+Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repo or org, add a `pyproject.toml` (default tool: `python-semantic-release`), and merge a conventional commit. You get a Git tag, a GitHub Release, and a `CHANGELOG.md` entry.
 
 ### Scale up
 
 - **Docker image promotion** — add `packages: write` and `image_name: my-app`, plus a `docker-bake.hcl`. PR builds land at `pr-<N>`; merges retag to the release version, no rebuild.
-- **Multiple environments** — switch to `environments: '["dev", "staging", "prod"]'`, set `prerelease-identifiers`, and run in `deployment-model: tbd-pr` with `create-promotion-pr: 'true'` so each release publish opens the promotion PR for the next environment. See [Choose your setup](https://releaserunner.dev/docs/choose-your-setup/) for the full caller workflow (the initial push trigger needs an explicit `environment` for the first env in the chain).
+- **Multiple environments** — switch to `environments: '["dev", "staging", "prod"]'`, set `prerelease-identifiers`, and run in `deployment-model: tbd-pr` with `create-promotion-pr: 'true'` so each release publish opens the promotion PR for the next environment. See [Choose your setup](https://diatreme.magmamoose.com/docs/choose-your-setup/) for the full caller workflow (the initial push trigger needs an explicit `environment` for the first env in the chain).
 - **Concurrent triggers** (push + promotion-PR merges on the same branch) — swap the `uses:` line for the bundled reusable workflow:
 
   ```yaml
   jobs:
     release:
-      uses: magmamoose/lava/.github/workflows/lava-flow.yaml@v1
+      uses: magmamoose/diatreme/.github/workflows/diatreme.yaml@v1
       permissions:
         contents: read
         id-token: write
@@ -64,7 +64,7 @@ Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installatio
         prerelease-identifiers: '{}'
   ```
 
-  Same inputs; adds an automatic `concurrency: lava-flow-<target-branch>` lock with FIFO queueing.
+  Same inputs; adds an automatic `concurrency: diatreme-<target-branch>` lock with FIFO queueing.
 
 ## What You Get
 
@@ -72,16 +72,16 @@ Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installatio
 - **Retag-not-rebuild Docker promotion.** The image that passed PR CI as `pr-42` becomes `v1.2.3` via registry retag. No fresh build, no binary drift between staging and prod. Falls back to a Docker Bake rebuild only when the source image is missing.
 - **Per-environment prerelease identifiers.** `{"dev":"dev","staging":"rc"}` → tags land as `v1.2.3-dev.1`, `v1.2.3-rc.1`, `v1.2.3`. Production sheds the suffix.
 - **Promotion PRs auto-open.** In `deployment-model: tbd-pr` with `create-promotion-pr: 'true'`, each release publish opens the promotion PR for the next environment. Merging `promote/staging/<version>` cuts the staging tag and opens `promote/prod/<version>`; merging that cuts the stable prod tag. The cascade chains through every entry in `environments`.
-- **Require Copilot Review.** In `mode: ci`, Lava Flow can publish `Lava Flow / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
+- **Require Copilot Review.** In `mode: ci`, Diatreme can publish `Diatreme / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
 - **ClickUp + GitHub Projects v2 in release notes.** Scans commits and PR bodies in the release range for `app.clickup.com/t/...` URLs and issue/PR refs (`#NNN`), appends grouped sections to the GitHub Release notes and to any open promotion PR body.
 - **Production guardrail on by default.** `admin-required-from: '@last'` makes manual `workflow_dispatch` runs targeting production require `permission: admin` on the repository. Push and promotion-PR-merge triggers are unaffected.
-- **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: lava-flow-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
+- **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: diatreme-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
 
 ## Compared to Alternatives
 
 | Action | Versioning | Docker build | Promote (retag) | Multi-env prerelease | Promotion PRs | ClickUp | Projects v2 | Admin gate | Concurrency lock |
 |---|---|---|---|---|---|---|---|---|---|
-| **Lava Flow** | all 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **Diatreme** | all 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | cycjimmy/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
 | codfish/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
 | googleapis/release-please-action | release-please | — | — | — | — | — | — | — | — |
@@ -95,13 +95,13 @@ Install the [Lava Flow GitHub App](https://github.com/apps/lava-flow/installatio
 
 ## Setup
 
-- [Concepts](https://releaserunner.dev/docs/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
-- [Choose your setup](https://releaserunner.dev/docs/choose-your-setup/) — paste-ready snippets for each release model.
-- [Repository setup](https://releaserunner.dev/docs/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
-- [Require Copilot Review](https://releaserunner.dev/docs/copilot-review/) — enforce completed Copilot PR Review as a required status check.
-- [Organization setup](https://releaserunner.dev/docs/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
+- [Concepts](https://diatreme.magmamoose.com/docs/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
+- [Choose your setup](https://diatreme.magmamoose.com/docs/choose-your-setup/) — paste-ready snippets for each release model.
+- [Repository setup](https://diatreme.magmamoose.com/docs/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
+- [Require Copilot Review](https://diatreme.magmamoose.com/docs/copilot-review/) — enforce completed Copilot PR Review as a required status check.
+- [Organization setup](https://diatreme.magmamoose.com/docs/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
 
-Full input/output reference: [Action reference](https://releaserunner.dev/docs/reference/action-inputs-outputs/).
+Full input/output reference: [Action reference](https://diatreme.magmamoose.com/docs/reference/action-inputs-outputs/).
 
 ---
 

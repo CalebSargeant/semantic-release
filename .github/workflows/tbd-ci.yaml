@@ -1,6 +1,6 @@
 name: TBD CI — Build and Push PR Image
 
-# Thin wrapper around magmamoose/lava@v1 (mode: ci).
+# Thin wrapper around magmamoose/diatreme@v1 (mode: ci).
 # Prefer using the action directly for full control:
 #
 #   jobs:
@@ -11,7 +11,7 @@ name: TBD CI — Build and Push PR Image
 #         packages: write
 #         pull-requests: read
 #       steps:
-#         - uses: magmamoose/lava@v1
+#         - uses: magmamoose/diatreme@v1
 #           with:
 #             mode: ci
 #             image_name: my-app
@@ -91,7 +91,7 @@ on:
       copilot-review-check-name:
         required: false
         type: string
-        default: 'Lava Flow / Require Copilot Review'
+        default: 'Diatreme / Require Copilot Review'
 
 jobs:
   build:
@@ -106,7 +106,7 @@ jobs:
       statuses: write
       checks: write
     steps:
-      - uses: magmamoose/lava@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
+      - uses: magmamoose/diatreme@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
         with:
           mode: ci
           image_name:              ${{ inputs.image_name }}

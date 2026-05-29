@@ -31,7 +31,7 @@ jobs:
           environments: '["prod"]'
           prerelease-identifiers: '{}'
 
-      - name: Request Lava Flow token for major tag
+      - name: Request Diatreme token for major tag
         id: major-token
         if: steps.release.outputs.released == 'true' && !contains(steps.release.outputs.version, '-')
         run: ./scripts/request-public-app-token.sh

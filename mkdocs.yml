@@ -1,11 +1,11 @@
-site_name: Lava Flow
-site_description: Setup and reference documentation for magmamoose/lava@v1.
-repo_name: magmamoose/lava
-repo_url: https://github.com/magmamoose/lava
+site_name: Diatreme
+site_description: Setup and reference documentation for magmamoose/diatreme@v1.
+repo_name: magmamoose/diatreme
+repo_url: https://github.com/magmamoose/diatreme
 theme:
   name: material
-  logo: lava-flow-logo.png
-  favicon: lava-flow-logo.png
+  logo: diatreme-logo.png
+  favicon: diatreme-logo.png
   features:
     - navigation.tabs
     - navigation.top

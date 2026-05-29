@@ -20,7 +20,7 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: magmamoose/lava@v1
+      - uses: magmamoose/diatreme@v1
         with:
           mode: release
           deployment-model: tbd-pr

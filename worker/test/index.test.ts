@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 const env: BrokerEnv = {
   GITHUB_APP_ID: "12345",
   GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nsecret\\n-----END PRIVATE KEY-----",
-  OIDC_AUDIENCE: "lava-flow"
+  OIDC_AUDIENCE: "diatreme"
 };
 
 function tokenRequest(body: Record<string, unknown>): Request {

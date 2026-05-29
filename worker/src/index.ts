@@ -10,8 +10,8 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL =
   "https://token.actions.githubusercontent.com/.well-known/jwks";
 const GITHUB_API_VERSION = "2022-11-28";
-const DEFAULT_AUDIENCE = "lava-flow";
-// Legacy audience accepted during the release-runner → lava-flow migration so
+const DEFAULT_AUDIENCE = "diatreme";
+// Legacy audience accepted during the release-runner → diatreme migration so
 // OIDC tokens minted by older pinned action versions still verify.
 const LEGACY_AUDIENCE = "release-runner";
 const DEFAULT_PERMISSIONS: TokenPermissions = {
@@ -210,7 +210,7 @@ async function handleTokenRequest(
 
 // ─── /copilot-quota ──────────────────────────────────────────────────────────
 // Reports whether a GitHub account has exhausted its Copilot premium-request
-// allowance. The signal is consumed by Lava Flow's require-copilot-review
+// allowance. The signal is consumed by Diatreme's require-copilot-review
 // gate so it can pass gracefully when no review will ever arrive.
 //
 // State sources, in order of preference:
@@ -309,7 +309,7 @@ async function handleCopilotQuotaGet(
 
   // 3. OAuth-backed user billing for the requester. Most reliable
   // detection path for individual quota exhaustion when the requester
-  // has authorized Lava Flow via /copilot-oauth/connect. Uses a
+  // has authorized Diatreme via /copilot-oauth/connect. Uses a
   // user access token (not the App installation token) to query
   // /users/{requester}/settings/billing/premium_request/usage, which
   // requires the "Plan" account permission. No-op when the requester
@@ -598,7 +598,7 @@ async function performBillingApiLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "lava-flow-broker"
+        "User-Agent": "diatreme-broker"
       }
     });
     if (usageResponse.status === 404) continue;
@@ -726,7 +726,7 @@ function nextUtcMonthBoundary(now: Date): Date {
 }
 
 // ─── /copilot-oauth ──────────────────────────────────────────────────────────
-// OAuth user-access-token flow against the Lava Flow GitHub App. Each
+// OAuth user-access-token flow against the Diatreme GitHub App. Each
 // contributor authorizes once; the worker stores a refresh token in KV
 // keyed by their github login. The /copilot-quota resolver mints fresh
 // user access tokens on demand and queries the user-scoped billing API —
@@ -888,7 +888,7 @@ async function handleOAuthCallback(
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      "User-Agent": "lava-flow-broker"
+      "User-Agent": "diatreme-broker"
     },
     body: JSON.stringify({
       client_id: clientId,
@@ -928,7 +928,7 @@ async function handleOAuthCallback(
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${tokenBody.access_token}`,
       "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      "User-Agent": "lava-flow-broker"
+      "User-Agent": "diatreme-broker"
     }
   });
   if (!userResponse.ok) {
@@ -993,7 +993,7 @@ async function handleOAuthCallback(
 
   return oauthHtmlResponse(
     "Connected ✓",
-    `Lava Flow can now check your Copilot premium-request quota when you open pull requests. You're connected as <strong>${escapeHtml(login)}</strong>; the connection is good for ~6 months and auto-renews each time you push a PR. You can close this tab.` +
+    `Diatreme can now check your Copilot premium-request quota when you open pull requests. You're connected as <strong>${escapeHtml(login)}</strong>; the connection is good for ~6 months and auto-renews each time you push a PR. You can close this tab.` +
       (returnTo ? `<p><a href="${escapeAttr(returnTo)}">Return to ${escapeHtml(returnTo)}</a></p>` : ""),
     200
   );
@@ -1081,7 +1081,7 @@ async function getUserAccessToken(
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      "User-Agent": "lava-flow-broker"
+      "User-Agent": "diatreme-broker"
     },
     body: JSON.stringify({
       client_id: clientId,
@@ -1154,7 +1154,7 @@ async function tryOAuthUserBillingLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${accessToken}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "lava-flow-broker"
+        "User-Agent": "diatreme-broker"
       }
     });
     if (response.status === 404) continue;
@@ -1196,7 +1196,7 @@ function oauthHtmlResponse(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${escapeHtml(title)} — Lava Flow</title>
+  <title>${escapeHtml(title)} — Diatreme</title>
   <style>
     :root { color-scheme: light dark; }
     body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 540px; margin: 4rem auto; padding: 0 1rem; }
@@ -1219,7 +1219,7 @@ function oauthHtmlResponse(
 }
 
 // ─── /webhook ────────────────────────────────────────────────────────────────
-// Receives GitHub webhook deliveries for the Lava Flow App. We verify
+// Receives GitHub webhook deliveries for the Diatreme App. We verify
 // HMAC-SHA256 against GITHUB_WEBHOOK_SECRET, then accumulate per-owner
 // Copilot review request/delivery timestamps in KV. The /copilot-quota GET
 // path reads these as a third signal in its resolution chain.
@@ -1857,7 +1857,7 @@ async function githubGraphql(
 
 // ─── POST /process ───────────────────────────────────────────────────────────
 // Manual re-walk of a pull request's Copilot review comments — the surface the
-// Lava Pro dashboard calls. Bearer-gated (PROCESS_TRIGGER_SECRET). Reuses the
+// Diatreme Pro dashboard calls. Bearer-gated (PROCESS_TRIGGER_SECRET). Reuses the
 // same classify/dismiss logic as the webhook triage path, but processes every
 // Copilot comment on the PR rather than reacting to a single delivery.
 
@@ -2188,7 +2188,7 @@ async function tryMetricsApiLookup(
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${tokenBody.token}`,
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        "User-Agent": "lava-flow-broker"
+        "User-Agent": "diatreme-broker"
       }
     });
     if (response.status === 404) continue;
@@ -2403,7 +2403,7 @@ function githubHeaders(appJwt: string): HeadersInit {
   return {
     accept: "application/vnd.github+json",
     authorization: `Bearer ${appJwt}`,
-    "user-agent": "calebsargeant-lava-flow",
+    "user-agent": "calebsargeant-diatreme",
     "x-github-api-version": GITHUB_API_VERSION
   };
 }
