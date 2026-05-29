@@ -1403,12 +1403,12 @@ describe("Copilot comment triage", () => {
     });
   });
 });
-// ─── /copilot-oauth ──────────────────────────────────────────────────────────
+// ─── /oauth ──────────────────────────────────────────────────────────
 
 describe("copilot-oauth flow", () => {
   it("connect returns 503 when client_id is not configured", async () => {
     const response = await handleRequest(
-      new Request("https://broker.example.com/copilot-oauth/connect", { method: "GET" }),
+      new Request("https://broker.example.com/oauth/connect", { method: "GET" }),
       env
     );
     expect(response.status).toBe(503);
@@ -1418,7 +1418,7 @@ describe("copilot-oauth flow", () => {
   it("connect 302s to github.com with a CSRF state", async () => {
     const { kv, store } = makeKv();
     const response = await handleRequest(
-      new Request("https://broker.example.com/copilot-oauth/connect", { method: "GET" }),
+      new Request("https://broker.example.com/oauth/connect", { method: "GET" }),
       {
         ...env,
         COPILOT_QUOTA_KV: kv,
@@ -1430,7 +1430,7 @@ describe("copilot-oauth flow", () => {
     expect(loc.startsWith("https://github.com/login/oauth/authorize")).toBe(true);
     expect(loc).toContain("client_id=Iv23test");
     expect(loc).toContain("state=");
-    expect(loc).toContain("redirect_uri=https%3A%2F%2Fbroker.example.com%2Fcopilot-oauth%2Fcallback");
+    expect(loc).toContain("redirect_uri=https%3A%2F%2Fbroker.example.com%2Foauth%2Fcallback");
 
     // state should be stashed in KV with the matching value
     const stateMatch = loc.match(/state=([a-f0-9]+)/);
@@ -1461,7 +1461,7 @@ describe("copilot-oauth flow", () => {
 
     const response = await handleRequest(
       new Request(
-        `https://broker.example.com/copilot-oauth/callback?code=abc123&state=${state}`,
+        `https://broker.example.com/oauth/callback?code=abc123&state=${state}`,
         { method: "GET" }
       ),
       {
@@ -1494,7 +1494,7 @@ describe("copilot-oauth flow", () => {
     const { kv } = makeKv();
     const response = await handleRequest(
       new Request(
-        "https://broker.example.com/copilot-oauth/callback?code=abc&state=unknown",
+        "https://broker.example.com/oauth/callback?code=abc&state=unknown",
         { method: "GET" }
       ),
       {
@@ -1511,7 +1511,7 @@ describe("copilot-oauth flow", () => {
   it("callback surfaces GitHub's error param without exchanging tokens", async () => {
     const response = await handleRequest(
       new Request(
-        "https://broker.example.com/copilot-oauth/callback?error=access_denied",
+        "https://broker.example.com/oauth/callback?error=access_denied",
         { method: "GET" }
       ),
       {
@@ -1527,7 +1527,7 @@ describe("copilot-oauth flow", () => {
   it("status returns connected:false when KV is empty", async () => {
     const { kv } = makeKv();
     const response = await handleRequest(
-      new Request("https://broker.example.com/copilot-oauth/status?user=alice", {
+      new Request("https://broker.example.com/oauth/status?user=alice", {
         method: "GET"
       }),
       { ...env, COPILOT_QUOTA_KV: kv }
@@ -1548,7 +1548,7 @@ describe("copilot-oauth flow", () => {
     });
     const response = await handleRequest(
       new Request(
-        "https://broker.example.com/copilot-oauth/status?user=calebsargeant",
+        "https://broker.example.com/oauth/status?user=calebsargeant",
         { method: "GET" }
       ),
       { ...env, COPILOT_QUOTA_KV: kv }

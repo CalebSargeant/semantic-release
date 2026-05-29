@@ -36,7 +36,7 @@ export type BrokerEnv = Env & {
   COPILOT_QUOTA_CACHE_TTL_SECONDS?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   COPILOT_WEBHOOK_REVIEW_GAP_SECONDS?: string;
-  // /copilot-oauth (App user-access-token flow)
+  // /oauth (App user-access-token flow)
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
   // /webhook pull_request_review_comment → triage Copilot review comments.
@@ -134,11 +134,11 @@ export async function handleRequest(
         return await handleWebhookRequest(request, env, dependencies);
       case "/process":
         return await handleProcessRequest(request, env, dependencies);
-      case "/copilot-oauth/connect":
+      case "/oauth/connect":
         return await handleOAuthConnect(env, dependencies, url);
-      case "/copilot-oauth/callback":
+      case "/oauth/callback":
         return await handleOAuthCallback(env, dependencies, url);
-      case "/copilot-oauth/status":
+      case "/oauth/status":
         return await handleOAuthStatus(env, url);
       default:
         return jsonError(404, "not_found");
@@ -309,7 +309,7 @@ async function handleCopilotQuotaGet(
 
   // 3. OAuth-backed user billing for the requester. Most reliable
   // detection path for individual quota exhaustion when the requester
-  // has authorized Diatreme via /copilot-oauth/connect. Uses a
+  // has authorized Diatreme via /oauth/connect. Uses a
   // user access token (not the App installation token) to query
   // /users/{requester}/settings/billing/premium_request/usage, which
   // requires the "Plan" account permission. No-op when the requester
@@ -725,7 +725,7 @@ function nextUtcMonthBoundary(now: Date): Date {
   );
 }
 
-// ─── /copilot-oauth ──────────────────────────────────────────────────────────
+// ─── /oauth ──────────────────────────────────────────────────────────
 // OAuth user-access-token flow against the Diatreme GitHub App. Each
 // contributor authorizes once; the worker stores a refresh token in KV
 // keyed by their github login. The /copilot-quota resolver mints fresh
@@ -738,16 +738,16 @@ function nextUtcMonthBoundary(now: Date): Date {
 //   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
 //
 // Endpoints:
-//   GET /copilot-oauth/connect[?return_to=URL]
+//   GET /oauth/connect[?return_to=URL]
 //     Initiates the OAuth dance. Generates a CSRF state, stashes it in
 //     KV with a 10 min TTL, then 302s to github.com/login/oauth/authorize.
 //
-//   GET /copilot-oauth/callback?code=…&state=…
+//   GET /oauth/callback?code=…&state=…
 //     Receives GitHub's auth code. Validates state, exchanges code for
 //     access_token + refresh_token, fetches /user to learn the login,
 //     stores the refresh_token in KV. Returns an HTML success page.
 //
-//   GET /copilot-oauth/status?user=LOGIN
+//   GET /oauth/status?user=LOGIN
 //     Returns whether KV holds a non-expired refresh token for that user.
 //     No auth — connection state isn't sensitive (just a boolean).
 
@@ -774,6 +774,9 @@ interface OAuthUserRecord {
   last_used_at?: string;
 }
 
+// NB: the URL routes are /oauth/* but these KV key prefixes stay
+// `copilot-oauth:` on purpose — renaming them would orphan connections already
+// stored in the (shared) KV namespace. Internal-only; never user-visible.
 function oauthStateKey(state: string): string {
   return `copilot-oauth:state:${state}`;
 }
@@ -785,7 +788,7 @@ function oauthUserKey(login: string): string {
 function callbackUrl(env: BrokerEnv, requestUrl: URL): string {
   // Build the callback URL from the request origin, so the worker
   // works under workers.dev preview deploys without env tweaks.
-  return `${requestUrl.origin}/copilot-oauth/callback`;
+  return `${requestUrl.origin}/oauth/callback`;
 }
 
 function randomState(): string {
@@ -874,7 +877,7 @@ async function handleOAuthCallback(
   if (!stateRaw) {
     return oauthHtmlResponse(
       "Authorization expired",
-      "The authorization link is missing or expired. Open <code>/copilot-oauth/connect</code> again to restart the flow.",
+      "The authorization link is missing or expired. Open <code>/oauth/connect</code> again to restart the flow.",
       400
     );
   }
@@ -1171,7 +1174,7 @@ async function tryOAuthUserBillingLookup(
   return null;
 }
 
-// ─── /copilot-oauth HTML helpers ─────────────────────────────────────────────
+// ─── /oauth HTML helpers ─────────────────────────────────────────────
 
 function escapeHtml(s: string): string {
   return s
