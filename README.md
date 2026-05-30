@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml)
 [![Release](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml)
-[![Docs](https://github.com/magmamoose/diatreme/actions/workflows/docs-pages.yaml/badge.svg)](https://diatreme.magmamoose.com/docs)
+[![Docs](https://github.com/magmamoose/diatreme/actions/workflows/docs-pages.yaml/badge.svg)](https://docs.diatreme.magmamoose.com/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
 [![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
@@ -48,7 +48,7 @@ Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations
 ### Scale up
 
 - **Docker image promotion** — add `packages: write` and `image_name: my-app`, plus a `docker-bake.hcl`. PR builds land at `pr-<N>`; merges retag to the release version, no rebuild.
-- **Multiple environments** — switch to `environments: '["dev", "staging", "prod"]'`, set `prerelease-identifiers`, and run in `deployment-model: tbd-pr` with `create-promotion-pr: 'true'` so each release publish opens the promotion PR for the next environment. See [Choose your setup](https://diatreme.magmamoose.com/docs/choose-your-setup/) for the full caller workflow (the initial push trigger needs an explicit `environment` for the first env in the chain).
+- **Multiple environments** — switch to `environments: '["dev", "staging", "prod"]'`, set `prerelease-identifiers`, and run in `deployment-model: tbd-pr` with `create-promotion-pr: 'true'` so each release publish opens the promotion PR for the next environment. See [Choose your setup](https://docs.diatreme.magmamoose.com/choose-your-setup/) for the full caller workflow (the initial push trigger needs an explicit `environment` for the first env in the chain).
 - **Concurrent triggers** (push + promotion-PR merges on the same branch) — swap the `uses:` line for the bundled reusable workflow:
 
   ```yaml
@@ -95,13 +95,13 @@ Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations
 
 ## Setup
 
-- [Concepts](https://diatreme.magmamoose.com/docs/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
-- [Choose your setup](https://diatreme.magmamoose.com/docs/choose-your-setup/) — paste-ready snippets for each release model.
-- [Repository setup](https://diatreme.magmamoose.com/docs/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
-- [Require Copilot Review](https://diatreme.magmamoose.com/docs/copilot-review/) — enforce completed Copilot PR Review as a required status check.
-- [Organization setup](https://diatreme.magmamoose.com/docs/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
+- [Concepts](https://docs.diatreme.magmamoose.com/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
+- [Choose your setup](https://docs.diatreme.magmamoose.com/choose-your-setup/) — paste-ready snippets for each release model.
+- [Repository setup](https://docs.diatreme.magmamoose.com/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
+- [Require Copilot Review](https://docs.diatreme.magmamoose.com/copilot-review/) — enforce completed Copilot PR Review as a required status check.
+- [Organization setup](https://docs.diatreme.magmamoose.com/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
 
-Full input/output reference: [Action reference](https://diatreme.magmamoose.com/docs/reference/action-inputs-outputs/).
+Full input/output reference: [Action reference](https://docs.diatreme.magmamoose.com/reference/action-inputs-outputs/).
 
 ---
 
