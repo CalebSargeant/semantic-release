@@ -271,7 +271,7 @@ One of:
 #### `token-broker-url`
 
 - Required: `false`
-- Default: `https://diatreme.magmamoose.com`
+- Default: `https://api.diatreme.magmamoose.com`
 
 Advanced override for the hosted Diatreme GitHub App auth service.
 Most repositories should not set this.

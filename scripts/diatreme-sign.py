@@ -19,7 +19,7 @@ Intended flow inside a dispatched session:
     gh pr create --head diatreme/dispatch-XXXX --base <default-branch> ...
 
 Environment:
-    DIATREME_BASE_URL    e.g. https://diatreme.magmamoose.com
+    DIATREME_BASE_URL    e.g. https://api.diatreme.magmamoose.com
     DIATREME_SIGN_TOKEN  the worker's PROCESS_TRIGGER_SECRET (Bearer)
     DIATREME_USER        the GitHub login to attribute/sign as (must have
                          authorised the Diatreme App via /oauth/connect)

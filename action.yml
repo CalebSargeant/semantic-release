@@ -36,7 +36,7 @@ inputs:
       Advanced override for the hosted Diatreme GitHub App auth service.
       Most repositories should not set this.
     required: false
-    default: 'https://diatreme.magmamoose.com'
+    default: 'https://api.diatreme.magmamoose.com'
 
   oidc-audience:
     description: 'Advanced override for public-app authentication. Most repositories should not set this.'

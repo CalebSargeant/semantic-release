@@ -75,7 +75,7 @@ on:
         default: 'public-app'
       token-broker-url:
         type: string
-        default: 'https://diatreme.magmamoose.com'
+        default: 'https://api.diatreme.magmamoose.com'
       oidc-audience:
         type: string
         default: 'diatreme'

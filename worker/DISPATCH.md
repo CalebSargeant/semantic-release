@@ -77,7 +77,7 @@ Set these on the **routine's environment** (env vars). Note they are *not* the
 signing key — that stays in the worker; the session only needs the worker URL,
 the trigger bearer, and the login to attribute to:
 
-    DIATREME_BASE_URL    https://diatreme.magmamoose.com
+    DIATREME_BASE_URL    https://api.diatreme.magmamoose.com
     DIATREME_SIGN_TOKEN  <the worker's PROCESS_TRIGGER_SECRET>
     DIATREME_USER        <your GitHub login>
 
