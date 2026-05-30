@@ -35,7 +35,7 @@ on:
       token-broker-url:
         required: false
         type: string
-        default: 'https://diatreme.magmamoose.com'
+        default: 'https://api.diatreme.magmamoose.com'
       oidc-audience:
         required: false
         type: string

@@ -315,7 +315,7 @@ open gets quota-checked against the GitHub Billing API in real time.
    slug if self-hosting).
 2. Under **Identifying and authorizing users**, set
    - **User authorization callback URL**: `${broker-url}/oauth/callback`
-     (e.g. `https://diatreme.magmamoose.com/oauth/callback`)
+     (e.g. `https://api.diatreme.magmamoose.com/oauth/callback`)
    - **Request user authorization (OAuth) during installation**:
      leave unchecked (we want a separate authorize flow per contributor)
    - **Enable Device Flow**: unchecked
@@ -339,7 +339,7 @@ open gets quota-checked against the GitHub Billing API in real time.
 **Verify a connection**:
 
 ```bash
-curl https://diatreme.magmamoose.com/oauth/status?user=CalebSargeant
+curl https://api.diatreme.magmamoose.com/oauth/status?user=CalebSargeant
 # → {"connected":true,"user":"CalebSargeant","connected_at":"...","refresh_token_expires_at":"..."}
 ```
 
@@ -362,7 +362,7 @@ curl -fsSL -X POST \
   -H "Authorization: Bearer ${BROKER_OVERRIDE_SECRET}" \
   -H 'Content-Type: application/json' \
   -d '{"owner":"CalebSargeant","rate_limited":true}' \
-  https://diatreme.magmamoose.com/copilot-quota
+  https://api.diatreme.magmamoose.com/copilot-quota
 ```
 
 Clear it again with the same call and `"rate_limited": false`. The
