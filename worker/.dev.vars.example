@@ -8,7 +8,7 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVA
 OIDC_AUDIENCE="diatreme"
 
 # --- GitHub Enterprise (opt-in): the "duplicate" GHE App + tenant endpoints ---
-GHE_OIDC_ISSUER="https://token.actions.pinkroccade.ghe.com"
+GHE_OIDC_ISSUER="https://token.actions.example.ghe.com"
 GHE_API_BASE="https://example.ghe.com/api/v3"
 GHE_GITHUB_APP_ID="99999"
 GHE_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
