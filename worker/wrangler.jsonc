@@ -25,6 +25,32 @@
   //   GHE_GITHUB_APP_PRIVATE_KEY
   //   GHE_GITHUB_APP_INSTALLATION_ID  (optional — skips the per-repo lookup)
   //
+  // Copilot comment triage (POST /process + the pull_request_review_comment
+  // webhook) — OPT-IN, bring-your-own-key. Unset ⇒ triage is disabled and the
+  // dashboard reports "triage disabled (no LLM key configured on the worker)".
+  // Set the key to enable; the rest are optional overrides:
+  //   TRIAGE_LLM_API_KEY              the LLM key triage classifies comments with
+  //   TRIAGE_LLM_PROVIDER             anthropic (default) | openai | deepseek | openrouter
+  //   TRIAGE_LLM_MODEL                default claude-haiku-4-5 for anthropic
+  //                                   (for DeepSeek use deepseek-chat — the v4
+  //                                   reasoning models can exceed the 256-token
+  //                                   classifier budget and return empty content)
+  //   TRIAGE_LLM_BASE_URL             override base URL for OpenAI-compatible providers
+  // A "fix" verdict is routed by effort: small/localized fixes are applied
+  // inline (the fixer LLM rewrites the one file; the change is committed to the
+  // PR branch via createCommitOnBranch, App-attributed + GitHub-signed), large
+  // fixes go to the Claude Code dispatch routine. The inline fixer is OFF unless
+  // TRIAGE_FIX_LLM_MODEL is set; provider/key/base default to the triage ones:
+  //   TRIAGE_FIX_LLM_MODEL            e.g. deepseek-v4-pro — enables the inline fixer
+  //   TRIAGE_FIX_LLM_PROVIDER         default: TRIAGE_LLM_PROVIDER
+  //   TRIAGE_FIX_LLM_API_KEY          default: TRIAGE_LLM_API_KEY
+  //   TRIAGE_FIX_LLM_BASE_URL         default: TRIAGE_LLM_BASE_URL
+  //   TRIAGE_FIX_MAX_TOKENS           fixer reply budget (default 8192)
+  //   TRIAGE_FIX_MAX_FILE_BYTES       only inline-fix files ≤ this size (default 20000)
+  // CI sets TRIAGE_LLM_API_KEY from the same-named Actions secret on deploy
+  // (see .github/workflows/deploy-worker.yaml). To set it by hand instead:
+  //   wrangler secret put TRIAGE_LLM_API_KEY
+  //
   // KV namespace backing /copilot-quota (manual override + billing/metrics
   // cache + webhook signal) and the /oauth connect-state store.
   //   wrangler kv namespace create COPILOT_QUOTA_KV

@@ -1403,6 +1403,99 @@ describe("Copilot comment triage", () => {
     expect(typeof out.dispatch_id).toBe("string");
   });
 
+  const fixEnv: BrokerEnv = { ...triageEnv, TRIAGE_FIX_LLM_MODEL: "fixer-model" };
+  const fixPayload = () =>
+    reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "OWNER",
+        user: { login: "trusted-dev" },
+        head: { ref: "feature-branch", sha: "HEADSHA" }
+      }
+    });
+
+  it("auto-commits a small fix to the PR branch via createCommitOnBranch", async () => {
+    const original = "const x = 1;\n";
+    const updated = "const y = 2;\n";
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ content: [{ type: "text", text: '{"decision":"fix","effort":"small"}' }] }),
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json({
+          type: "file",
+          encoding: "base64",
+          size: original.length,
+          content: Buffer.from(original).toString("base64")
+        }), // file contents
+        Response.json({ content: [{ type: "text", text: "```\n" + updated + "```" }] }), // fixer LLM
+        Response.json({
+          data: {
+            createCommitOnBranch: {
+              commit: { oid: "abc123", url: "https://github.com/octo-org/octo-repo/commit/abc123" }
+            }
+          }
+        }) // graphql commit
+      ]
+    });
+    const payload = fixPayload();
+    const sig = await hmac("shh", JSON.stringify(payload));
+    const response = await handleRequest(reviewCommentRequest(payload, sig), fixEnv, injected);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      decision: "fix",
+      effort: "small",
+      engine: "inline",
+      action: "committed",
+      path: "src/x.ts",
+      commit_oid: "abc123",
+      commit_url: "https://github.com/octo-org/octo-repo/commit/abc123"
+    });
+    expect(calls[3].url).toContain("/contents/src/x.ts");
+    expect(calls[5].url).toContain("/graphql");
+  });
+
+  it("routes a large-effort fix to Claude Code dispatch even when the inline fixer is configured", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ content: [{ type: "text", text: '{"decision":"fix","effort":"large"}' }] })
+      ]
+    });
+    const payload = fixPayload();
+    const sig = await hmac("shh", JSON.stringify(payload));
+    const response = await handleRequest(reviewCommentRequest(payload, sig), fixEnv, injected);
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix");
+    expect(out.effort).toBe("large");
+    expect(out.engine).toBe("claude-code");
+    expect(out.action).toBe("dispatched");
+  });
+
+  it("falls back to dispatch when the inline fixer returns no change", async () => {
+    const original = "const x = 1;\n";
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ content: [{ type: "text", text: '{"decision":"fix","effort":"small"}' }] }),
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json({
+          type: "file",
+          encoding: "base64",
+          size: original.length,
+          content: Buffer.from(original).toString("base64")
+        }),
+        Response.json({ content: [{ type: "text", text: "```\n" + original + "```" }] }) // identical ⇒ no-op
+      ]
+    });
+    const payload = fixPayload();
+    const sig = await hmac("shh", JSON.stringify(payload));
+    const response = await handleRequest(reviewCommentRequest(payload, sig), fixEnv, injected);
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix");
+    expect(out.engine).toBe("claude-code");
+    expect(out.action).toBe("dispatched");
+  });
+
   it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
     const { calls, deps: injected } = deps({
       githubResponses: [

@@ -404,3 +404,59 @@ To enable the full detection chain on a self-hosted broker:
 
 Each layer is independent — you can deploy with only some of them
 configured and the others degrade to neutral output.
+
+## Comment Triage (opt-in)
+
+Beyond gating on whether Copilot reviewed, the broker can also act on
+*what Copilot said*. On a Copilot `pull_request_review_comment` webhook —
+or a manual re-walk via `POST /process` — the worker classifies each
+comment with a bring-your-own-key LLM and acts on the verdict:
+
+- **`dismiss`** — the comment is wrong or a false positive; the worker
+  resolves the review thread via GraphQL.
+- **`skip`** — undecidable from the comment alone; left untouched.
+- **`fix`** — a real, actionable problem; routed by effort (below).
+
+Automatic triage only runs for trusted PR authors (by default repo
+`OWNER`/`MEMBER`/`COLLABORATOR`; widen with `TRIAGE_TRUSTED_USERS` /
+`TRIAGE_TRUSTED_ASSOCIATIONS`).
+
+### Fix routing — inline patch vs Claude Code
+
+When the verdict is `fix`, the classifier also tags an **effort** and the
+worker routes accordingly:
+
+- **`small`** (a localized one-file edit) → the **inline fixer**: a
+  stronger fixer LLM rewrites that single file and the change is committed
+  straight to the PR branch via `createCommitOnBranch` (App-attributed,
+  GitHub-signed). Best-effort and guarded — single file only, size-capped
+  (`TRIAGE_FIX_MAX_FILE_BYTES`, default 20 KB), no-op rewrites are dropped,
+  and any failure falls back to dispatch.
+- **`large`** (multiple files / non-trivial / uncertain) → the **Claude
+  Code dispatch routine**, which clones, implements, and opens a PR
+  (see [worker/DISPATCH.md](https://github.com/magmamoose/diatreme/blob/main/worker/DISPATCH.md)).
+
+The inline fixer is **off** unless `TRIAGE_FIX_LLM_MODEL` is set (e.g.
+`deepseek-v4-pro`); its provider/key/base default to the triage ones, so a
+same-provider stronger model needs only that one secret. Effort defaults to
+`large` (the reviewed-PR route) whenever the classifier is unsure, so an
+inline auto-commit only happens on an explicit `small`.
+
+**This is bring-your-own-key — no key means no triage.** With
+`TRIAGE_LLM_API_KEY` unset the feature is disabled and the dashboard
+reports `triage disabled (no LLM key configured on the worker)`. To
+enable it:
+
+```bash
+wrangler secret put TRIAGE_LLM_API_KEY   # paste your LLM key when prompted
+```
+
+On the hosted deploy, set a repository Actions secret named
+`TRIAGE_LLM_API_KEY` instead — `.github/workflows/deploy-worker.yaml`
+uploads it to the Worker on the next deploy (and skips the upload when
+it's unset, so triage stays opt-in).
+
+The provider defaults to Anthropic with model `claude-haiku-4-5`.
+Override with the optional `TRIAGE_LLM_PROVIDER`
+(`anthropic` | `openai` | `deepseek` | `openrouter`), `TRIAGE_LLM_MODEL`,
+and `TRIAGE_LLM_BASE_URL` (for OpenAI-compatible endpoints) secrets.

@@ -14,3 +14,27 @@ GHE_GITHUB_APP_ID="99999"
 GHE_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 # Optional — skips the per-repo installation lookup (the GHE App secret carries it):
 GHE_GITHUB_APP_INSTALLATION_ID="123"
+
+# --- Copilot comment triage (opt-in, bring-your-own-key) ---
+# Unset ⇒ triage is disabled. Set the key to classify Copilot review comments
+# (fix | dismiss | skip) on POST /process and the review-comment webhook.
+TRIAGE_LLM_API_KEY="sk-ant-..."
+# Optional overrides (defaults shown):
+# TRIAGE_LLM_PROVIDER="anthropic"      # anthropic | openai | deepseek | openrouter
+# TRIAGE_LLM_MODEL="claude-haiku-4-5"  # provider-specific default when unset
+#                                      # (for deepseek use deepseek-chat — NOT a v4
+#                                      # reasoning model; those can blow the 256-token
+#                                      # classifier budget and return empty content)
+# TRIAGE_LLM_BASE_URL=""               # override for OpenAI-compatible providers
+
+# --- Inline fixer (opt-in) ---
+# A "fix" verdict is routed by effort: small fixes are patched inline (the fixer
+# LLM rewrites the one file; committed to the PR branch) and large fixes go to
+# the Claude Code dispatch routine. Set TRIAGE_FIX_LLM_MODEL to enable the inline
+# path; provider/key/base default to the triage ones above.
+# TRIAGE_FIX_LLM_MODEL="deepseek-v4-pro"
+# TRIAGE_FIX_LLM_PROVIDER=""           # default: TRIAGE_LLM_PROVIDER
+# TRIAGE_FIX_LLM_API_KEY=""            # default: TRIAGE_LLM_API_KEY
+# TRIAGE_FIX_LLM_BASE_URL=""           # default: TRIAGE_LLM_BASE_URL
+# TRIAGE_FIX_MAX_TOKENS="8192"         # fixer reply budget
+# TRIAGE_FIX_MAX_FILE_BYTES="20000"    # only inline-fix files at/below this size

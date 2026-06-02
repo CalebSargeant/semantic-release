@@ -20,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the App installation token is broadened from current-repo scope to
   owner scope so sibling-repo submodules in the same org can be fetched.
   Default `false` keeps existing behaviour.
+- Copilot comment triage is now configurable on the broker worker: the
+  deploy workflow uploads `TRIAGE_LLM_API_KEY` to the Worker when the
+  same-named Actions secret is set (skipped when unset, so triage stays
+  opt-in and existing deploys are unaffected). The triage secrets are
+  documented in `worker/wrangler.jsonc`, `worker/.dev.vars.example`, and
+  the Copilot review guide. Without a key the worker still reports
+  `triage disabled (no LLM key configured on the worker)`.
+- Comment-triage `fix` verdicts are now routed by an LLM-estimated effort:
+  a small/localized fix is applied inline — a stronger fixer LLM
+  (`TRIAGE_FIX_LLM_MODEL`, e.g. `deepseek-v4-pro`) rewrites the one file and
+  the change is committed to the PR branch via `createCommitOnBranch`
+  (App-attributed, GitHub-signed) — while a large fix goes to the Claude
+  Code dispatch routine. The inline fixer is off unless
+  `TRIAGE_FIX_LLM_MODEL` is set; it is single-file, size-capped, drops
+  no-op rewrites, and falls back to dispatch on any failure.
 
 ### Changed
 

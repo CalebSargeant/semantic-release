@@ -86,6 +86,21 @@ export type BrokerEnv = Env & {
   TRIAGE_LLM_API_KEY?: string;
   TRIAGE_LLM_MODEL?: string; // default claude-haiku-4-5 for anthropic
   TRIAGE_LLM_BASE_URL?: string; // override for OpenAI-compatible providers
+  // Triage "fix" routing. The classifier tags each "fix" with an effort
+  // (small|large); a small/localized fix is patched directly — the fixer LLM
+  // (TRIAGE_FIX_LLM_MODEL, typically a stronger/reasoning model) rewrites the
+  // single file and the change is committed to the PR branch via
+  // createCommitOnBranch — while a large fix is handed to the Claude Code
+  // dispatch routine. Unset TRIAGE_FIX_LLM_MODEL ⇒ the inline fixer is disabled
+  // and every "fix" goes to dispatch (the prior behaviour). Provider/key/base
+  // default to the triage ones, so for a same-provider stronger model you only
+  // set TRIAGE_FIX_LLM_MODEL (e.g. deepseek-v4-pro).
+  TRIAGE_FIX_LLM_MODEL?: string;
+  TRIAGE_FIX_LLM_PROVIDER?: string;
+  TRIAGE_FIX_LLM_API_KEY?: string;
+  TRIAGE_FIX_LLM_BASE_URL?: string;
+  TRIAGE_FIX_MAX_TOKENS?: string; // fixer reply budget; default 8192 (reasoning + rewritten file)
+  TRIAGE_FIX_MAX_FILE_BYTES?: string; // only inline-fix files at/below this size; default 20000
   // Trusted-author gate for automatic triage: untrusted PRs are skipped.
   TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
   TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
@@ -1548,6 +1563,11 @@ function constantTimeEquals(a: string, b: string): boolean {
 // OpenAI-compatible endpoint (OpenAI, DeepSeek, OpenRouter) via base URL.
 
 type TriageDecision = "fix" | "dismiss" | "skip";
+type FixEffort = "small" | "large";
+interface TriageResult {
+  decision: TriageDecision;
+  effort: FixEffort; // only meaningful when decision === "fix"
+}
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
@@ -1559,7 +1579,20 @@ const TRIAGE_SYSTEM_PROMPT =
   '- "fix": it identifies a real, actionable problem that should be changed in code.\n' +
   '- "dismiss": it is wrong, not applicable, or a false positive.\n' +
   '- "skip": you cannot decide from the provided context alone.\n' +
-  'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
+  'When (and only when) the decision is "fix", also estimate "effort":\n' +
+  '- "small": a localized edit in this one file (a few lines), safe to apply mechanically.\n' +
+  '- "large": multiple files, non-trivial logic, or anything you are unsure about.\n' +
+  'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","effort":"small|large","reason":"<short>"}.';
+
+// The inline fixer prompt: rewrite ONE file to resolve a single review comment.
+const FIX_SYSTEM_PROMPT =
+  "You resolve a single GitHub Copilot review comment by editing one file.\n" +
+  "You are given the comment and the current FULL contents of the file it is on.\n" +
+  "Make the smallest change that addresses the comment. Do not fix unrelated\n" +
+  "issues, reformat untouched code, or change public behaviour beyond the comment.\n" +
+  "Return ONLY the complete, updated file contents inside a single fenced code\n" +
+  "block (```), with no commentary before or after. If you cannot fix it safely\n" +
+  "from this context alone, return an empty fenced block.";
 
 type TriageConfig =
   | { kind: "anthropic"; apiKey: string; model: string }
@@ -1672,7 +1705,7 @@ async function handleReviewCommentEvent(
   }
 
   try {
-    const decision = await classifyComment(dependencies.fetch, config, body, {
+    const { decision, effort } = await classifyComment(dependencies.fetch, config, body, {
       path: asString(comment.path),
       diffHunk: asString(comment.diff_hunk)
     });
@@ -1695,21 +1728,51 @@ async function handleReviewCommentEvent(
       return json({ ok: true, decision, dismissed }, 200);
     }
 
-    // "skip" is a no-op; "fix" enqueues an autonomous dispatch (and starts a
-    // Claude Code Web session when DISPATCH_TRIGGER_URL is configured).
+    // "skip" is a no-op. "fix" is routed by effort: a small/localized fix is
+    // patched inline (the fixer LLM rewrites the one file; we commit it to the
+    // PR branch) when the fixer is configured; everything else — large effort,
+    // missing head/path, fixer disabled, or the inline attempt failing — is
+    // handed to the Claude Code dispatch routine.
     if (decision === "fix") {
+      const path = asString(comment.path);
+      const prHead = pr && isRecord(pr.head) ? pr.head : null;
+      const headRef = prHead ? asString(prHead.ref) : undefined;
+      const headSha = prHead ? asString(prHead.sha) : undefined;
+
+      if (effort === "small" && path && headRef && headSha && resolveFixConfig(env)) {
+        const fixed = await attemptInlineFix(env, dependencies, {
+          owner: repo.owner,
+          repo: repo.repo,
+          path,
+          headRef,
+          headSha,
+          comment: body,
+          diffHunk: asString(comment.diff_hunk)
+        });
+        if (fixed) {
+          return json(
+            { ok: true, decision, effort, engine: "inline", action: "committed", ...fixed },
+            200
+          );
+        }
+        // fall through to dispatch on any inline-fix failure
+      }
+
       const dispatched = await enqueueDispatch(env, dependencies, {
         repo: `${repo.owner}/${repo.repo}`,
         pr: prNumber,
         instruction:
           `Address this Copilot review comment on ` +
           `${repo.owner}/${repo.repo}#${prNumber}` +
-          (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
+          (path ? ` (${path})` : "") +
           `: ${body}`,
         user: prAuthor,
         source: "triage"
       });
-      return json({ ok: true, decision, action: "dispatched", ...dispatched }, 200);
+      return json(
+        { ok: true, decision, effort, engine: "claude-code", action: "dispatched", ...dispatched },
+        200
+      );
     }
     return json({ ok: true, decision, action: "none" }, 200);
   } catch (error) {
@@ -1723,13 +1786,13 @@ async function classifyComment(
   config: TriageConfig,
   comment: string,
   context: { path?: string; diffHunk?: string }
-): Promise<TriageDecision> {
+): Promise<TriageResult> {
   const user = buildTriageUserMessage(comment, context);
   const text =
     config.kind === "anthropic"
       ? await callAnthropic(doFetch, config, TRIAGE_SYSTEM_PROMPT, user)
       : await callOpenAiCompatible(doFetch, config, TRIAGE_SYSTEM_PROMPT, user);
-  return parseDecision(text);
+  return parseTriage(text);
 }
 
 function buildTriageUserMessage(
@@ -1747,7 +1810,8 @@ async function callAnthropic(
   doFetch: typeof fetch,
   config: { apiKey: string; model: string },
   system: string,
-  user: string
+  user: string,
+  maxTokens = 256
 ): Promise<string> {
   const response = await doFetch(ANTHROPIC_API_URL, {
     method: "POST",
@@ -1758,7 +1822,7 @@ async function callAnthropic(
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 256,
+      max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: user }]
     })
@@ -1780,7 +1844,8 @@ async function callOpenAiCompatible(
   doFetch: typeof fetch,
   config: { apiKey: string; model: string; baseUrl: string },
   system: string,
-  user: string
+  user: string,
+  maxTokens = 256
 ): Promise<string> {
   let base = config.baseUrl;
   while (base.endsWith("/")) base = base.slice(0, -1);
@@ -1793,7 +1858,7 @@ async function callOpenAiCompatible(
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 256,
+      max_tokens: maxTokens,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user }
@@ -1830,6 +1895,217 @@ function parseDecision(text: string): TriageDecision {
   const match = text.toLowerCase().match(/\b(fix|dismiss|skip)\b/);
   if (match) return match[1] as TriageDecision;
   return "skip";
+}
+
+// decision + the fix effort. Effort defaults to "large" (the safer route: a
+// reviewed Claude Code PR rather than a direct inline commit) when absent or
+// unrecognised, so a malformed/old classifier reply never auto-commits.
+function parseTriage(text: string): TriageResult {
+  const decision = parseDecision(text);
+  let effort: FixEffort = "large";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (isRecord(parsed)) {
+        const e = asString(parsed.effort)?.toLowerCase();
+        if (e === "small" || e === "large") effort = e;
+      }
+    } catch {
+      // keep the default
+    }
+  }
+  return { decision, effort };
+}
+
+// ─── Inline fix (small-effort "fix") ─────────────────────────────────────────
+// A small/localized fix is applied directly: the fixer LLM rewrites the single
+// file the comment is on and the new contents are committed to the PR head
+// branch via createCommitOnBranch (installation token ⇒ GitHub-signed, attributed
+// to the App). Best-effort — any failure returns null so the caller falls back
+// to the Claude Code dispatch routine.
+
+interface FixConfig {
+  llm: TriageConfig;
+  maxTokens: number;
+  maxFileBytes: number;
+}
+
+function positiveIntOr(value: string | undefined, fallback: number): number {
+  const n = value ? Number.parseInt(value.trim(), 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// The inline fixer's LLM. Provider/key/base default to the triage ones so a
+// same-provider stronger model only needs TRIAGE_FIX_LLM_MODEL set. Null ⇒
+// inline fixer disabled (every "fix" goes to dispatch).
+function resolveFixConfig(env: BrokerEnv): FixConfig | null {
+  const model = env.TRIAGE_FIX_LLM_MODEL?.trim();
+  if (!model) return null;
+  const apiKey = (env.TRIAGE_FIX_LLM_API_KEY ?? env.TRIAGE_LLM_API_KEY)?.trim();
+  if (!apiKey) return null;
+
+  const provider = (
+    env.TRIAGE_FIX_LLM_PROVIDER ??
+    env.TRIAGE_LLM_PROVIDER ??
+    "anthropic"
+  )
+    .trim()
+    .toLowerCase();
+
+  let llm: TriageConfig;
+  if (provider === "anthropic" || provider === "") {
+    llm = { kind: "anthropic", apiKey, model };
+  } else {
+    const baseUrl =
+      (env.TRIAGE_FIX_LLM_BASE_URL ?? env.TRIAGE_LLM_BASE_URL)?.trim() ||
+      (provider === "deepseek"
+        ? "https://api.deepseek.com/v1"
+        : provider === "openrouter"
+          ? "https://openrouter.ai/api/v1"
+          : "https://api.openai.com/v1");
+    llm = { kind: "openai", apiKey, model, baseUrl };
+  }
+
+  return {
+    llm,
+    maxTokens: positiveIntOr(env.TRIAGE_FIX_MAX_TOKENS, 8192),
+    maxFileBytes: positiveIntOr(env.TRIAGE_FIX_MAX_FILE_BYTES, 20000)
+  };
+}
+
+function utf8ByteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+function base64FromUtf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function utf8FromBase64(b64: string): string {
+  const binary = atob(b64.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+// Contents of the first fenced code block (tolerating an optional language tag),
+// minus the single newline before the closing fence. Null if there's no fence.
+function extractFencedBlock(text: string): string | null {
+  const match = text.match(/```[^\n]*\n([\s\S]*?)\n?```/);
+  return match ? match[1] : null;
+}
+
+function buildFixUserMessage(
+  comment: string,
+  path: string,
+  fileContents: string,
+  diffHunk?: string
+): string {
+  const parts = [`File: ${path}`];
+  if (diffHunk) parts.push(`Diff hunk the comment is on:\n${diffHunk}`);
+  parts.push(`Copilot review comment:\n${comment}`);
+  parts.push(`Current full contents of ${path}:\n${fileContents}`);
+  return parts.join("\n\n");
+}
+
+// Current text contents of a file at a ref, or null if missing, binary, or
+// over the cap (checked against the API-reported size before decoding).
+async function fetchFileContents(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+  maxBytes: number
+): Promise<string | null> {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
+  const resp = await doFetch(url, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: "application/vnd.github+json",
+      "user-agent": "calebsargeant-diatreme"
+    }
+  });
+  if (!resp.ok) return null;
+  const body = await resp.json();
+  if (!isRecord(body)) return null;
+  if (body.type !== "file" || body.encoding !== "base64") return null;
+  if (typeof body.size === "number" && body.size > maxBytes) return null;
+  if (typeof body.content !== "string") return null;
+  const decoded = utf8FromBase64(body.content);
+  if (utf8ByteLength(decoded) > maxBytes) return null;
+  if (decoded.indexOf(String.fromCharCode(0)) !== -1) return null; // binary guard
+  return decoded;
+}
+
+async function attemptInlineFix(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  input: {
+    owner: string;
+    repo: string;
+    path: string;
+    headRef: string;
+    headSha: string;
+    comment: string;
+    diffHunk?: string;
+  }
+): Promise<{ path: string; commit_oid: string; commit_url: string | null } | null> {
+  const fix = resolveFixConfig(env);
+  if (!fix) return null;
+  try {
+    const token = await mintInstallationToken(env, dependencies, input.owner, input.repo);
+
+    const original = await fetchFileContents(
+      dependencies.fetch,
+      token,
+      input.owner,
+      input.repo,
+      input.path,
+      input.headSha,
+      fix.maxFileBytes
+    );
+    if (original === null) return null;
+
+    const userMsg = buildFixUserMessage(input.comment, input.path, original, input.diffHunk);
+    const text =
+      fix.llm.kind === "anthropic"
+        ? await callAnthropic(dependencies.fetch, fix.llm, FIX_SYSTEM_PROMPT, userMsg, fix.maxTokens)
+        : await callOpenAiCompatible(dependencies.fetch, fix.llm, FIX_SYSTEM_PROMPT, userMsg, fix.maxTokens);
+
+    let updated = extractFencedBlock(text);
+    if (updated === null) return null;
+    // The fence eats one trailing newline; restore the file's convention so a
+    // faithful rewrite isn't seen as a (newline-only) change.
+    if (original.endsWith("\n") && !updated.endsWith("\n")) updated += "\n";
+
+    if (
+      updated.trim() === "" ||
+      updated === original ||
+      utf8ByteLength(updated) > fix.maxFileBytes
+    ) {
+      return null;
+    }
+
+    const commit = await createSignedCommitOnBranch(dependencies.fetch, token, {
+      repoNameWithOwner: `${input.owner}/${input.repo}`,
+      branchName: input.headRef,
+      expectedHeadOid: input.headSha,
+      headline: `fix: address Copilot review comment in ${input.path}`,
+      body: `Applied by Diatreme triage (inline fix).\n\nCopilot comment:\n${input.comment}`,
+      additions: [{ path: input.path, contents: base64FromUtf8(updated) }],
+      deletions: []
+    });
+    return { path: input.path, commit_oid: commit.oid, commit_url: commit.url };
+  } catch {
+    return null;
+  }
 }
 
 async function mintInstallationToken(
@@ -2042,7 +2318,7 @@ async function handleProcessRequest(
 
   for (const comment of comments) {
     if (!comment.isCopilot) continue;
-    const decision = await classifyComment(
+    const { decision } = await classifyComment(
       dependencies.fetch,
       config,
       comment.body,
