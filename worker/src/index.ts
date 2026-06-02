@@ -1739,7 +1739,7 @@ async function handleReviewCommentEvent(
       const headRef = prHead ? asString(prHead.ref) : undefined;
       const headSha = prHead ? asString(prHead.sha) : undefined;
 
-      if (effort === "small" && path && headRef && headSha && resolveFixConfig(env)) {
+      if (effort === "small" && path && headRef && headSha) {
         const fixed = await attemptInlineFix(env, dependencies, {
           owner: repo.owner,
           repo: repo.repo,
