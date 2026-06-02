@@ -22,6 +22,17 @@ const DEFAULT_PERMISSIONS: TokenPermissions = {
 
 const GITHUB_API_BASE = "https://api.github.com";
 
+// Trim and strip trailing slashes WITHOUT a backtracking-prone regex — CodeQL
+// flags /\/+$/ as a polynomial regex on (deployer-controlled) input. Used to
+// normalize the GHE issuer / API-base secrets so trivial copy-paste formatting
+// (trailing slash, stray whitespace/newline) doesn't break verification or URLs.
+function normalizeBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47) end--; // 47 = "/"
+  return trimmed.slice(0, end);
+}
+
 const remoteJwks = createRemoteJWKSet(new URL(GITHUB_OIDC_JWKS_URL));
 
 // GitHub Enterprise (ghe.com data-residency / GHES) support is opt-in via
@@ -37,7 +48,7 @@ function jwksForIssuer(issuer: string): ReturnType<typeof createRemoteJWKSet> {
   let jwks = jwksByIssuer.get(issuer);
   if (!jwks) {
     // Actions OIDC issuers publish their keys at <issuer>/.well-known/jwks.
-    jwks = createRemoteJWKSet(new URL(`${issuer.replace(/\/+$/, "")}/.well-known/jwks`));
+    jwks = createRemoteJWKSet(new URL(`${normalizeBaseUrl(issuer)}/.well-known/jwks`));
     jwksByIssuer.set(issuer, jwks);
   }
   return jwks;
@@ -216,7 +227,7 @@ async function handleTokenRequest(
   assertRepositoryParts(body.owner, body.repo);
 
   const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
-  const gheIssuer = env.GHE_OIDC_ISSUER?.trim().replace(/\/+$/, "") || "";
+  const gheIssuer = env.GHE_OIDC_ISSUER ? normalizeBaseUrl(env.GHE_OIDC_ISSUER) : "";
   const trustedIssuers = gheIssuer
     ? [GITHUB_OIDC_ISSUER, gheIssuer]
     : [GITHUB_OIDC_ISSUER];
@@ -245,7 +256,7 @@ async function handleTokenRequest(
           env.GHE_GITHUB_APP_PRIVATE_KEY,
           "GHE_GITHUB_APP_PRIVATE_KEY"
         ),
-        apiBase: requiredSecret(env.GHE_API_BASE, "GHE_API_BASE").trim().replace(/\/+$/, ""),
+        apiBase: normalizeBaseUrl(requiredSecret(env.GHE_API_BASE, "GHE_API_BASE")),
         installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
       }
     : {
