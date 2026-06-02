@@ -17,12 +17,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Copilot comment-triage LLM key (opt-in, bring-your-own-key). Wired to the
-    # Worker on deploy when the same-named Actions secret is set; unset ⇒ triage
-    # stays disabled and deploys are unaffected. Mapped at job level so the
-    # conditional upload step below can gate on it (a step can't read its own env).
-    env:
-      TRIAGE_LLM_API_KEY: ${{ secrets.TRIAGE_LLM_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -67,9 +61,10 @@ jobs:
       # `run` step rather than wrangler-action's `secrets:` input, whose default
       # `command: deploy` would otherwise re-deploy the Worker a second time.
       - name: Configure triage LLM secret
-        if: ${{ env.TRIAGE_LLM_API_KEY != '' }}
+        if: ${{ secrets.TRIAGE_LLM_API_KEY != '' }}
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TRIAGE_LLM_API_KEY: ${{ secrets.TRIAGE_LLM_API_KEY }}
         run: printf '%s' "$TRIAGE_LLM_API_KEY" | npx wrangler secret put TRIAGE_LLM_API_KEY
