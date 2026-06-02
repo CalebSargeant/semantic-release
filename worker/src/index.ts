@@ -279,7 +279,7 @@ async function handleTokenRequest(
   const explicitInstallation = host.installationId
     ? Number(host.installationId)
     : NaN;
-  const installationId = Number.isInteger(explicitInstallation)
+  const installationId = Number.isInteger(explicitInstallation) && explicitInstallation > 0
     ? explicitInstallation
     : await findInstallationId(
         dependencies.fetch,
