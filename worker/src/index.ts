@@ -216,8 +216,9 @@ async function handleTokenRequest(
   assertRepositoryParts(body.owner, body.repo);
 
   const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
-  const trustedIssuers = env.GHE_OIDC_ISSUER
-    ? [GITHUB_OIDC_ISSUER, env.GHE_OIDC_ISSUER]
+  const gheIssuer = env.GHE_OIDC_ISSUER?.trim().replace(/\/+$/, "") || "";
+  const trustedIssuers = gheIssuer
+    ? [GITHUB_OIDC_ISSUER, gheIssuer]
     : [GITHUB_OIDC_ISSUER];
   const oidcPayload = await verifyOidc(
     body.oidcToken,
@@ -236,7 +237,7 @@ async function handleTokenRequest(
   // Mint against the same GitHub host the token came from: github.com by
   // default, or the configured GHE tenant when the verified issuer matches
   // GHE_OIDC_ISSUER (a different REST API base and a different App).
-  const isGhe = !!env.GHE_OIDC_ISSUER && oidcPayload.iss === env.GHE_OIDC_ISSUER;
+  const isGhe = !!gheIssuer && oidcPayload.iss === gheIssuer;
   const host = isGhe
     ? {
         appId: requiredSecret(env.GHE_GITHUB_APP_ID, "GHE_GITHUB_APP_ID"),
