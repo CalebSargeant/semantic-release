@@ -245,7 +245,7 @@ async function handleTokenRequest(
           env.GHE_GITHUB_APP_PRIVATE_KEY,
           "GHE_GITHUB_APP_PRIVATE_KEY"
         ),
-        apiBase: requiredSecret(env.GHE_API_BASE, "GHE_API_BASE").replace(/\/+$/, ""),
+        apiBase: requiredSecret(env.GHE_API_BASE, "GHE_API_BASE").trim().replace(/\/+$/, ""),
         installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
       }
     : {
