@@ -25,6 +25,7 @@ function deps(options: {
   repository?: string;
   githubResponses?: Response[];
   verifyThrows?: boolean;
+  iss?: string;
 } = {}) {
   const calls: Request[] = [];
   const githubResponses = [...(options.githubResponses ?? [])];
@@ -37,7 +38,8 @@ function deps(options: {
           throw new Error("bad oidc");
         }
         return {
-          repository: options.repository ?? "octo-org/octo-repo"
+          repository: options.repository ?? "octo-org/octo-repo",
+          ...(options.iss ? { iss: options.iss } : {})
         };
       },
       createGitHubAppJwt: async () => "app.jwt",
@@ -185,6 +187,84 @@ describe("token broker", () => {
         pull_requests: "write"
       }
     });
+  });
+
+  const GHE_ENV: BrokerEnv = {
+    ...env,
+    GHE_OIDC_ISSUER: "https://token.actions.acme.ghe.com",
+    GHE_API_BASE: "https://acme.ghe.com/api/v3",
+    GHE_GITHUB_APP_ID: "99",
+    GHE_GITHUB_APP_PRIVATE_KEY:
+      "-----BEGIN PRIVATE KEY-----\\nghe\\n-----END PRIVATE KEY-----"
+  };
+
+  it("mints a GHE token against the GHE API base when the issuer is the GHE tenant", async () => {
+    const { calls, deps: injected } = deps({
+      iss: "https://token.actions.acme.ghe.com",
+      githubResponses: [
+        Response.json({ id: 7 }),
+        Response.json({ token: "ghe-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      GHE_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      token: "ghe-token",
+      expires_at: "2026-05-03T13:00:00Z",
+      repository: "octo-org/octo-repo"
+    });
+    // Both GitHub calls hit the GHE REST API, never api.github.com.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/7/access_tokens"
+    );
+  });
+
+  it("skips the GHE installation lookup when GHE_GITHUB_APP_INSTALLATION_ID is set", async () => {
+    const { calls, deps: injected } = deps({
+      iss: "https://token.actions.acme.ghe.com",
+      githubResponses: [
+        Response.json({ token: "ghe-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      { ...GHE_ENV, GHE_GITHUB_APP_INSTALLATION_ID: "555" },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    // Only the token-create call is made; the per-repo lookup is skipped.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/555/access_tokens"
+    );
+  });
+
+  it("still mints via github.com for tokens whose issuer is not the GHE tenant", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "dotcom-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      GHE_ENV, // GHE configured, but this token carries no GHE issuer
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls[0].url).toBe(
+      "https://api.github.com/repos/octo-org/octo-repo/installation"
+    );
   });
 
   it("accepts GitHub-style PKCS#1 RSA private keys", async () => {
