@@ -6,6 +6,9 @@ __pycache__/
 dist/
 node_modules/
 worker/.wrangler/
+# Local worker secrets for `wrangler dev` — NEVER commit (App private keys live here).
+.dev.vars
+.dev.vars.local
 
 # Syncthing leaves these when two devices edit the same file.
 # They must never be staged — the content is older than whatever
