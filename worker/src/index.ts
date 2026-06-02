@@ -1,6 +1,7 @@
 import {
   SignJWT,
   createRemoteJWKSet,
+  decodeJwt,
   importPKCS8,
   jwtVerify,
   type JWTPayload
@@ -19,7 +20,39 @@ const DEFAULT_PERMISSIONS: TokenPermissions = {
   pull_requests: "write"
 };
 
+const GITHUB_API_BASE = "https://api.github.com";
+
+// Trim and strip trailing slashes WITHOUT a backtracking-prone regex — CodeQL
+// flags /\/+$/ as a polynomial regex on (deployer-controlled) input. Used to
+// normalize the GHE issuer / API-base secrets so trivial copy-paste formatting
+// (trailing slash, stray whitespace/newline) doesn't break verification or URLs.
+function normalizeBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47) end--; // 47 = "/"
+  return trimmed.slice(0, end);
+}
+
 const remoteJwks = createRemoteJWKSet(new URL(GITHUB_OIDC_JWKS_URL));
+
+// GitHub Enterprise (ghe.com data-residency / GHES) support is opt-in via
+// GHE_OIDC_ISSUER + GHE_GITHUB_APP_* env. A GHE tenant mints Actions OIDC tokens
+// from its own issuer (e.g. https://token.actions.<tenant>.ghe.com) with a
+// distinct JWKS, and exposes a distinct REST API — so both verification and
+// token-minting must switch on the token's issuer. JWKS sets are cached per
+// issuer (jose dedupes the network fetch behind each set).
+const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>([
+  [GITHUB_OIDC_ISSUER, remoteJwks]
+]);
+function jwksForIssuer(issuer: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = jwksByIssuer.get(issuer);
+  if (!jwks) {
+    // Actions OIDC issuers publish their keys at <issuer>/.well-known/jwks.
+    jwks = createRemoteJWKSet(new URL(`${normalizeBaseUrl(issuer)}/.well-known/jwks`));
+    jwksByIssuer.set(issuer, jwks);
+  }
+  return jwks;
+}
 
 type PermissionLevel = "read" | "write";
 type TokenPermissions = Record<string, PermissionLevel>;
@@ -30,6 +63,14 @@ export type BrokerEnv = Env & {
   OIDC_AUDIENCE?: string;
   ALLOWED_REPOSITORIES?: string;
   TOKEN_PERMISSIONS?: string;
+  // GitHub Enterprise (ghe.com / GHES) support for /token — opt-in. When
+  // GHE_OIDC_ISSUER is set, OIDC tokens from that issuer are also accepted and
+  // installation tokens are minted via the GHE App against GHE_API_BASE.
+  GHE_OIDC_ISSUER?: string; // e.g. https://token.actions.<tenant>.ghe.com
+  GHE_API_BASE?: string; // e.g. https://<tenant>.ghe.com/api/v3
+  GHE_GITHUB_APP_ID?: string;
+  GHE_GITHUB_APP_PRIVATE_KEY?: string;
+  GHE_GITHUB_APP_INSTALLATION_ID?: string; // set to skip the per-repo lookup
   // /copilot-quota + /webhook
   COPILOT_QUOTA_KV?: KVNamespace;
   COPILOT_QUOTA_OVERRIDE_SECRET?: string;
@@ -81,7 +122,8 @@ interface Dependencies {
   fetch: typeof fetch;
   verifyOidcToken: (
     token: string,
-    audience: string | string[]
+    audience: string | string[],
+    trustedIssuers?: string[]
   ) => Promise<VerifiedOidcPayload>;
   createGitHubAppJwt: (
     appId: string,
@@ -185,7 +227,16 @@ async function handleTokenRequest(
   assertRepositoryParts(body.owner, body.repo);
 
   const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
-  const oidcPayload = await verifyOidc(body.oidcToken, audience, dependencies);
+  const gheIssuer = env.GHE_OIDC_ISSUER ? normalizeBaseUrl(env.GHE_OIDC_ISSUER) : "";
+  const trustedIssuers = gheIssuer
+    ? [GITHUB_OIDC_ISSUER, gheIssuer]
+    : [GITHUB_OIDC_ISSUER];
+  const oidcPayload = await verifyOidc(
+    body.oidcToken,
+    audience,
+    dependencies,
+    trustedIssuers
+  );
   if (oidcPayload.repository !== repository) {
     return jsonError(403, "repo_mismatch");
   }
@@ -194,23 +245,56 @@ async function handleTokenRequest(
     return jsonError(403, "repo_not_allowed");
   }
 
+  // Mint against the same GitHub host the token came from: github.com by
+  // default, or the configured GHE tenant when the verified issuer matches
+  // GHE_OIDC_ISSUER (a different REST API base and a different App).
+  const isGhe = !!gheIssuer && oidcPayload.iss === gheIssuer;
+  const host = isGhe
+    ? {
+        appId: requiredSecret(env.GHE_GITHUB_APP_ID, "GHE_GITHUB_APP_ID"),
+        privateKey: requiredSecret(
+          env.GHE_GITHUB_APP_PRIVATE_KEY,
+          "GHE_GITHUB_APP_PRIVATE_KEY"
+        ),
+        apiBase: normalizeBaseUrl(requiredSecret(env.GHE_API_BASE, "GHE_API_BASE")),
+        installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
+      }
+    : {
+        appId: requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+        privateKey: requiredSecret(
+          env.GITHUB_APP_PRIVATE_KEY,
+          "GITHUB_APP_PRIVATE_KEY"
+        ),
+        apiBase: GITHUB_API_BASE,
+        installationId: undefined
+      };
+
   const appJwt = await dependencies.createGitHubAppJwt(
-    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    host.appId,
+    host.privateKey,
     dependencies.now()
   );
-  const installationId = await findInstallationId(
-    dependencies.fetch,
-    appJwt,
-    body.owner,
-    body.repo
-  );
+  // The GHE App's Vault secret carries its installation id, so an explicit
+  // GHE_GITHUB_APP_INSTALLATION_ID skips the per-repo installation lookup.
+  const explicitInstallation = host.installationId
+    ? Number(host.installationId)
+    : NaN;
+  const installationId = Number.isInteger(explicitInstallation) && explicitInstallation > 0
+    ? explicitInstallation
+    : await findInstallationId(
+        dependencies.fetch,
+        appJwt,
+        body.owner,
+        body.repo,
+        host.apiBase
+      );
   const token = await createInstallationToken(
     dependencies.fetch,
     appJwt,
     installationId,
     body.repo,
-    parsePermissions(env.TOKEN_PERMISSIONS)
+    parsePermissions(env.TOKEN_PERMISSIONS),
+    host.apiBase
   );
 
   return json(
@@ -2318,10 +2402,11 @@ async function readTokenRequest(request: Request): Promise<TokenRequest> {
 async function verifyOidc(
   token: string,
   audience: string | string[],
-  deps: Dependencies
+  deps: Dependencies,
+  trustedIssuers?: string[]
 ): Promise<VerifiedOidcPayload> {
   try {
-    return await deps.verifyOidcToken(token, audience);
+    return await deps.verifyOidcToken(token, audience, trustedIssuers);
   } catch {
     throw new OidcVerificationError();
   }
@@ -2329,10 +2414,19 @@ async function verifyOidc(
 
 async function verifyOidcToken(
   token: string,
-  audience: string | string[]
+  audience: string | string[],
+  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER]
 ): Promise<VerifiedOidcPayload> {
-  const { payload } = await jwtVerify(token, remoteJwks, {
-    issuer: GITHUB_OIDC_ISSUER,
+  // github.com and each GHE tenant sign with different keys, so pick the JWKS by
+  // the token's (still-unverified) issuer — but only when it's on the trust list,
+  // then pin that issuer in jwtVerify so a forged `iss` can't select a foreign key.
+  const claimedIssuer = decodeJwt(token).iss;
+  const issuer =
+    claimedIssuer && trustedIssuers.includes(claimedIssuer)
+      ? claimedIssuer
+      : GITHUB_OIDC_ISSUER;
+  const { payload } = await jwtVerify(token, jwksForIssuer(issuer), {
+    issuer,
     audience
   });
   return payload;
@@ -2362,10 +2456,11 @@ async function findInstallationId(
   githubFetch: typeof fetch,
   appJwt: string,
   owner: string,
-  repo: string
+  repo: string,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<number> {
   const response = await githubFetch(
-    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
     {
       headers: githubHeaders(appJwt)
     }
@@ -2392,10 +2487,11 @@ async function createInstallationToken(
   appJwt: string,
   installationId: number,
   repo: string,
-  permissions: TokenPermissions
+  permissions: TokenPermissions,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<{ token: string; expires_at: string }> {
   const response = await githubFetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `${apiBase}/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
       headers: {

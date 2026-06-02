@@ -1,0 +1,16 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in.
+# Private keys may be one line with literal \n escapes or a real multi-line PEM;
+# normalizePrivateKey() handles both.
+
+# --- github.com App the /token endpoint mints installation tokens with ---
+GITHUB_APP_ID="123456"
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+OIDC_AUDIENCE="diatreme"
+
+# --- GitHub Enterprise (opt-in): the "duplicate" GHE App + tenant endpoints ---
+GHE_OIDC_ISSUER="https://token.actions.example.ghe.com"
+GHE_API_BASE="https://example.ghe.com/api/v3"
+GHE_GITHUB_APP_ID="99999"
+GHE_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+# Optional — skips the per-repo installation lookup (the GHE App secret carries it):
+GHE_GITHUB_APP_INSTALLATION_ID="123"
