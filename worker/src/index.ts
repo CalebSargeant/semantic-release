@@ -1994,8 +1994,10 @@ function utf8FromBase64(b64: string): string {
 
 // Contents of the first fenced code block (tolerating an optional language tag),
 // minus the single newline before the closing fence. Null if there's no fence.
+// Uses a negative lookahead to match the *last* closing ```, so content
+// containing triple backticks (e.g., embedded docs) is not truncated.
 function extractFencedBlock(text: string): string | null {
-  const match = text.match(/```[^\n]*\n([\s\S]*?)\n?```/);
+  const match = text.match(/```[^\n]*\n([\s\S]*?)\n?```(?!\s*```)/);
   return match ? match[1] : null;
 }
 
