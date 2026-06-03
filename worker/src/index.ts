@@ -116,6 +116,8 @@ export type BrokerEnv = Env & {
   DISPATCH_AGENT_TOKEN?: string;
   DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?: string;
   DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET?: string;
+  // Alias: some setups name the service-token secret without "CLIENT_".
+  DISPATCH_AGENT_CF_ACCESS_SECRET?: string;
   // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
   AUTO_UPDATE_BRANCHES?: string;
 };
@@ -2407,8 +2409,12 @@ async function handleProcessRequest(
   // Agent dispatch needs the PR's head branch — fetch it once up front.
   let headRef: string | undefined;
   if (agentDispatchConfigured(env)) {
+    // Extract fetch into a local — calling dependencies.fetch(...) method-style
+    // binds this=dependencies, which Cloudflare's native fetch rejects
+    // ("Illegal invocation"). See performBillingApiLookup.
+    const fetchFn: typeof fetch = dependencies.fetch;
     try {
-      const r = await dependencies.fetch(
+      const r = await fetchFn(
         `${host.apiBase}/repos/${encodeURIComponent(target.owner)}/` +
           `${encodeURIComponent(target.repo)}/pulls/${target.pullNumber}`,
         { headers: githubHeaders(token) }
@@ -3670,15 +3676,24 @@ async function dispatchToAgent(
     "content-type": "application/json"
   };
   const cfId = env.DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?.trim();
-  const cfSecret = env.DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET?.trim();
+  const cfSecret = (
+    env.DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET ?? env.DISPATCH_AGENT_CF_ACCESS_SECRET
+  )?.trim();
   if (cfId && cfSecret) {
     headers["CF-Access-Client-Id"] = cfId;
     headers["CF-Access-Client-Secret"] = cfSecret;
   }
+  // Local fetch ref — calling dependencies.fetch(...) method-style binds
+  // this=dependencies and Cloudflare rejects it ("Illegal invocation").
+  const fetchFn: typeof fetch = dependencies.fetch;
   try {
-    const resp = await dependencies.fetch(url, {
+    const resp = await fetchFn(url, {
       method: "POST",
       headers,
+      // Do NOT follow redirects: a Cloudflare Access challenge answers an
+      // unauthenticated POST with a 302 to its login page. Following it would
+      // turn into a GET that returns 200, masquerading as a successful dispatch.
+      redirect: "manual",
       body: JSON.stringify({
         repo: req.repo,
         branch: req.branch,
@@ -3689,7 +3704,17 @@ async function dispatchToAgent(
         effort: req.effort
       })
     });
-    return { status: resp.ok ? "agent_accepted" : `agent_error_${resp.status}` };
+    const ct = resp.headers.get("content-type") ?? "";
+    // The dispatcher answers with JSON. A 2xx that ISN'T JSON is a Cloudflare
+    // Access interstitial (login HTML) — our service token wasn't accepted, so
+    // the request never reached the dispatcher. Don't report that as success.
+    if (resp.ok && ct.includes("application/json")) return { status: "agent_accepted" };
+    if (resp.ok) return { status: "agent_error_access_html" };
+    // A redirect means CF Access bounced us (bad/absent service token).
+    if (resp.status === 0 || (resp.status >= 300 && resp.status < 400)) {
+      return { status: "agent_error_access_redirect" };
+    }
+    return { status: `agent_error_${resp.status}` };
   } catch {
     return { status: "agent_unreachable" };
   }
@@ -3726,12 +3751,15 @@ async function enqueueDispatch(
   }
 
   try {
+    // Local fetch ref — dependencies.fetch(...) method-style throws "Illegal
+    // invocation" on Cloudflare's native fetch.
+    const fetchFn: typeof fetch = dependencies.fetch;
     // With a routine token, fire the Claude Code on the Web routine: POST
     // {text} + the Anthropic beta headers; the routine's saved prompt clones,
     // implements, and opens the PR. We capture the returned session id/url for
     // traceability (and to put in the eventual PR body).
     if (env.DISPATCH_ROUTINE_TOKEN) {
-      const resp = await dependencies.fetch(triggerUrl, {
+      const resp = await fetchFn(triggerUrl, {
         method: "POST",
         headers: {
           authorization: `Bearer ${env.DISPATCH_ROUTINE_TOKEN}`,
@@ -3757,7 +3785,7 @@ async function enqueueDispatch(
     }
 
     // No routine token → plain webhook POST (self-hosted runner).
-    const resp = await dependencies.fetch(triggerUrl, {
+    const resp = await fetchFn(triggerUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(record)
