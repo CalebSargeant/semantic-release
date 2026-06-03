@@ -107,6 +107,15 @@ export type BrokerEnv = Env & {
   // a self-hosted runner). Unset URL ⇒ the task is queued only.
   DISPATCH_TRIGGER_URL?: string;
   DISPATCH_ROUTINE_TOKEN?: string;
+  // Self-hosted Claude Agent SDK dispatcher (diatreme-pro POST /api/dispatch).
+  // When DISPATCH_AGENT_URL is set, "fix" triage routes here instead of the
+  // Routine: POST {repo,branch,pr,file,comment,reason,effort} + Bearer
+  // DISPATCH_AGENT_TOKEN. If the endpoint sits behind Cloudflare Access, also
+  // set the service-token pair.
+  DISPATCH_AGENT_URL?: string;
+  DISPATCH_AGENT_TOKEN?: string;
+  DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?: string;
+  DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET?: string;
   // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
   AUTO_UPDATE_BRANCHES?: string;
 };
@@ -1537,6 +1546,17 @@ function constantTimeEquals(a: string, b: string): boolean {
 
 type TriageDecision = "fix" | "dismiss" | "skip";
 
+// Copilot-comment triage is fix|dismiss (never "skip" — an unsure result
+// escalates to a large-effort fix, never a no-op) plus an effort tier the
+// dispatcher uses to pick the model + inline-vs-PR behaviour. The GHAS/alert
+// path keeps the separate TriageDecision (which retains "skip").
+type CommentEffort = "basic" | "medium" | "large";
+interface CommentTriage {
+  decision: "fix" | "dismiss";
+  effort: CommentEffort;
+  reason?: string;
+}
+
 const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -1546,8 +1566,12 @@ const TRIAGE_SYSTEM_PROMPT =
   "You triage GitHub Copilot pull request review comments. For the comment, decide:\n" +
   '- "fix": it identifies a real, actionable problem that should be changed in code.\n' +
   '- "dismiss": it is wrong, not applicable, or a false positive.\n' +
-  '- "skip": you cannot decide from the provided context alone.\n' +
-  'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
+  'If you are not confident it is a clear false positive, choose "fix" (never skip a real issue). ' +
+  "Then rate the effort to fix:\n" +
+  '- "basic": a trivial, mechanical one-line change.\n' +
+  '- "medium": a contained change within a single file.\n' +
+  '- "large": multi-file, ambiguous, or needs judgement.\n' +
+  'Respond with ONLY a JSON object: {"decision":"fix|dismiss","effort":"basic|medium|large","reason":"<short>"}.';
 
 // GitHub Advanced Security triage. Deliberately more conservative than comment
 // triage: dismissing a real security finding is harmful, so the model must
@@ -1673,12 +1697,12 @@ async function handleReviewCommentEvent(
   }
 
   try {
-    const decision = await classifyComment(dependencies.fetch, config, body, {
+    const triage = await classifyComment(dependencies.fetch, config, body, {
       path: asString(comment.path),
       diffHunk: asString(comment.diff_hunk)
     });
 
-    if (decision === "dismiss") {
+    if (triage.decision === "dismiss") {
       const token = await mintInstallationToken(
         dependencies,
         repo.owner,
@@ -1693,26 +1717,57 @@ async function handleReviewCommentEvent(
         prNumber,
         commentId
       );
-      return json({ ok: true, decision, dismissed }, 200);
+      return json({ ok: true, decision: "dismiss", dismissed }, 200);
     }
 
-    // "skip" is a no-op; "fix" enqueues an autonomous dispatch (and starts a
-    // Claude Code Web session when DISPATCH_TRIGGER_URL is configured).
-    if (decision === "fix") {
-      const dispatched = await enqueueDispatch(env, dependencies, {
+    // "fix": hand off to the Agent SDK dispatcher when configured (it clones,
+    // edits, and commits inline or opens a PR by effort); if the dispatcher
+    // fails or is unreachable, fall back to the Routine/queue so fixes are
+    // never silently dropped. There is no "skip" — an unsure classify is a fix.
+    const headRef = pr && isRecord(pr.head) ? asString(pr.head.ref) : undefined;
+    let agentDispatched: { status: string } | undefined;
+    if (agentDispatchConfigured(env) && headRef) {
+      agentDispatched = await dispatchToAgent(env, dependencies, {
         repo: `${repo.owner}/${repo.repo}`,
+        branch: headRef,
         pr: prNumber,
-        instruction:
-          `Address this Copilot review comment on ` +
-          `${repo.owner}/${repo.repo}#${prNumber}` +
-          (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
-          `: ${body}`,
-        user: prAuthor,
-        source: "triage"
+        comment: body,
+        effort: triage.effort,
+        file: asString(comment.path),
+        reason: triage.reason
       });
-      return json({ ok: true, decision, action: "dispatched", ...dispatched }, 200);
+      // If agent accepted the job, return immediately with the success.
+      if (agentDispatched.status === "agent_accepted") {
+        return json(
+          { ok: true, decision: "fix", effort: triage.effort, action: "agent", ...agentDispatched },
+          200
+        );
+      }
     }
-    return json({ ok: true, decision, action: "none" }, 200);
+    // Agent dispatch either not configured, no head ref, or failed — fall back
+    // to the Routine/queue path.
+    const dispatched = await enqueueDispatch(env, dependencies, {
+      repo: `${repo.owner}/${repo.repo}`,
+      pr: prNumber,
+      instruction:
+        `Address this Copilot review comment on ` +
+        `${repo.owner}/${repo.repo}#${prNumber}` +
+        (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
+        `: ${body}`,
+      user: prAuthor,
+      source: "triage"
+    });
+    return json(
+      {
+        ok: true,
+        decision: "fix",
+        effort: triage.effort,
+        action: agentDispatched ? "agent_fallback" : "dispatched",
+        ...(agentDispatched ? { agent_status: agentDispatched.status } : {}),
+        ...dispatched
+      },
+      200
+    );
   } catch (error) {
     const code = error instanceof HttpError ? error.code : "triage_failed";
     return json({ ok: true, error: code }, 200);
@@ -1724,13 +1779,13 @@ async function classifyComment(
   config: TriageConfig,
   comment: string,
   context: { path?: string; diffHunk?: string }
-): Promise<TriageDecision> {
+): Promise<CommentTriage> {
   const user = buildTriageUserMessage(comment, context);
   const text =
     config.kind === "anthropic"
       ? await callAnthropic(doFetch, config, TRIAGE_SYSTEM_PROMPT, user)
       : await callOpenAiCompatible(doFetch, config, TRIAGE_SYSTEM_PROMPT, user);
-  return parseDecision(text);
+  return parseCommentTriage(text);
 }
 
 function buildTriageUserMessage(
@@ -1831,6 +1886,34 @@ function parseDecision(text: string): TriageDecision {
   const match = text.toLowerCase().match(/\b(fix|dismiss|skip)\b/);
   if (match) return match[1] as TriageDecision;
   return "skip";
+}
+
+// Comment triage parser. Unlike parseDecision, there is no "skip": a dismiss
+// must be explicit, and anything else (incl. "skip", missing, or unparseable)
+// becomes a large-effort fix so an uncertain result never silently no-ops.
+function parseCommentTriage(text: string): CommentTriage {
+  const effortOf = (raw?: string): CommentEffort =>
+    raw === "basic" ? "basic" : raw === "medium" ? "medium" : "large";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (isRecord(parsed)) {
+        const decision = asString(parsed.decision)?.toLowerCase();
+        const effort = effortOf(asString(parsed.effort)?.toLowerCase());
+        const reason = asString(parsed.reason);
+        if (decision === "dismiss") return { decision: "dismiss", effort, reason };
+        return { decision: "fix", effort, reason };
+      }
+    } catch {
+      // fall through to keyword scan
+    }
+  }
+  // Unparseable: only an explicit "dismiss" word dismisses; else large-effort fix.
+  if (/\bdismiss\b/i.test(text) && !/\bfix\b/i.test(text)) {
+    return { decision: "dismiss", effort: "large" };
+  }
+  return { decision: "fix", effort: "large" };
 }
 
 async function mintInstallationToken(
@@ -2312,24 +2395,43 @@ async function handleProcessRequest(
     host.apiBase
   );
 
-  const counts = { fix: 0, dismiss: 0, skip: 0 };
+  const counts = { fix: 0, dismiss: 0 };
   const results: {
     comment_id: number;
-    decision: TriageDecision;
+    decision: "fix" | "dismiss";
+    effort?: CommentEffort;
     dismissed?: boolean;
     dispatch?: string;
   }[] = [];
 
+  // Agent dispatch needs the PR's head branch — fetch it once up front.
+  let headRef: string | undefined;
+  if (agentDispatchConfigured(env)) {
+    try {
+      const r = await dependencies.fetch(
+        `${host.apiBase}/repos/${encodeURIComponent(target.owner)}/` +
+          `${encodeURIComponent(target.repo)}/pulls/${target.pullNumber}`,
+        { headers: githubHeaders(token) }
+      );
+      if (r.ok) {
+        const prBody = await r.json();
+        if (isRecord(prBody) && isRecord(prBody.head)) headRef = asString(prBody.head.ref);
+      }
+    } catch {
+      // fall back to the Routine/queue path below
+    }
+  }
+
   for (const comment of comments) {
     if (!comment.isCopilot) continue;
-    const decision = await classifyComment(
+    const triage = await classifyComment(
       dependencies.fetch,
       config,
       comment.body,
       { path: comment.path, diffHunk: comment.diffHunk }
     );
-    counts[decision] += 1;
-    if (decision === "dismiss") {
+    counts[triage.decision] += 1;
+    if (triage.decision === "dismiss") {
       const dismissed = await dismissReviewComment(
         dependencies.fetch,
         token,
@@ -2339,13 +2441,25 @@ async function handleProcessRequest(
         comment.id,
         host.graphqlUrl
       );
-      results.push({ comment_id: comment.id, decision, dismissed });
-    } else if (decision === "fix") {
-      // Mirror the webhook path: a "fix" enqueues an autonomous dispatch. The
-      // webhook reacts to a single delivered comment; the manual re-walk fans
-      // the same action across every Copilot comment on the PR. No-op when
-      // dispatch is unconfigured — enqueueDispatch then returns "queued_no_trigger"
-      // (KV present, no DISPATCH_TRIGGER_URL) or "queued_no_kv" (neither set).
+      results.push({ comment_id: comment.id, decision: "dismiss", dismissed });
+    } else if (agentDispatchConfigured(env) && headRef) {
+      // "fix" → the Agent SDK dispatcher (clones, edits, commits inline or PRs
+      // by effort). Fans the action across every Copilot comment on the PR.
+      const dispatched = await dispatchToAgent(env, dependencies, {
+        repo: `${target.owner}/${target.repo}`,
+        branch: headRef,
+        pr: target.pullNumber,
+        comment: comment.body,
+        effort: triage.effort,
+        file: comment.path,
+        reason: triage.reason
+      });
+      results.push({
+        comment_id: comment.id, decision: "fix", effort: triage.effort, dispatch: dispatched.status
+      });
+    } else {
+      // No agent configured (or head ref unavailable): fall back to the
+      // Routine/queue (no-op when that's unconfigured too).
       const dispatched = await enqueueDispatch(env, dependencies, {
         repo: `${target.owner}/${target.repo}`,
         pr: target.pullNumber,
@@ -2356,9 +2470,9 @@ async function handleProcessRequest(
           `: ${comment.body}`,
         source: "process"
       });
-      results.push({ comment_id: comment.id, decision, dispatch: dispatched.status });
-    } else {
-      results.push({ comment_id: comment.id, decision });
+      results.push({
+        comment_id: comment.id, decision: "fix", effort: triage.effort, dispatch: dispatched.status
+      });
     }
   }
 
@@ -3522,6 +3636,63 @@ interface DispatchResult {
   status: string;
   session_id?: string;
   session_url?: string;
+}
+
+interface AgentDispatchRequest {
+  repo: string; // owner/name
+  branch: string; // the PR's head branch
+  pr: number;
+  comment: string;
+  effort: CommentEffort;
+  file?: string;
+  reason?: string;
+}
+
+function agentDispatchConfigured(env: BrokerEnv): boolean {
+  return !!env.DISPATCH_AGENT_URL && env.DISPATCH_AGENT_URL.trim() !== "" &&
+         !!env.DISPATCH_AGENT_TOKEN && env.DISPATCH_AGENT_TOKEN.trim() !== "";
+}
+
+// Hand a "fix" off to the self-hosted Claude Agent SDK dispatcher
+// (diatreme-pro POST /api/dispatch), which clones, edits, and commits/PRs by
+// effort. Bearer-gated; sends Cloudflare Access service-token headers too when
+// configured (the dispatcher sits behind CF Access). The endpoint returns 202
+// and works in the background, so we only surface the accept/handoff status.
+async function dispatchToAgent(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  req: AgentDispatchRequest
+): Promise<{ status: string }> {
+  const url = env.DISPATCH_AGENT_URL?.trim();
+  if (!url) return { status: "agent_unconfigured" };
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${env.DISPATCH_AGENT_TOKEN ?? ""}`,
+    "content-type": "application/json"
+  };
+  const cfId = env.DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?.trim();
+  const cfSecret = env.DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET?.trim();
+  if (cfId && cfSecret) {
+    headers["CF-Access-Client-Id"] = cfId;
+    headers["CF-Access-Client-Secret"] = cfSecret;
+  }
+  try {
+    const resp = await dependencies.fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        repo: req.repo,
+        branch: req.branch,
+        pr: req.pr,
+        file: req.file,
+        comment: req.comment,
+        reason: req.reason,
+        effort: req.effort
+      })
+    });
+    return { status: resp.ok ? "agent_accepted" : `agent_error_${resp.status}` };
+  } catch {
+    return { status: "agent_unreachable" };
+  }
 }
 
 async function enqueueDispatch(
