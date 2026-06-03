@@ -1721,11 +1721,13 @@ async function handleReviewCommentEvent(
     }
 
     // "fix": hand off to the Agent SDK dispatcher when configured (it clones,
-    // edits, and commits inline or opens a PR by effort); otherwise fall back
-    // to the Routine/queue. There is no "skip" — an unsure classify is a fix.
+    // edits, and commits inline or opens a PR by effort); if the dispatcher
+    // fails or is unreachable, fall back to the Routine/queue so fixes are
+    // never silently dropped. There is no "skip" — an unsure classify is a fix.
     const headRef = pr && isRecord(pr.head) ? asString(pr.head.ref) : undefined;
+    let agentDispatched: { status: string } | undefined;
     if (agentDispatchConfigured(env) && headRef) {
-      const dispatched = await dispatchToAgent(env, dependencies, {
+      agentDispatched = await dispatchToAgent(env, dependencies, {
         repo: `${repo.owner}/${repo.repo}`,
         branch: headRef,
         pr: prNumber,
@@ -1734,11 +1736,16 @@ async function handleReviewCommentEvent(
         file: asString(comment.path),
         reason: triage.reason
       });
-      return json(
-        { ok: true, decision: "fix", effort: triage.effort, action: "agent", ...dispatched },
-        200
-      );
+      // If agent accepted the job, return immediately with the success.
+      if (agentDispatched.status === "agent_accepted") {
+        return json(
+          { ok: true, decision: "fix", effort: triage.effort, action: "agent", ...agentDispatched },
+          200
+        );
+      }
     }
+    // Agent dispatch either not configured, no head ref, or failed — fall back
+    // to the Routine/queue path.
     const dispatched = await enqueueDispatch(env, dependencies, {
       repo: `${repo.owner}/${repo.repo}`,
       pr: prNumber,
@@ -1751,7 +1758,14 @@ async function handleReviewCommentEvent(
       source: "triage"
     });
     return json(
-      { ok: true, decision: "fix", effort: triage.effort, action: "dispatched", ...dispatched },
+      {
+        ok: true,
+        decision: "fix",
+        effort: triage.effort,
+        action: agentDispatched ? "agent_fallback" : "dispatched",
+        ...(agentDispatched ? { agent_status: agentDispatched.status } : {}),
+        ...dispatched
+      },
       200
     );
   } catch (error) {
