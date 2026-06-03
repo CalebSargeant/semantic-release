@@ -1854,6 +1854,222 @@ describe("POST /process", () => {
       ]
     });
   });
+
+  const GHE_PROCESS_ENV: BrokerEnv = {
+    ...env,
+    PROCESS_TRIGGER_SECRET: "trigger",
+    TRIAGE_LLM_API_KEY: "sk-test",
+    TRIAGE_LLM_PROVIDER: "anthropic",
+    GHE_API_BASE: "https://acme.ghe.com/api/v3",
+    GHE_GITHUB_APP_ID: "99",
+    GHE_GITHUB_APP_PRIVATE_KEY:
+      "-----BEGIN PRIVATE KEY-----\\nghe\\n-----END PRIVATE KEY-----"
+  };
+
+  const GHE_PR_URL = "https://acme.ghe.com/octo-org/octo-repo/pull/7";
+
+  it("routes a GHE PR's token, REST and GraphQL calls to the GHE host", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 7 }), // GHE installation lookup
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]), // list review comments
+        anthropicReply("dismiss"), // classify #111
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql query
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }) // graphql mutation
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      GHE_PROCESS_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 0, dismiss: 1, skip: 0 },
+      results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
+    });
+
+    // Every GitHub call hits the GHE tenant — never api.github.com.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/7/access_tokens"
+    );
+    expect(calls[2].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/pulls/7/comments?per_page=100"
+    );
+    expect(calls[4].url).toBe("https://acme.ghe.com/api/graphql");
+    expect(calls[5].url).toBe("https://acme.ghe.com/api/graphql");
+    // Parse the host for an exact compare — a substring check would match
+    // arbitrary URLs that merely contain "api.github.com" (CodeQL: incomplete
+    // URL substring sanitization).
+    expect(calls.some((c) => new URL(c.url).host === "api.github.com")).toBe(
+      false
+    );
+  });
+
+  it("routes a GHE PR with data-residency API base (api.<tenant>.ghe.com)", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 7 }),
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]),
+        anthropicReply("dismiss"),
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }),
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        })
+      ]
+    });
+
+    const gheApiBaseDataResidency: BrokerEnv = {
+      ...GHE_PROCESS_ENV,
+      GHE_API_BASE: "https://api.acme.ghe.com"
+    };
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      gheApiBaseDataResidency,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 0, dismiss: 1, skip: 0 },
+      results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
+    });
+
+    // REST calls hit api.acme.ghe.com, GraphQL also.
+    expect(calls[0].url).toBe(
+      "https://api.acme.ghe.com/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://api.acme.ghe.com/app/installations/7/access_tokens"
+    );
+    expect(calls[2].url).toBe(
+      "https://api.acme.ghe.com/repos/octo-org/octo-repo/pulls/7/comments?per_page=100"
+    );
+    expect(calls[4].url).toBe("https://api.acme.ghe.com/graphql");
+    expect(calls[5].url).toBe("https://api.acme.ghe.com/graphql");
+    // Ensure no github.com calls.
+    expect(calls.some((c) => new URL(c.url).host === "api.github.com")).toBe(
+      false
+    );
+  });
+
+  it("skips the GHE installation lookup when GHE_GITHUB_APP_INSTALLATION_ID is set", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]) // no comments
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      { ...GHE_PROCESS_ENV, GHE_GITHUB_APP_INSTALLATION_ID: "555" },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    // First call is the token-create against the fixed installation; no lookup.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/555/access_tokens"
+    );
+  });
+
+  it("rejects an unrecognized host with 400 invalid_pr_url", async () => {
+    const response = await handleRequest(
+      processRequest(
+        { pr_url: "https://evil.example.com/octo-org/octo-repo/pull/7" },
+        { authorization: "Bearer trigger" }
+      ),
+      GHE_PROCESS_ENV,
+      deps().deps
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "invalid_pr_url" });
+  });
+
+  it("rejects a GHE host when GHE is not configured on the worker", async () => {
+    const response = await handleRequest(
+      processRequest(
+        { pr_url: GHE_PR_URL },
+        { authorization: "Bearer trigger" }
+      ),
+      {
+        ...env,
+        PROCESS_TRIGGER_SECRET: "trigger",
+        TRIAGE_LLM_API_KEY: "sk-test",
+        TRIAGE_LLM_PROVIDER: "anthropic"
+      },
+      deps().deps
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "invalid_pr_url" });
+  });
 });
 
 // ─── auto-update branches (push webhook) ─────────────────────────────────────
