@@ -1998,11 +1998,12 @@ async function githubGraphql(
 //   skip    → leave it open for a human
 // Best-effort: it mints a dedicated security_events token, so a missing grant
 // (or any other unexpected error) yields `available:false` without failing the
-// Copilot-comment triage run. When code scanning is simply not enabled / has no
-// alerts for the PR ref (the API 404s/403s), the alert list is empty and it
-// yields `available:true` with `processed:0`. The LLM prompt is deliberately
-// conservative — it defaults to "skip" so a real finding is never auto-dismissed
-// on a guess.
+// Copilot-comment triage run. When code scanning is not enabled (API 404s) the
+// alert list is empty and yields `available:true` with `processed:0`. When the
+// token lacks security_events permission (API 403s), it throws an error so
+// operators see `available:false` and can detect the misconfiguration. The LLM
+// prompt is deliberately conservative — it defaults to "skip" so a real finding
+// is never auto-dismissed on a guess.
 
 interface CodeScanningAlert {
   number: number;
@@ -2047,9 +2048,14 @@ async function listCodeScanningAlerts(
     `code-scanning/alerts?state=open&per_page=100&ref=` +
     encodeURIComponent(`refs/pull/${pullNumber}/head`);
   const response = await doFetch(url, { headers: githubHeaders(token) });
-  // 404 → code scanning not enabled / no analysis for this ref; 403 → the token
-  // lacks security_events. Either way there's nothing to triage — not a failure.
-  if (response.status === 404 || response.status === 403) return [];
+  // 404 → code scanning not enabled / no analysis for this ref. Return empty
+  // array to indicate nothing to triage. 403 → the token lacks security_events
+  // permission; treat this as an error so operators see `available:false` and
+  // can detect a permission/configuration problem.
+  if (response.status === 404) return [];
+  if (response.status === 403) {
+    throw new HttpError(403, "github_code_scanning_forbidden");
+  }
   if (!response.ok) throw new HttpError(502, "github_code_scanning_failed");
   const body = await response.json();
   if (!Array.isArray(body)) return [];
