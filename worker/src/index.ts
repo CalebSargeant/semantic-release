@@ -3635,7 +3635,8 @@ interface AgentDispatchRequest {
 }
 
 function agentDispatchConfigured(env: BrokerEnv): boolean {
-  return !!env.DISPATCH_AGENT_URL && env.DISPATCH_AGENT_URL.trim() !== "";
+  return !!env.DISPATCH_AGENT_URL && env.DISPATCH_AGENT_URL.trim() !== "" &&
+         !!env.DISPATCH_AGENT_TOKEN && env.DISPATCH_AGENT_TOKEN.trim() !== "";
 }
 
 // Hand a "fix" off to the self-hosted Claude Agent SDK dispatcher
