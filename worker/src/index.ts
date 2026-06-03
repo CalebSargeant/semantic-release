@@ -2045,7 +2045,7 @@ async function attemptInlineFix(
   const fix = resolveFixConfig(env);
   if (!fix) return null;
   try {
-    const token = await mintInstallationToken(env, dependencies, input.owner, input.repo);
+    const token = await mintInstallationToken(dependencies, input.owner, input.repo, resolveGitHubHost(env, false));
 
     const original = await fetchFileContents(
       dependencies.fetch,
