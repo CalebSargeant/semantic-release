@@ -1840,7 +1840,12 @@ describe("POST /process", () => {
     );
     expect(calls[4].url).toBe("https://acme.ghe.com/api/graphql");
     expect(calls[5].url).toBe("https://acme.ghe.com/api/graphql");
-    expect(calls.some((c) => c.url.includes("api.github.com"))).toBe(false);
+    // Parse the host for an exact compare — a substring check would match
+    // arbitrary URLs that merely contain "api.github.com" (CodeQL: incomplete
+    // URL substring sanitization).
+    expect(calls.some((c) => new URL(c.url).host === "api.github.com")).toBe(
+      false
+    );
   });
 
   it("skips the GHE installation lookup when GHE_GITHUB_APP_INSTALLATION_ID is set", async () => {
