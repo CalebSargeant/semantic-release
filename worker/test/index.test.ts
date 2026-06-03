@@ -1762,6 +1762,50 @@ describe("POST /process", () => {
     });
   });
 
+  it("dispatches a fix for a 'fix' decision (comment-commander parity)", async () => {
+    const processEnv: BrokerEnv = {
+      ...env,
+      PROCESS_TRIGGER_SECRET: "trigger",
+      TRIAGE_LLM_API_KEY: "sk-test",
+      TRIAGE_LLM_PROVIDER: "anthropic"
+    };
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "this leaks a handle",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]), // list review comments
+        anthropicReply("fix") // classify #111
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      processEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 1, dismiss: 0, skip: 0 },
+      // No DISPATCH_TRIGGER_URL / KV in this env, so the dispatch is queued only.
+      results: [{ comment_id: 111, decision: "fix", dispatch: "queued_no_kv" }]
+    });
+    // install + token + list-comments + classify = 4. Dispatch was queued, not
+    // fired (no trigger URL), so it added no 5th HTTP call.
+    expect(calls).toHaveLength(4);
+  });
+
   const GHE_PROCESS_ENV: BrokerEnv = {
     ...env,
     PROCESS_TRIGGER_SECRET: "trigger",

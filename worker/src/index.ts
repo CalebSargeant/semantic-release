@@ -2067,6 +2067,7 @@ async function handleProcessRequest(
     comment_id: number;
     decision: TriageDecision;
     dismissed?: boolean;
+    dispatch?: string;
   }[] = [];
 
   for (const comment of comments) {
@@ -2089,6 +2090,22 @@ async function handleProcessRequest(
         host.graphqlUrl
       );
       results.push({ comment_id: comment.id, decision, dismissed });
+    } else if (decision === "fix") {
+      // Mirror the webhook path: a "fix" enqueues an autonomous dispatch. The
+      // webhook reacts to a single delivered comment; the manual re-walk fans
+      // the same action across every Copilot comment on the PR. No-op when
+      // dispatch is unconfigured (enqueueDispatch returns queued_no_trigger).
+      const dispatched = await enqueueDispatch(env, dependencies, {
+        repo: `${target.owner}/${target.repo}`,
+        pr: target.pullNumber,
+        instruction:
+          `Address this Copilot review comment on ` +
+          `${target.owner}/${target.repo}#${target.pullNumber}` +
+          (comment.path ? ` (${comment.path})` : "") +
+          `: ${comment.body}`,
+        source: "process"
+      });
+      results.push({ comment_id: comment.id, decision, dispatch: dispatched.status });
     } else {
       results.push({ comment_id: comment.id, decision });
     }
