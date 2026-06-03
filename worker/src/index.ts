@@ -1562,7 +1562,7 @@ const TRIAGE_SYSTEM_PROMPT =
   '- "fix": it identifies a real, actionable problem that should be changed in code.\n' +
   '- "dismiss": it is wrong, not applicable, or a false positive.\n' +
   '- "skip": you cannot decide from the provided context alone.\n' +
-  'When (and only when) the decision is "fix", also estimate "effort":\n' +
+  'Also estimate "effort":\n' +
   '- "small": a localized edit in this one file (a few lines), safe to apply mechanically.\n' +
   '- "large": multiple files, non-trivial logic, or anything you are unsure about.\n' +
   'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","effort":"small|large","reason":"<short>"}.';
