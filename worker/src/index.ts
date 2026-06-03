@@ -1977,11 +1977,20 @@ function utf8FromBase64(b64: string): string {
 
 // Contents of the first fenced code block (tolerating an optional language tag),
 // minus the single newline before the closing fence. Null if there's no fence.
-// Uses a negative lookahead to match the *last* closing ```, so content
-// containing triple backticks (e.g., embedded docs) is not truncated.
+// Finds the first opening ``` and the last closing ```, then slices between them
+// so internal triple-backtick sequences (e.g., embedded Markdown) don't truncate
+// incorrectly.
 function extractFencedBlock(text: string): string | null {
-  const match = text.match(/```[^\n]*\n([\s\S]*?)\n?```(?!\s*```)/);
-  return match ? match[1] : null;
+  const startMatch = text.match(/```[^\n]*\n/);
+  if (!startMatch) return null;
+  const startIndex = startMatch.index! + startMatch[0].length;
+  const endMatch = text.lastIndexOf("```");
+  if (endMatch === -1 || endMatch <= startIndex) return null;
+  // The last ``` is the closing fence. We want everything between startIndex
+  // and endMatch. Also strip the optional newline before the closing fence.
+  let content = text.slice(startIndex, endMatch);
+  if (content.endsWith("\n")) content = content.slice(0, -1);
+  return content;
 }
 
 function buildFixUserMessage(
