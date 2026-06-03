@@ -2,6 +2,6 @@
 
 
 def average(numbers):
-    # Intended to return the mean, but divides by len-1 (off-by-one) and
-    # raises ZeroDivisionError on a single-element or empty list.
-    return sum(numbers) / (len(numbers) - 1)
+    if not numbers:
+        raise ValueError("Cannot compute average of an empty list")
+    return sum(numbers) / len(numbers)
