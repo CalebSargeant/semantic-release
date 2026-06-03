@@ -1762,6 +1762,50 @@ describe("POST /process", () => {
     });
   });
 
+  it("dispatches a fix for a 'fix' decision (comment-commander parity)", async () => {
+    const processEnv: BrokerEnv = {
+      ...env,
+      PROCESS_TRIGGER_SECRET: "trigger",
+      TRIAGE_LLM_API_KEY: "sk-test",
+      TRIAGE_LLM_PROVIDER: "anthropic"
+    };
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "this leaks a handle",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]), // list review comments
+        anthropicReply("fix") // classify #111
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      processEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 1, dismiss: 0, skip: 0 },
+      // No DISPATCH_TRIGGER_URL / KV in this env, so the dispatch is queued only.
+      results: [{ comment_id: 111, decision: "fix", dispatch: "queued_no_kv" }]
+    });
+    // install + token + list-comments + classify = 4. Dispatch was queued, not
+    // fired (no trigger URL), so it added no 5th HTTP call.
+    expect(calls).toHaveLength(4);
+  });
+
   const GHE_PROCESS_ENV: BrokerEnv = {
     ...env,
     PROCESS_TRIGGER_SECRET: "trigger",
@@ -1976,6 +2020,164 @@ describe("POST /process", () => {
 
     expect(response.status).toBe(400);
     expect(await readJson(response)).toEqual({ error: "invalid_pr_url" });
+  });
+
+  // ─── GitHub Advanced Security (code scanning) triage ───────────────────────
+
+  const CS_ENV: BrokerEnv = {
+    ...env,
+    PROCESS_TRIGGER_SECRET: "trigger",
+    TRIAGE_LLM_API_KEY: "sk-test",
+    TRIAGE_LLM_PROVIDER: "anthropic",
+    TRIAGE_CODE_SCANNING: "true"
+  };
+
+  it("triages code-scanning alerts (dismiss / fix / skip) when enabled", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // main installation lookup
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // listReviewComments — no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            number: 11,
+            state: "open",
+            rule: {
+              id: "js/incomplete-url-substring-sanitization",
+              description: "Incomplete URL substring sanitization",
+              security_severity_level: "high"
+            },
+            most_recent_instance: {
+              location: { path: "worker/test/index.test.ts", start_line: 1843 },
+              message: { text: "'api.github.com' can be anywhere in the URL" }
+            },
+            tool: { name: "CodeQL" }
+          },
+          {
+            number: 22,
+            state: "open",
+            rule: { id: "py/sql-injection", security_severity_level: "critical" },
+            most_recent_instance: {
+              location: { path: "app.py", start_line: 10 },
+              message: { text: "SQL injection" }
+            },
+            tool: { name: "CodeQL" }
+          },
+          {
+            number: 33,
+            state: "open",
+            rule: { id: "js/unused-local-variable" },
+            most_recent_instance: {
+              location: { path: "x.ts", start_line: 2 },
+              message: { text: "Unused variable" }
+            },
+            tool: { name: "CodeQL" }
+          }
+        ]), // listCodeScanningAlerts
+        anthropicReply("dismiss"), // classify alert #11
+        Response.json({ number: 11, state: "dismissed" }), // PATCH dismiss #11
+        anthropicReply("fix"), // classify alert #22 (dispatch is a no-op here)
+        anthropicReply("skip") // classify alert #33
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 0,
+      counts: { fix: 0, dismiss: 0, skip: 0 },
+      results: [],
+      alerts: {
+        available: true,
+        processed: 3,
+        counts: { fix: 1, dismiss: 1, skip: 1 },
+        results: [
+          {
+            alert_number: 11,
+            rule: "js/incomplete-url-substring-sanitization",
+            decision: "dismiss",
+            dismissed: true
+          },
+          {
+            alert_number: 22,
+            rule: "py/sql-injection",
+            decision: "fix",
+            dispatch: "queued_no_kv"
+          },
+          { alert_number: 33, rule: "js/unused-local-variable", decision: "skip" }
+        ]
+      }
+    });
+
+    // The GHAS token requested security_events; the alert was dismissed via PATCH.
+    const ghasTokenBody = (await calls[4].json()) as Record<string, unknown>;
+    expect(ghasTokenBody.permissions).toEqual({ security_events: "write" });
+    expect(calls[5].url).toContain("/code-scanning/alerts?state=open");
+    expect(calls[5].url).toContain("ref=refs%2Fpull%2F7%2Fhead");
+    expect(calls[7].url).toBe(
+      "https://api.github.com/repos/octo-org/octo-repo/code-scanning/alerts/11"
+    );
+    expect(calls[7].method).toBe("PATCH");
+  });
+
+  it("reports code scanning available-but-empty when the API 404s (not enabled)", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        new Response("{}", { status: 404 }) // code scanning not enabled for the ref
+      ]
+    });
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.alerts).toEqual({
+      available: true,
+      processed: 0,
+      counts: { fix: 0, dismiss: 0, skip: 0 },
+      results: []
+    });
+  });
+
+  it("degrades gracefully (available:false) when the App lacks security_events", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        new Response("{}", { status: 403 }) // token mint denied — App lacks the perm
+      ]
+    });
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+    // The Copilot-comment run still succeeds; GHAS just reports unavailable.
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.ok).toBe(true);
+    expect((body.alerts as Record<string, unknown>).available).toBe(false);
+    expect((body.alerts as Record<string, unknown>).error).toBe(
+      "github_token_create_failed"
+    );
   });
 });
 
