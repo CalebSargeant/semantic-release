@@ -2128,7 +2128,7 @@ async function readProcessTarget(request: Request): Promise<ProcessTarget> {
     throw new HttpError(400, "missing_required_fields");
   }
   assertRepositoryParts(owner, repo);
-  const host = asString(value.host)?.toLowerCase() || "github.com";
+  const host = asString(value.host)?.trim().toLowerCase() || "github.com";
   return { host, owner, repo, pullNumber };
 }
 
