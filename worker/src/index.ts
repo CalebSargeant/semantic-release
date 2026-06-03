@@ -90,6 +90,11 @@ export type BrokerEnv = Env & {
   // Trusted-author gate for automatic triage: untrusted PRs are skipped.
   TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
   TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
+  // GitHub Advanced Security: when enabled, /process also triages a PR's open
+  // code-scanning (CodeQL/SAST) alerts. Opt-in (it can dismiss security
+  // findings) — set true/1/on/yes. Also needs the App's security_events perm
+  // (gracefully skipped when absent).
+  TRIAGE_CODE_SCANNING?: string;
   // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
   // unset disables the endpoint. Also gates /dispatch and /sign.
   PROCESS_TRIGGER_SECRET?: string;
@@ -1544,6 +1549,19 @@ const TRIAGE_SYSTEM_PROMPT =
   '- "skip": you cannot decide from the provided context alone.\n' +
   'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
 
+// GitHub Advanced Security triage. Deliberately more conservative than comment
+// triage: dismissing a real security finding is harmful, so the model must
+// default to "skip" (leave the alert open for a human) unless it is confident.
+const ALERT_TRIAGE_SYSTEM_PROMPT =
+  "You triage GitHub code scanning security alerts (CodeQL and similar SAST tools). " +
+  "For the alert, decide:\n" +
+  '- "fix": it is a real, actionable security or code-quality problem that should be fixed in code.\n' +
+  '- "dismiss": it is a clear false positive or genuinely not applicable to this code.\n' +
+  '- "skip": you cannot confidently decide from the provided context — leave it open for a human.\n' +
+  'Be conservative: only choose "dismiss" when you are confident it is a false positive; ' +
+  'when in any doubt, choose "skip". Never dismiss a plausible real vulnerability.\n' +
+  'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
+
 type TriageConfig =
   | { kind: "anthropic"; apiKey: string; model: string }
   | { kind: "openai"; apiKey: string; model: string; baseUrl: string };
@@ -1819,7 +1837,8 @@ async function mintInstallationToken(
   dependencies: Dependencies,
   owner: string,
   repo: string,
-  host: GitHubHost
+  host: GitHubHost,
+  permissions: TokenPermissions = DEFAULT_PERMISSIONS
 ): Promise<string> {
   const appJwt = await dependencies.createGitHubAppJwt(
     host.appId,
@@ -1846,7 +1865,7 @@ async function mintInstallationToken(
     appJwt,
     installationId,
     repo,
-    DEFAULT_PERMISSIONS,
+    permissions,
     host.apiBase
   );
   return token;
@@ -1971,11 +1990,236 @@ async function githubGraphql(
   return body.data;
 }
 
+// ─── GitHub Advanced Security (code scanning) triage ──────────────────────────
+// /process also triages a PR's open code-scanning alerts (CodeQL + other SAST
+// tools), mirroring the Copilot-comment model:
+//   dismiss → PATCH the alert dismissed as a false positive
+//   fix     → enqueue an autonomous dispatch to fix it
+//   skip    → leave it open for a human
+// Best-effort: it mints a dedicated security_events token, so a missing grant
+// (or any other unexpected error) yields `available:false` without failing the
+// Copilot-comment triage run. When code scanning is simply not enabled / has no
+// alerts for the PR ref (the API 404s/403s), the alert list is empty and it
+// yields `available:true` with `processed:0`. The LLM prompt is deliberately
+// conservative — it defaults to "skip" so a real finding is never auto-dismissed
+// on a guess.
+
+interface CodeScanningAlert {
+  number: number;
+  rule: string;
+  description?: string;
+  severity?: string;
+  path?: string;
+  startLine?: number;
+  message?: string;
+  tool?: string;
+}
+
+interface AlertTriageResult {
+  available: boolean;
+  processed: number;
+  counts: { fix: number; dismiss: number; skip: number };
+  results: {
+    alert_number: number;
+    rule: string;
+    decision: TriageDecision;
+    dismissed?: boolean;
+    dispatch?: string;
+  }[];
+  error?: string;
+}
+
+function codeScanningEnabled(env: BrokerEnv): boolean {
+  const raw = (env.TRIAGE_CODE_SCANNING ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+
+async function listCodeScanningAlerts(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  apiBase: string = GITHUB_API_BASE
+): Promise<CodeScanningAlert[]> {
+  const url =
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/` +
+    `code-scanning/alerts?state=open&per_page=100&ref=` +
+    encodeURIComponent(`refs/pull/${pullNumber}/head`);
+  const response = await doFetch(url, { headers: githubHeaders(token) });
+  // 404 → code scanning not enabled / no analysis for this ref; 403 → the token
+  // lacks security_events. Either way there's nothing to triage — not a failure.
+  if (response.status === 404 || response.status === 403) return [];
+  if (!response.ok) throw new HttpError(502, "github_code_scanning_failed");
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  const alerts: CodeScanningAlert[] = [];
+  for (const entry of body) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.number !== "number") continue;
+    if (asString(entry.state) !== "open") continue;
+    const rule = isRecord(entry.rule) ? entry.rule : {};
+    const instance = isRecord(entry.most_recent_instance)
+      ? entry.most_recent_instance
+      : {};
+    const location = isRecord(instance.location) ? instance.location : {};
+    const messageObj = isRecord(instance.message) ? instance.message : {};
+    const tool = isRecord(entry.tool) ? entry.tool : {};
+    alerts.push({
+      number: entry.number,
+      rule: asString(rule.id) ?? asString(rule.name) ?? "unknown",
+      description: asString(rule.description),
+      severity:
+        asString(rule.security_severity_level) ?? asString(rule.severity),
+      path: asString(location.path),
+      startLine:
+        typeof location.start_line === "number" ? location.start_line : undefined,
+      message: asString(messageObj.text),
+      tool: asString(tool.name)
+    });
+  }
+  return alerts;
+}
+
+function buildAlertUserMessage(alert: CodeScanningAlert): string {
+  return [
+    `Tool: ${alert.tool ?? "code scanning"}`,
+    `Rule: ${alert.rule}`,
+    alert.severity ? `Severity: ${alert.severity}` : null,
+    alert.path
+      ? `Location: ${alert.path}${alert.startLine ? `:${alert.startLine}` : ""}`
+      : null,
+    alert.description ? `Rule description: ${alert.description}` : null,
+    alert.message ? `Alert: ${alert.message}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function classifyAlert(
+  doFetch: typeof fetch,
+  config: TriageConfig,
+  alert: CodeScanningAlert
+): Promise<TriageDecision> {
+  const user = buildAlertUserMessage(alert);
+  const text =
+    config.kind === "anthropic"
+      ? await callAnthropic(doFetch, config, ALERT_TRIAGE_SYSTEM_PROMPT, user)
+      : await callOpenAiCompatible(doFetch, config, ALERT_TRIAGE_SYSTEM_PROMPT, user);
+  return parseDecision(text);
+}
+
+async function dismissCodeScanningAlert(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  alertNumber: number,
+  apiBase: string = GITHUB_API_BASE
+): Promise<boolean> {
+  const url =
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/` +
+    `code-scanning/alerts/${alertNumber}`;
+  const response = await doFetch(url, {
+    method: "PATCH",
+    headers: { ...githubHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({
+      state: "dismissed",
+      // GitHub's enum uses spaces; "dismiss" means the model judged it a false
+      // positive (real-but-deferred findings are left open via "skip").
+      dismissed_reason: "false positive",
+      dismissed_comment: "Dismissed by Diatreme triage as a false positive."
+    })
+  });
+  if (!response.ok) return false;
+  const body = await response.json().catch(() => null);
+  return isRecord(body) && asString(body.state) === "dismissed";
+}
+
+async function triageCodeScanningAlerts(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  config: TriageConfig,
+  host: GitHubHost,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<AlertTriageResult> {
+  const counts = { fix: 0, dismiss: 0, skip: 0 };
+  const results: AlertTriageResult["results"] = [];
+  try {
+    // A dedicated security_events token — a missing grant must not break the
+    // Copilot-comment triage that already ran on its own (contents/PR) token.
+    const token = await mintInstallationToken(dependencies, owner, repo, host, {
+      security_events: "write"
+    });
+    const alerts = await listCodeScanningAlerts(
+      dependencies.fetch,
+      token,
+      owner,
+      repo,
+      pullNumber,
+      host.apiBase
+    );
+    for (const alert of alerts) {
+      const decision = await classifyAlert(dependencies.fetch, config, alert);
+      counts[decision] += 1;
+      if (decision === "dismiss") {
+        const dismissed = await dismissCodeScanningAlert(
+          dependencies.fetch,
+          token,
+          owner,
+          repo,
+          alert.number,
+          host.apiBase
+        );
+        results.push({
+          alert_number: alert.number,
+          rule: alert.rule,
+          decision,
+          dismissed
+        });
+      } else if (decision === "fix") {
+        const dispatched = await enqueueDispatch(env, dependencies, {
+          repo: `${owner}/${repo}`,
+          pr: pullNumber,
+          instruction:
+            `Fix this ${alert.tool ?? "code scanning"} alert on ` +
+            `${owner}/${repo}#${pullNumber}` +
+            (alert.path
+              ? ` (${alert.path}${alert.startLine ? `:${alert.startLine}` : ""})`
+              : "") +
+            `: [${alert.rule}] ${alert.message ?? alert.description ?? ""}`.trim(),
+          source: "process-code-scanning"
+        });
+        results.push({
+          alert_number: alert.number,
+          rule: alert.rule,
+          decision,
+          dispatch: dispatched.status
+        });
+      } else {
+        results.push({ alert_number: alert.number, rule: alert.rule, decision });
+      }
+    }
+    return { available: true, processed: results.length, counts, results };
+  } catch (error) {
+    return {
+      available: false,
+      processed: results.length,
+      counts,
+      results,
+      error: error instanceof HttpError ? error.code : "code_scanning_failed"
+    };
+  }
+}
+
 // ─── POST /process ───────────────────────────────────────────────────────────
 // Manual re-walk of a pull request's Copilot review comments — the surface the
 // Diatreme Pro dashboard calls. Bearer-gated (PROCESS_TRIGGER_SECRET). Reuses the
 // same classify/dismiss logic as the webhook triage path, but processes every
-// Copilot comment on the PR rather than reacting to a single delivery.
+// Copilot comment on the PR rather than reacting to a single delivery. It also
+// triages the PR's open code-scanning (GHAS) alerts — see triageCodeScanningAlerts.
 
 interface ProcessTarget {
   host: string;
@@ -2094,7 +2338,8 @@ async function handleProcessRequest(
       // Mirror the webhook path: a "fix" enqueues an autonomous dispatch. The
       // webhook reacts to a single delivered comment; the manual re-walk fans
       // the same action across every Copilot comment on the PR. No-op when
-      // dispatch is unconfigured (enqueueDispatch returns queued_no_trigger).
+      // dispatch is unconfigured — enqueueDispatch then returns "queued_no_trigger"
+      // (KV present, no DISPATCH_TRIGGER_URL) or "queued_no_kv" (neither set).
       const dispatched = await enqueueDispatch(env, dependencies, {
         repo: `${target.owner}/${target.repo}`,
         pr: target.pullNumber,
@@ -2111,8 +2356,29 @@ async function handleProcessRequest(
     }
   }
 
+  // GitHub Advanced Security: triage the PR's open code-scanning alerts too.
+  // Best-effort and additive — never alters the Copilot-comment fields above.
+  const alerts = codeScanningEnabled(env)
+    ? await triageCodeScanningAlerts(
+        env,
+        dependencies,
+        config,
+        host,
+        target.owner,
+        target.repo,
+        target.pullNumber
+      )
+    : undefined;
+
   return json(
-    { ok: true, pull: target.pullNumber, processed: results.length, counts, results },
+    {
+      ok: true,
+      pull: target.pullNumber,
+      processed: results.length,
+      counts,
+      results,
+      ...(alerts ? { alerts } : {})
+    },
     200
   );
 }
