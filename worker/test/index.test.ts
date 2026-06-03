@@ -1365,7 +1365,7 @@ describe("Copilot comment triage", () => {
     expect(calls[4].url).toContain("/graphql");
   });
 
-  it("treats skip as a no-op (classification only, no GitHub calls)", async () => {
+  it("treats an unsure/skip reply as a large-effort fix (never a no-op)", async () => {
     const { calls, deps: injected } = deps({
       githubResponses: [anthropicReply("skip")]
     });
@@ -1377,12 +1377,11 @@ describe("Copilot comment triage", () => {
       triageEnv,
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
-    expect(calls.length).toBe(1);
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // skip ⇒ fix
+    expect(out.effort).toBe("large"); // unsure ⇒ large effort
+    expect(out.action).toBe("dispatched"); // no agent configured ⇒ Routine/queue
+    expect(calls.length).toBe(1); // only the classify call (queued, no fetch)
   });
 
   it("dispatches an autonomous task when a comment classifies as fix", async () => {
@@ -1401,6 +1400,60 @@ describe("Copilot comment triage", () => {
     expect(out.decision).toBe("fix");
     expect(out.action).toBe("dispatched");
     expect(typeof out.dispatch_id).toBe("string");
+  });
+
+  it("routes a fix to the Agent SDK dispatcher when DISPATCH_AGENT_URL is set", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          content: [
+            { type: "text", text: '{"decision":"fix","effort":"basic","reason":"null check"}' }
+          ]
+        }), // classify
+        Response.json({ accepted: true }, { status: 202 }) // the agent dispatcher
+      ]
+    });
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "OWNER",
+        user: { login: "trusted-dev" },
+        head: { ref: "feature-branch" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      {
+        ...triageEnv,
+        DISPATCH_AGENT_URL: "https://diatreme.example/api/dispatch",
+        DISPATCH_AGENT_TOKEN: "agent-secret",
+        DISPATCH_AGENT_CF_ACCESS_CLIENT_ID: "cf-id",
+        DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET: "cf-secret"
+      },
+      injected
+    );
+    expect(await readJson(response)).toMatchObject({
+      ok: true,
+      decision: "fix",
+      effort: "basic",
+      action: "agent",
+      status: "agent_accepted"
+    });
+    // POST to the agent with the bearer + CF Access service token + structured body.
+    const agentCall = calls[1];
+    expect(agentCall.url).toBe("https://diatreme.example/api/dispatch");
+    expect(agentCall.headers.get("authorization")).toBe("Bearer agent-secret");
+    expect(agentCall.headers.get("cf-access-client-id")).toBe("cf-id");
+    expect(agentCall.headers.get("cf-access-client-secret")).toBe("cf-secret");
+    expect((await agentCall.json()) as Record<string, unknown>).toMatchObject({
+      repo: "octo-org/octo-repo",
+      branch: "feature-branch",
+      pr: 7,
+      effort: "basic",
+      file: "src/x.ts"
+    });
   });
 
   it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
@@ -1423,11 +1476,9 @@ describe("Copilot comment triage", () => {
       },
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // skip ⇒ fix (never a no-op)
+    expect(out.action).toBe("dispatched");
     expect(calls[0].url).toContain("api.deepseek.com");
     expect(calls[0].url).toContain("/chat/completions");
   });
@@ -1475,11 +1526,9 @@ describe("Copilot comment triage", () => {
       { ...triageEnv, TRIAGE_TRUSTED_USERS: "trusted-contractor" },
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // trusted gate passed → classified (skip ⇒ fix)
+    expect(out.action).toBe("dispatched");
   });
 });
 // ─── /oauth ──────────────────────────────────────────────────────────
@@ -1754,10 +1803,10 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 2,
-      counts: { fix: 0, dismiss: 1, skip: 1 },
+      counts: { fix: 1, dismiss: 1 },
       results: [
         { comment_id: 111, decision: "dismiss", dismissed: true },
-        { comment_id: 333, decision: "skip" }
+        { comment_id: 333, decision: "fix", effort: "large", dispatch: "queued_no_kv" }
       ]
     });
   });
@@ -1797,9 +1846,9 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 1,
-      counts: { fix: 1, dismiss: 0, skip: 0 },
-      // No DISPATCH_TRIGGER_URL / KV in this env, so the dispatch is queued only.
-      results: [{ comment_id: 111, decision: "fix", dispatch: "queued_no_kv" }]
+      counts: { fix: 1, dismiss: 0 },
+      // No agent / DISPATCH_TRIGGER_URL / KV, so the fix is queued only.
+      results: [{ comment_id: 111, decision: "fix", effort: "large", dispatch: "queued_no_kv" }]
     });
     // install + token + list-comments + classify = 4. Dispatch was queued, not
     // fired (no trigger URL), so it added no 5th HTTP call.
@@ -1868,7 +1917,7 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 1,
-      counts: { fix: 0, dismiss: 1, skip: 0 },
+      counts: { fix: 0, dismiss: 1 },
       results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
     });
 
@@ -1946,7 +1995,7 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 1,
-      counts: { fix: 0, dismiss: 1, skip: 0 },
+      counts: { fix: 0, dismiss: 1 },
       results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
     });
 
@@ -2094,7 +2143,7 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 0,
-      counts: { fix: 0, dismiss: 0, skip: 0 },
+      counts: { fix: 0, dismiss: 0 },
       results: [],
       alerts: {
         available: true,
