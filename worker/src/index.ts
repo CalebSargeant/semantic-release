@@ -63,9 +63,10 @@ export type BrokerEnv = Env & {
   OIDC_AUDIENCE?: string;
   ALLOWED_REPOSITORIES?: string;
   TOKEN_PERMISSIONS?: string;
-  // GitHub Enterprise (ghe.com / GHES) support for /token — opt-in. When
-  // GHE_OIDC_ISSUER is set, OIDC tokens from that issuer are also accepted and
-  // installation tokens are minted via the GHE App against GHE_API_BASE.
+  // GitHub Enterprise (ghe.com / GHES) support — opt-in. When GHE_OIDC_ISSUER is
+  // set, /token also accepts OIDC tokens from that issuer and mints via the GHE
+  // App against GHE_API_BASE. Independently, /process recognizes PR URLs whose
+  // host matches GHE_API_BASE and routes its REST + GraphQL triage calls there.
   GHE_OIDC_ISSUER?: string; // e.g. https://token.actions.<tenant>.ghe.com
   GHE_API_BASE?: string; // e.g. https://<tenant>.ghe.com/api/v3
   GHE_GITHUB_APP_ID?: string;
@@ -249,25 +250,7 @@ async function handleTokenRequest(
   // default, or the configured GHE tenant when the verified issuer matches
   // GHE_OIDC_ISSUER (a different REST API base and a different App).
   const isGhe = !!gheIssuer && oidcPayload.iss === gheIssuer;
-  const host = isGhe
-    ? {
-        appId: requiredSecret(env.GHE_GITHUB_APP_ID, "GHE_GITHUB_APP_ID"),
-        privateKey: requiredSecret(
-          env.GHE_GITHUB_APP_PRIVATE_KEY,
-          "GHE_GITHUB_APP_PRIVATE_KEY"
-        ),
-        apiBase: normalizeBaseUrl(requiredSecret(env.GHE_API_BASE, "GHE_API_BASE")),
-        installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
-      }
-    : {
-        appId: requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-        privateKey: requiredSecret(
-          env.GITHUB_APP_PRIVATE_KEY,
-          "GITHUB_APP_PRIVATE_KEY"
-        ),
-        apiBase: GITHUB_API_BASE,
-        installationId: undefined
-      };
+  const host = resolveGitHubHost(env, isGhe);
 
   const appJwt = await dependencies.createGitHubAppJwt(
     host.appId,
@@ -1679,10 +1662,10 @@ async function handleReviewCommentEvent(
 
     if (decision === "dismiss") {
       const token = await mintInstallationToken(
-        env,
         dependencies,
         repo.owner,
-        repo.repo
+        repo.repo,
+        resolveGitHubHost(env, false)
       );
       const dismissed = await dismissReviewComment(
         dependencies.fetch,
@@ -1833,28 +1816,38 @@ function parseDecision(text: string): TriageDecision {
 }
 
 async function mintInstallationToken(
-  env: BrokerEnv,
   dependencies: Dependencies,
   owner: string,
-  repo: string
+  repo: string,
+  host: GitHubHost
 ): Promise<string> {
   const appJwt = await dependencies.createGitHubAppJwt(
-    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    host.appId,
+    host.privateKey,
     dependencies.now()
   );
-  const installationId = await findInstallationId(
-    dependencies.fetch,
-    appJwt,
-    owner,
-    repo
-  );
+  // A configured installation id (carried by the GHE App's secret) skips the
+  // per-repo lookup, mirroring the /token path.
+  const explicitInstallation = host.installationId
+    ? Number(host.installationId)
+    : NaN;
+  const installationId =
+    Number.isInteger(explicitInstallation) && explicitInstallation > 0
+      ? explicitInstallation
+      : await findInstallationId(
+          dependencies.fetch,
+          appJwt,
+          owner,
+          repo,
+          host.apiBase
+        );
   const { token } = await createInstallationToken(
     dependencies.fetch,
     appJwt,
     installationId,
     repo,
-    DEFAULT_PERMISSIONS
+    DEFAULT_PERMISSIONS,
+    host.apiBase
   );
   return token;
 }
@@ -1888,24 +1881,33 @@ async function dismissReviewComment(
   owner: string,
   repo: string,
   prNumber: number,
-  commentDatabaseId: number
+  commentDatabaseId: number,
+  graphqlUrl: string = GITHUB_GRAPHQL_URL
 ): Promise<boolean> {
   const query =
     "query($owner:String!,$repo:String!,$pr:Int!){" +
     "repository(owner:$owner,name:$repo){pullRequest(number:$pr){" +
     "reviewThreads(first:100){nodes{id isResolved " +
     "comments(first:100){nodes{databaseId}}}}}}}";
-  const data = await githubGraphql(doFetch, token, query, {
-    owner,
-    repo,
-    pr: prNumber
-  });
+  const data = await githubGraphql(
+    doFetch,
+    token,
+    query,
+    { owner, repo, pr: prNumber },
+    graphqlUrl
+  );
   const threadId = findThreadIdForComment(data, commentDatabaseId);
   if (!threadId) return false;
 
   const mutation =
     "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
-  const result = await githubGraphql(doFetch, token, mutation, { id: threadId });
+  const result = await githubGraphql(
+    doFetch,
+    token,
+    mutation,
+    { id: threadId },
+    graphqlUrl
+  );
   const resolved = isRecord(result.resolveReviewThread)
     ? result.resolveReviewThread
     : null;
@@ -1950,9 +1952,10 @@ async function githubGraphql(
   doFetch: typeof fetch,
   token: string,
   query: string,
-  variables: Record<string, unknown>
+  variables: Record<string, unknown>,
+  graphqlUrl: string = GITHUB_GRAPHQL_URL
 ): Promise<Record<string, unknown>> {
-  const response = await doFetch(GITHUB_GRAPHQL_URL, {
+  const response = await doFetch(graphqlUrl, {
     method: "POST",
     headers: {
       ...githubHeaders(token),
@@ -1975,9 +1978,25 @@ async function githubGraphql(
 // Copilot comment on the PR rather than reacting to a single delivery.
 
 interface ProcessTarget {
+  host: string;
   owner: string;
   repo: string;
   pullNumber: number;
+}
+
+// Pull owner/repo/PR-number AND the web host out of a PR URL (scheme optional).
+// The host drives github.com-vs-GHE routing in handleProcessRequest.
+function parsePrUrl(prUrl: string): ProcessTarget | null {
+  const match = prUrl
+    .trim()
+    .match(/^(?:https?:\/\/)?([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/);
+  if (!match) return null;
+  return {
+    host: match[1].toLowerCase(),
+    owner: match[2],
+    repo: match[3],
+    pullNumber: Number(match[4])
+  };
 }
 
 interface ReviewComment {
@@ -2015,22 +2034,32 @@ async function handleProcessRequest(
   if (!config || !config.model) {
     return json({ ok: true, triage: "disabled" }, 200);
   }
-  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+
+  // Route github.com PRs to the github.com App, GHE PRs to the GHE App + REST
+  // base. An unknown host (e.g. GHE not configured on this worker) is rejected
+  // rather than silently processed against the wrong tenant.
+  const isGhe = isGheHost(target.host, env);
+  if (!isGhe && target.host !== "github.com" && target.host !== "www.github.com") {
+    throw new HttpError(400, "invalid_pr_url");
+  }
+  if (!isGhe && (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY)) {
     return jsonError(503, "app_unconfigured");
   }
+  const host = resolveGitHubHost(env, isGhe);
 
   const token = await mintInstallationToken(
-    env,
     dependencies,
     target.owner,
-    target.repo
+    target.repo,
+    host
   );
   const comments = await listReviewComments(
     dependencies.fetch,
     token,
     target.owner,
     target.repo,
-    target.pullNumber
+    target.pullNumber,
+    host.apiBase
   );
 
   const counts = { fix: 0, dismiss: 0, skip: 0 };
@@ -2056,7 +2085,8 @@ async function handleProcessRequest(
         target.owner,
         target.repo,
         target.pullNumber,
-        comment.id
+        comment.id,
+        host.graphqlUrl
       );
       results.push({ comment_id: comment.id, decision, dismissed });
     } else {
@@ -2083,14 +2113,12 @@ async function readProcessTarget(request: Request): Promise<ProcessTarget> {
 
   const prUrl = asString(value.pr_url);
   if (prUrl) {
-    const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-    if (!match) {
+    const target = parsePrUrl(prUrl);
+    if (!target) {
       throw new HttpError(400, "invalid_pr_url");
     }
-    const owner = match[1];
-    const repo = match[2];
-    assertRepositoryParts(owner, repo);
-    return { owner, repo, pullNumber: Number(match[3]) };
+    assertRepositoryParts(target.owner, target.repo);
+    return target;
   }
 
   const owner = asString(value.owner);
@@ -2100,7 +2128,8 @@ async function readProcessTarget(request: Request): Promise<ProcessTarget> {
     throw new HttpError(400, "missing_required_fields");
   }
   assertRepositoryParts(owner, repo);
-  return { owner, repo, pullNumber };
+  const host = asString(value.host)?.toLowerCase() || "github.com";
+  return { host, owner, repo, pullNumber };
 }
 
 async function listReviewComments(
@@ -2108,10 +2137,11 @@ async function listReviewComments(
   token: string,
   owner: string,
   repo: string,
-  pullNumber: number
+  pullNumber: number,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<ReviewComment[]> {
   const url =
-    `https://api.github.com/repos/${encodeURIComponent(owner)}/` +
+    `${apiBase}/repos/${encodeURIComponent(owner)}/` +
     `${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=100`;
   const response = await doFetch(url, { headers: githubHeaders(token) });
   if (!response.ok) {
@@ -2450,6 +2480,67 @@ async function createGitHubAppJwt(
   } catch {
     throw new HttpError(500, "github_app_private_key_invalid");
   }
+}
+
+// Where (and as whom) to talk to GitHub: App credentials plus the REST/GraphQL
+// endpoints. github.com by default, or the configured GHE tenant when isGhe.
+interface GitHubHost {
+  appId: string;
+  privateKey: string;
+  apiBase: string;
+  graphqlUrl: string;
+  installationId?: string;
+}
+
+// Derive the GraphQL endpoint from a REST API base. github.com serves GraphQL at
+// /graphql on the same host; GHE (ghe.com / GHES) serves REST at <host>/api/v3
+// and GraphQL at <host>/api/graphql.
+function graphqlUrlForApiBase(apiBase: string): string {
+  const restSuffix = "/api/v3";
+  if (apiBase.endsWith(restSuffix)) {
+    return `${apiBase.slice(0, -restSuffix.length)}/api/graphql`;
+  }
+  return `${apiBase}/graphql`;
+}
+
+function resolveGitHubHost(env: BrokerEnv, isGhe: boolean): GitHubHost {
+  if (isGhe) {
+    const apiBase = normalizeBaseUrl(
+      requiredSecret(env.GHE_API_BASE, "GHE_API_BASE")
+    );
+    return {
+      appId: requiredSecret(env.GHE_GITHUB_APP_ID, "GHE_GITHUB_APP_ID"),
+      privateKey: requiredSecret(
+        env.GHE_GITHUB_APP_PRIVATE_KEY,
+        "GHE_GITHUB_APP_PRIVATE_KEY"
+      ),
+      apiBase,
+      graphqlUrl: graphqlUrlForApiBase(apiBase),
+      installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
+    };
+  }
+  return {
+    appId: requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    privateKey: requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    apiBase: GITHUB_API_BASE,
+    graphqlUrl: GITHUB_GRAPHQL_URL,
+    installationId: undefined
+  };
+}
+
+// Does a PR's web host belong to the configured GHE tenant? Matched against the
+// GHE REST API host (from GHE_API_BASE), tolerating the ghe.com data-residency
+// "api." prefix (web host <tenant>.ghe.com ↔ API host api.<tenant>.ghe.com).
+function isGheHost(host: string, env: BrokerEnv): boolean {
+  if (!env.GHE_API_BASE) return false;
+  let gheApiHost: string;
+  try {
+    gheApiHost = new URL(normalizeBaseUrl(env.GHE_API_BASE)).host.toLowerCase();
+  } catch {
+    return false;
+  }
+  const candidate = host.toLowerCase();
+  return candidate === gheApiHost || `api.${candidate}` === gheApiHost;
 }
 
 async function findInstallationId(
