@@ -2178,6 +2178,65 @@ describe("POST /process", () => {
     expect(calls[7].method).toBe("PATCH");
   });
 
+  it("routes a code-scanning fix to the Agent SDK dispatcher when configured", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // main installation lookup
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // listReviewComments — no Copilot comments
+        Response.json({ head: { ref: "feature-branch" } }), // PR head ref (agent configured)
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            number: 22,
+            state: "open",
+            rule: { id: "py/sql-injection", security_severity_level: "critical" },
+            most_recent_instance: {
+              location: { path: "app.py", start_line: 10 },
+              message: { text: "SQL injection" }
+            },
+            tool: { name: "CodeQL" }
+          }
+        ]), // listCodeScanningAlerts
+        anthropicReply("fix"), // classify alert #22
+        Response.json({ accepted: true }, { status: 202 }) // the agent dispatcher
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      {
+        ...CS_ENV,
+        DISPATCH_AGENT_URL: "https://diatreme.example/api/dispatch",
+        DISPATCH_AGENT_TOKEN: "agent-secret"
+      },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await readJson(response)) as Record<string, any>;
+    expect(body.alerts.results[0]).toEqual({
+      alert_number: 22,
+      rule: "py/sql-injection",
+      decision: "fix",
+      dispatch: "agent_accepted"
+    });
+
+    // Handed to the agent — inline (medium effort) on the PR's own branch.
+    const agentCall = calls.find((c) => c.url === "https://diatreme.example/api/dispatch");
+    expect(agentCall).toBeDefined();
+    expect(agentCall!.headers.get("authorization")).toBe("Bearer agent-secret");
+    expect((await agentCall!.json()) as Record<string, unknown>).toMatchObject({
+      repo: "octo-org/octo-repo",
+      branch: "feature-branch",
+      pr: 7,
+      file: "app.py",
+      reason: "py/sql-injection",
+      effort: "medium"
+    });
+  });
+
   it("reports code scanning available-but-empty when the API 404s (not enabled)", async () => {
     const { deps: injected } = deps({
       githubResponses: [

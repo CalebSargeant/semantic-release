@@ -2234,7 +2234,8 @@ async function triageCodeScanningAlerts(
   host: GitHubHost,
   owner: string,
   repo: string,
-  pullNumber: number
+  pullNumber: number,
+  headRef: string | undefined
 ): Promise<AlertTriageResult> {
   const counts = { fix: 0, dismiss: 0, skip: 0 };
   const results: AlertTriageResult["results"] = [];
@@ -2271,18 +2272,36 @@ async function triageCodeScanningAlerts(
           dismissed
         });
       } else if (decision === "fix") {
-        const dispatched = await enqueueDispatch(env, dependencies, {
-          repo: `${owner}/${repo}`,
-          pr: pullNumber,
-          instruction:
-            `Fix this ${alert.tool ?? "code scanning"} alert on ` +
-            `${owner}/${repo}#${pullNumber}` +
-            (alert.path
-              ? ` (${alert.path}${alert.startLine ? `:${alert.startLine}` : ""})`
-              : "") +
-            `: [${alert.rule}] ${alert.message ?? alert.description ?? ""}`.trim(),
-          source: "process-code-scanning"
-        });
+        const instruction =
+          `Fix this ${alert.tool ?? "code scanning"} alert on ` +
+          `${owner}/${repo}#${pullNumber}` +
+          (alert.path
+            ? ` (${alert.path}${alert.startLine ? `:${alert.startLine}` : ""})`
+            : "") +
+          `: [${alert.rule}] ${alert.message ?? alert.description ?? ""}`.trim();
+        // Route security/quality fixes through the agent dispatcher, the same as
+        // Copilot comments. Alerts carry no effort signal, so default to medium
+        // (Sonnet, committed inline on the PR branch) — capable enough for a
+        // targeted security fix without spinning up a separate PR. Falls back to
+        // the Routine/queue when the agent isn't configured or the head ref is
+        // unavailable (e.g. /process on a PR whose head we couldn't resolve).
+        const dispatched =
+          agentDispatchConfigured(env) && headRef
+            ? await dispatchToAgent(env, dependencies, {
+                repo: `${owner}/${repo}`,
+                branch: headRef,
+                pr: pullNumber,
+                file: alert.path,
+                comment: instruction,
+                reason: alert.rule,
+                effort: "medium"
+              })
+            : await enqueueDispatch(env, dependencies, {
+                repo: `${owner}/${repo}`,
+                pr: pullNumber,
+                instruction,
+                source: "process-code-scanning"
+              });
         results.push({
           alert_number: alert.number,
           rule: alert.rule,
@@ -2492,7 +2511,8 @@ async function handleProcessRequest(
         host,
         target.owner,
         target.repo,
-        target.pullNumber
+        target.pullNumber,
+        headRef
       )
     : undefined;
 
