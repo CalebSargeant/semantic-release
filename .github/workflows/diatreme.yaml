@@ -287,7 +287,7 @@ jobs:
       resolved-environment: ${{ steps.run.outputs.resolved-environment }}
     steps:
       - id: run
-        uses: magmamoose/diatreme@fb7250aea853782d9d63783b66743a6fdac9d2ae # v1
+        uses: magmamoose/diatreme@d0706e1f21c7dd5fe8e1067ca7b1a5c042d56c1d # v1
         with:
           mode: ${{ inputs.mode }}
           auth-mode: ${{ inputs.auth-mode }}
