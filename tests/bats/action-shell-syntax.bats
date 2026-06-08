@@ -13,7 +13,7 @@ require "open3"
 require "tempfile"
 require "yaml"
 
-doc = YAML.load_file("action.yml")
+doc = YAML.safe_load_file("action.yml", aliases: false)
 failures = []
 
 doc.fetch("runs").fetch("steps").each do |step|
