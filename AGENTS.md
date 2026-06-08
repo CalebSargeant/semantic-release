@@ -10,9 +10,9 @@ Marketplace-facing docs, release metadata, and validation for that surface.
   `action.yml` or `action.yaml`.
 - The public implementation service behind hosted token brokering, Copilot quota
   checks, signing, dispatch, and webhooks lives in
-  `~/repos/magmamoose/platform/apps/diatreme`.
+  [github.com/MagmaMoose/platform](https://github.com/MagmaMoose/platform) (`/apps/diatreme`).
 - Proprietary dashboards and private UX belong in
-  `~/repos/magmamoose/platform-pro`.
+  [github.com/MagmaMoose/platform-pro](https://github.com/MagmaMoose/platform-pro).
 - Do not copy platform or platform-pro source back into this distribution repo.
 
 ## Required Files
