@@ -1,6 +1,6 @@
 name: Release
 
-# Versions the tbd-release action itself using semantic-release.
+# Versions the Diatreme Marketplace action itself using semantic-release.
 # Creates GitHub Releases (v1.0.0, v1.1.0, etc.) that callers pin to.
 # Keeps the floating major action tag (v1, v2, etc.) pointing at the latest
 # stable release so Marketplace examples can pin to the major version.

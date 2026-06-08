@@ -105,8 +105,8 @@ inputs:
   create-promotion-pr:
     description: |
       When true, automatically creates the next environment promotion PR after a
-      prerelease (deployment-model: tbd-pr only). Set to false when using the
-      tbd-promote reusable workflow separately.
+      prerelease (deployment-model: tbd-pr only). Set to false when using a
+      separate promotion workflow or manual process.
 
       One open promotion PR per target environment: if an open promotion PR
       already exists for the next environment (any version), its title and
@@ -378,7 +378,6 @@ inputs:
       public-app callers get rate-limit bypass without any wiring.
       Self-hosted brokers and callers using `auth-mode: private-app` or
       `github-token` opt in explicitly by setting this input.
-      See worker/README for the endpoint contract.
     required: false
     default: ''
 
@@ -1555,11 +1554,9 @@ runs:
         # land a commit (Flux image bump, parallel release run, etc.)
         # between our fetch and our push. We rebase, push, and on
         # rejection re-fetch and retry up to MAX_ATTEMPTS times with
-        # short backoff. The reusable workflow at
-        # .github/workflows/diatreme.yaml serialises runs at the
-        # workflow level via a `concurrency:` group; this loop closes
-        # the small window the lock can't cover (e.g. concurrent commits
-        # from automation outside the workflow group).
+        # short backoff. Callers that need workflow-level serialization
+        # should add their own `concurrency:` group; this loop covers
+        # concurrent commits from automation outside such a group.
         BRANCH="${GITHUB_REF_NAME}"
         REMOTE_URL=$(git remote get-url origin)
         AUTHED_URL=$(echo "${REMOTE_URL}" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")

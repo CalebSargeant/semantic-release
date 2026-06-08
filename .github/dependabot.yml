@@ -7,17 +7,3 @@ updates:
     groups:
       actions:
         patterns: ['*']
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-    groups:
-      npm:
-        patterns: ['*']
-  - package-ecosystem: npm
-    directory: /worker
-    schedule:
-      interval: weekly
-    groups:
-      worker-npm:
-        patterns: ['*']

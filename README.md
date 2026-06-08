@@ -1,26 +1,17 @@
 # Diatreme
 
-<p align="center">
-  <img src="docs/diatreme-logo.png" alt="Diatreme" width="200">
-</p>
-
 [![CI](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml)
 [![Release](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml)
-[![Docs](https://github.com/magmamoose/diatreme/actions/workflows/docs-pages.yaml/badge.svg)](https://docs.diatreme.magmamoose.com/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
 [![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
-Instead of composing `cycjimmy/semantic-release-action` + `docker/metadata-action` + `cloudposse/github-action-docker-promote` + ~200 lines of glue YAML, use one action.
+Diatreme is a composite GitHub Action for semantic release orchestration across TBD and BBD workflows. It can run release-only flows, build PR Docker images, promote already-built GHCR images by retagging, open promotion PRs, enforce Copilot review gates, and normalize release outputs across multiple versioning tools.
 
-<!-- TODO: 30-second GIF showing PR→merge→release→Docker promotion -->
+This repository is intentionally thin for GitHub Marketplace: the root `action.yml`, the shell helpers it calls, a small validation suite, and release metadata. The Cloudflare Worker that backs public GitHub App auth and Copilot quota checks is owned in [MagmaMoose/platform `apps/diatreme`](https://github.com/MagmaMoose/platform/tree/0acafb2cb991d84e772be412a60c08b7dda3a44e/apps/diatreme). Marketplace metadata stays here.
 
-I run release management across three different orgs. I got tired of composing `cycjimmy/semantic-release-action` plus `docker/metadata-action` plus `cloudposse/github-action-docker-promote` plus 200 lines of glue YAML in every repo. So I built Diatreme — one action that consolidates the lot, with the multi-environment and promotion-PR patterns I actually needed in production.
+## Quickstart
 
-Diatreme runs my production releases today. If you're managing release tooling across multiple repos or orgs and you're tired of the same dance every time, this is for you.
-
-## 60-Second Quickstart
-
-A production-only release from `main`, using the Diatreme GitHub App:
+Production-only release from `main`, using the hosted Diatreme GitHub App token broker:
 
 ```yaml
 name: Release
@@ -43,66 +34,168 @@ jobs:
           prerelease-identifiers: '{}'
 ```
 
-Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repo or org, add a `pyproject.toml` (default tool: `python-semantic-release`), and merge a conventional commit. You get a Git tag, a GitHub Release, and a `CHANGELOG.md` entry.
+Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repository or organization. With the default `versioning-tool: semantic-release-python`, add a `pyproject.toml` semantic-release config and merge conventional commits. Diatreme writes the tag, GitHub Release, changelog, and normalized outputs.
 
-### Scale up
+## Required Permissions
 
-- **Docker image promotion** — add `packages: write` and `image_name: my-app`, plus a `docker-bake.hcl`. PR builds land at `pr-<N>`; merges retag to the release version, no rebuild.
-- **Multiple environments** — switch to `environments: '["dev", "staging", "prod"]'`, set `prerelease-identifiers`, and run in `deployment-model: tbd-pr` with `create-promotion-pr: 'true'` so each release publish opens the promotion PR for the next environment. See [Choose your setup](https://docs.diatreme.magmamoose.com/choose-your-setup/) for the full caller workflow (the initial push trigger needs an explicit `environment` for the first env in the chain).
-- **Concurrent triggers** (push + promotion-PR merges on the same branch) — swap the `uses:` line for the bundled reusable workflow:
+For the default `auth-mode: public-app`, the workflow needs `id-token: write` so Diatreme can exchange GitHub OIDC for a short-lived installation token. Keep `contents: read` for checkout. Add only the permissions needed by the selected features:
 
-  ```yaml
-  jobs:
-    release:
-      uses: magmamoose/diatreme/.github/workflows/diatreme.yaml@v1
-      permissions:
-        contents: read
-        id-token: write
-      with:
-        environment: prod
-        environments: '["prod"]'
-        prerelease-identifiers: '{}'
-  ```
+| Feature | Additional workflow permissions |
+| --- | --- |
+| Docker PR image push or release promotion | `packages: write` |
+| Promotion PR creation | handled by the Diatreme App token; use `pull-requests: write` only when using `auth-mode: github-token` |
+| Copilot review gate with commit statuses | `statuses: write`, `pull-requests: read` |
+| Copilot review gate with check runs | `checks: write`, `pull-requests: read` |
+| `auth-mode: github-token` release writes | `contents: write`, plus `pull-requests: write` when creating PRs |
 
-  Same inputs; adds an automatic `concurrency: diatreme-<target-branch>` lock with FIFO queueing.
+## Examples
 
-## What You Get
+PR Docker image build:
 
-- **Four versioning backends behind one input.** `versioning-tool: semantic-release-npm | semantic-release-python | gitversion | release-please` — swap without touching anything else.
-- **Retag-not-rebuild Docker promotion.** The image that passed PR CI as `pr-42` becomes `v1.2.3` via registry retag. No fresh build, no binary drift between staging and prod. Falls back to a Docker Bake rebuild only when the source image is missing.
-- **Per-environment prerelease identifiers.** `{"dev":"dev","staging":"rc"}` → tags land as `v1.2.3-dev.1`, `v1.2.3-rc.1`, `v1.2.3`. Production sheds the suffix.
-- **Promotion PRs auto-open.** In `deployment-model: tbd-pr` with `create-promotion-pr: 'true'`, each release publish opens the promotion PR for the next environment. Merging `promote/staging/<version>` cuts the staging tag and opens `promote/prod/<version>`; merging that cuts the stable prod tag. The cascade chains through every entry in `environments`.
-- **Require Copilot Review.** In `mode: ci`, Diatreme can publish `Diatreme / Require Copilot Review` as a required PR status that passes only after a configured Copilot reviewer has reviewed the current PR head.
-- **ClickUp + GitHub Projects v2 in release notes.** Scans commits and PR bodies in the release range for `app.clickup.com/t/...` URLs and issue/PR refs (`#NNN`), appends grouped sections to the GitHub Release notes and to any open promotion PR body.
-- **Production guardrail on by default.** `admin-required-from: '@last'` makes manual `workflow_dispatch` runs targeting production require `permission: admin` on the repository. Push and promotion-PR-merge triggers are unaffected.
-- **Built-in concurrency lock.** The bundled reusable workflow declares `concurrency: diatreme-<target-branch>` with `cancel-in-progress: false`, so concurrent triggers on the same branch queue FIFO instead of racing the tag write. Composite actions can't do this on their own.
+```yaml
+name: CI
 
-## Compared to Alternatives
+on:
+  pull_request:
 
-| Action | Versioning | Docker build | Promote (retag) | Multi-env prerelease | Promotion PRs | ClickUp | Projects v2 | Admin gate | Concurrency lock |
-|---|---|---|---|---|---|---|---|---|---|
-| **Diatreme** | all 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| cycjimmy/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
-| codfish/semantic-release-action | semantic-release (npm) | — | — | — | — | — | — | — | — |
-| googleapis/release-please-action | release-please | — | — | — | — | — | — | — | — |
-| python-semantic-release publish action | python-semantic-release | — | — | — | — | — | — | — | — |
-| gittools/actions | GitVersion | — | — | — | — | — | — | — | — |
-| @codedependant/semantic-release-docker | sr-npm (plugin) | ✓ | — | — | — | — | — | — | — |
-| cloudposse/github-action-docker-promote | — | — | ✓ | — | — | — | — | — | — |
-| Nextdoor/docker-image-retag-action | — | — | ✓ | — | — | — | — | — | — |
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - uses: magmamoose/diatreme@v1
+        with:
+          mode: ci
+          image_name: my-app
+```
 
-<sub>Best-effort comparison as of 2026-05-12; corrections welcome via PR.</sub>
+Multi-environment TBD with promotion PRs:
 
-## Setup
+```yaml
+name: Release
 
-- [Concepts](https://docs.diatreme.magmamoose.com/concepts/) — TBD vs BBD, promotion PRs, Docker retag, the auth-token model.
-- [Choose your setup](https://docs.diatreme.magmamoose.com/choose-your-setup/) — paste-ready snippets for each release model.
-- [Repository setup](https://docs.diatreme.magmamoose.com/repository-setup/) — versioning config, `docker-bake.hcl`, PR CI, release workflow.
-- [Require Copilot Review](https://docs.diatreme.magmamoose.com/copilot-review/) — enforce completed Copilot PR Review as a required status check.
-- [Organization setup](https://docs.diatreme.magmamoose.com/organization-setup/) — installing the App, branch-protection bypass, when to fall back to `GITHUB_TOKEN`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed]
 
-Full input/output reference: [Action reference](https://docs.diatreme.magmamoose.com/reference/action-inputs-outputs/).
+jobs:
+  release:
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: magmamoose/diatreme@v1
+        with:
+          mode: release
+          deployment-model: tbd-pr
+          environment: dev
+          environments: '["dev", "staging", "prod"]'
+          prerelease-identifiers: '{"dev": "dev", "staging": "rc"}'
+          create-promotion-pr: 'true'
+          image_name: my-app
+```
 
----
+Branch-based development:
+
+```yaml
+steps:
+  - uses: magmamoose/diatreme@v1
+    with:
+      deployment-model: bbd
+      branch-map: '{"develop": "dev", "release/*": "staging", "main": "prod"}'
+```
+
+## Inputs
+
+All inputs are optional unless noted. Defaults match `action.yml`.
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `mode` | `release` | `ci`, `release`, or `enable-auto-merge`. |
+| `auth-mode` | `public-app` | Token source: hosted public App, private App, workflow token, or auto. |
+| `token-broker-url` | `https://api.diatreme.magmamoose.com` | Hosted broker base URL override. |
+| `oidc-audience` | `diatreme` | OIDC audience used for public App auth. |
+| `versioning-tool` | `semantic-release-python` | `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
+| `deployment-model` | `tbd` | `tbd`, `bbd`, or `tbd-pr`. |
+| `branch-map` | `''` | JSON branch-to-environment map for BBD. |
+| `promote-branch-prefix` | `promote` | Branch prefix for `tbd-pr` promotion PRs. |
+| `promote-target-branch` | `main` | Target branch for promotion PRs. |
+| `create-promotion-pr` | `false` | Open or refresh the next environment promotion PR after prerelease. |
+| `environment` | `''` | Target environment, required for plain `tbd`. |
+| `environments` | `["dev", "staging", "prod"]` | Ordered environment list; last entry is stable production. |
+| `prerelease-identifiers` | `{"dev": "dev", "staging": "rc"}` | Environment-to-prerelease suffix map. |
+| `tag-prefix` | `v` | Version tag prefix. |
+| `github-token` | `''` | Override token for GHCR login and github-token auth mode. |
+| `app-id` | `''` | Private GitHub App ID. |
+| `app-private-key` | `''` | Private GitHub App PEM. |
+| `submodules` | `false` | Pass-through to checkout: `false`, `true`, or `recursive`. |
+| `image_name` | `''` | Image name without registry or owner. Required for `mode: ci`. |
+| `bake_file` | `docker-bake.hcl` | Docker Bake file. |
+| `bake_target` | `default` | Docker Bake target or group. |
+| `registry` | `ghcr.io` | Container registry. |
+| `registry-username` | `''` | Explicit registry login username. |
+| `registry-password` | `''` | Explicit registry login password or token. |
+| `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
+| `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
+| `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
+| `require-copilot-review` | `false` | Require a fresh Copilot PR review before CI passes. |
+| `copilot-review-freshness` | `after_latest_commit` | Freshness rule for Copilot review acceptance. |
+| `copilot-review-allowed-logins` | `["copilot-pull-request-reviewer[bot]"]` | JSON list of accepted reviewer logins. |
+| `copilot-review-allow-login-pattern` | `false` | Treat allowed logins as patterns. |
+| `copilot-review-fail-on-unknown-identity` | `true` | Fail when reviewer identity cannot be resolved. |
+| `copilot-review-ignore-drafts` | `true` | Pass draft PRs without requiring Copilot review. |
+| `copilot-review-ignore-labels` | `[]` | JSON labels that bypass the Copilot review gate. |
+| `copilot-review-ignore-authors` | `[]` | JSON author logins that bypass the Copilot review gate. |
+| `copilot-review-ignore-paths` | `[]` | JSON path globs that bypass the Copilot review gate. |
+| `copilot-review-reporter` | `commit-status` | Report as `commit-status` or `check-run`. |
+| `copilot-review-check-name` | `Diatreme / Require Copilot Review` | Status/check name to protect. |
+| `copilot-review-quota-check-url` | `''` | Optional Copilot quota endpoint. Public App mode derives this from the broker URL. |
+| `aggregate-github-projects` | `false` | Append linked Projects v2 items to release docs. |
+| `move-github-projects-on-release` | `false` | Move linked Projects v2 items after release. |
+| `github-projects-target-status` | `Released` | Target Projects v2 status. |
+| `github-projects-move-on-environments` | `@last` | Environments where Projects movement runs. |
+| `admin-required-from` | `@last` | Environments where manual production releases require repo admin. |
+| `working-directory` | `.` | Repository subdirectory where versioning runs. |
+| `create-release` | `true` | Create GitHub Release when the backend supports it. |
+| `changelog` | `true` | Let supported backends update changelogs. |
+| `force-bump` | `''` | Force semantic-release-python bump level. |
+| `version-override` | `''` | Create this exact version instead of deriving one. |
+| `version-file` | `''` | Tracked file to update with the released version. |
+| `version-file-json-path` | `.Application.Version` | JSON path for version-file injection. |
+| `version-file-yaml-path` | `.appVersion` | YAML path for version-file injection. |
+| `aggregate-clickup-tickets` | `false` | Append ClickUp ticket links from the release range. |
+| `gitversion-spec` | `6.x` | GitVersion action version spec. |
+| `gitversion-config` | `GitVersion.yml` | GitVersion config file. |
+| `gitversion-appsettings-file` | `''` | Deprecated; use `version-file`. |
+| `gitversion-appsettings-version-path` | `''` | Deprecated; use `version-file-json-path`. |
+| `release-please-release-type` | `simple` | release-please release type. |
+| `release-please-config-file` | `release-please-config.json` | release-please config file. |
+| `pr-number` | `''` | PR number for `mode: enable-auto-merge`. |
+| `auto-merge-method` | `squash` | Auto-merge method: `squash`, `merge`, or `rebase`. |
+
+## Outputs
+
+| Output | Description |
+| --- | --- |
+| `version` | Semver version string without prefix, such as `1.2.3` or `1.2.3-rc.1`. |
+| `tag` | Full git tag with prefix, such as `v1.2.3`. |
+| `is-prerelease` | `true` when this environment produces a prerelease. |
+| `released` | `true` when a new version was created and published. |
+| `prerelease-identifier` | Prerelease identifier, or empty for production. |
+| `resolved-environment` | The resolved environment name. |
+
+## Release Notes
+
+Use immutable tags or SHAs for strict reproducibility. `@v1` is the floating major tag that this repository updates after each stable release. The root release workflow dogfoods `uses: ./`, then force-updates the matching major tag after semantic-release publishes a stable version.
+
+Docker promotion prefers `docker buildx imagetools create` so multi-arch manifests are preserved. For the known GitHub Enterprise Packages referrers-index parse error, Diatreme falls back to pull/tag/push for single-arch images, then to a fresh Docker Bake build if retagging cannot work.
 
 A Magma Moose product.
