@@ -1123,15 +1123,20 @@ runs:
         PROMOTE_PREFIX="${INPUT_PROMOTE_PREFIX}"
         HEAD_REF="${GITHUB_HEAD_REF:-}"
 
-        if ! npx --no semantic-release --version &>/dev/null; then
-          npm install --no-save \
-            semantic-release \
-            @semantic-release/changelog \
-            @semantic-release/commit-analyzer \
-            @semantic-release/git \
-            @semantic-release/github \
-            @semantic-release/release-notes-generator
-        fi
+        # Install semantic-release together with its plugins into the SAME
+        # node_modules, then run the locally-installed binary. Running via
+        # bare `npx semantic-release` can resolve semantic-release from an
+        # isolated `_npx/<hash>` cache whose node_modules does not contain the
+        # configured plugins, so non-bundled plugins like
+        # @semantic-release/changelog and @semantic-release/git fail with
+        # "Cannot find module '@semantic-release/changelog'". The plugin set is
+        # derived from the consumer's config (plus our baseline) so anything
+        # they configure is installed, not just a hard-coded list.
+        SEMREL_PKGS=$("${GITHUB_ACTION_PATH}/scripts/semantic-release-deps.sh")
+        echo "Installing semantic-release toolchain: ${SEMREL_PKGS}"
+        # shellcheck disable=SC2086 # word-splitting is intentional here.
+        npm install --no-save ${SEMREL_PKGS}
+        SEMREL_BIN="$(pwd)/node_modules/.bin/semantic-release"
 
         if [ "${IS_PRERELEASE}" == "true" ]; then
           NEXT_VER=""
@@ -1159,7 +1164,7 @@ runs:
             fi
             # semantic-release v24 ignores --prerelease on stable branches; use
             # dry-run to get the next stable version, then create the tag manually.
-            DRY_RUN_OUTPUT=$(npx semantic-release --dry-run 2>&1 || true)
+            DRY_RUN_OUTPUT=$("${SEMREL_BIN}" --dry-run 2>&1 || true)
             echo "=== semantic-release dry-run output ==="
             echo "${DRY_RUN_OUTPUT}"
             echo "======================================="
@@ -1264,7 +1269,7 @@ runs:
             # Use || true so non-critical post-hook failures (e.g. PR label
             # permissions) don't abort the step after the release is published.
             PRE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-            npx semantic-release || echo "::warning::semantic-release exited non-zero (release may still have been created)"
+            "${SEMREL_BIN}" || echo "::warning::semantic-release exited non-zero (release may still have been created)"
             LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
             echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
             if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "${PRE_TAG}" ]; then
@@ -1828,7 +1833,7 @@ runs:
     #
     # Idempotent: a few paths still publish the release inside an
     # external tool we don't control here — the semantic-release-npm
-    # *direct trunk stable* path (the `npx semantic-release` invocation
+    # *direct trunk stable* path (the local `semantic-release` invocation
     # in this very file) and release-please. For those we detect the
     # pre-existing release and emit a notice; the image-vs-release race
     # remains until they're refactored too. python-semantic-release

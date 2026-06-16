@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `versioning-tool: semantic-release-npm` no longer crashes with
+  `Cannot find module '@semantic-release/changelog'` (or `/git`,
+  `/github`) when the consumer's `.releaserc.json` configures
+  non-bundled plugins. semantic-release and its plugins are now
+  installed into the same `node_modules` and the locally-installed
+  binary is run directly, instead of `npx semantic-release` resolving
+  semantic-release from an isolated `_npx/<hash>` cache where the
+  plugins were not on the resolve path. The plugin set is derived from
+  the consumer's config (plus a baseline) so any plugin they configure
+  is installed, not just a hard-coded list.
 - `gh` CLI calls (`gh release create`, `gh api`, etc.) now use the
   GitHub host the workflow is actually running on. Previously they
   defaulted to github.com, which broke `Publish GitHub Release` and
