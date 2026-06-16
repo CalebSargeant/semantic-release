@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Shared public GitHub App auth through the Cloudflare Worker token broker.
-- Repository CI for actionlint, markdownlint, Docker Bake validation, Bats shell tests, and Worker checks.
+- Repository CI for action metadata parsing, actionlint, ShellCheck, and Bats tests.
 - `registry-username` and `registry-password` inputs so callers can target
   container registries that don't accept GHCR-style `github.actor` +
   workflow-token auth — GHES `containers.<host>`, Harbor, Artifactory,
@@ -23,8 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Leaned the Marketplace repository down to the published action surface:
+  root metadata, runtime scripts, Marketplace README, release metadata, and
+  action validation. The Diatreme Worker source now lives only in the
+  MagmaMoose platform monorepo.
 - The repository release workflow now dogfoods this action directly.
-- Convenience reusable workflows pin the root action at `v1` instead of `main`.
 
 ### Fixed
 
