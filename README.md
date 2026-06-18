@@ -43,6 +43,7 @@ For the default `auth-mode: public-app`, the workflow needs `id-token: write` so
 | Feature | Additional workflow permissions |
 | --- | --- |
 | Docker PR image push or release promotion | `packages: write` |
+| Package publishing to a GitHub Packages feed (`publish-package`) | `packages: write` |
 | Promotion PR creation | handled by the Diatreme App token; use `pull-requests: write` only when using `auth-mode: github-token` |
 | Copilot review gate with commit statuses | `statuses: write`, `pull-requests: read` |
 | Copilot review gate with check runs | `checks: write`, `pull-requests: read` |
@@ -113,6 +114,63 @@ steps:
       branch-map: '{"develop": "dev", "release/*": "staging", "main": "prod"}'
 ```
 
+## Publishing language packages
+
+Set `publish-package: true` and pick a `package-ecosystem` to pack and push a
+library package using the version Diatreme just computed — instead of bolting a
+separate `pack`/`push` step onto your release workflow. Publishing is opt-in,
+runs only when a new version was released (`released == true`), and inherits the
+same environment gating as versioning: dev/staging runs publish the prerelease
+version (e.g. `1.2.3-rc.1`), prod runs publish the stable version. The package
+is pushed before the GitHub Release is published, so a `release:published`
+listener finds it already in the feed.
+
+Supported ecosystems:
+
+- `nuget` — `dotnet pack` + `dotnet nuget push`.
+- `pip` — `python -m build` + `twine upload`.
+- `npm` — `npm publish` (prereleases go to a non-`latest` dist-tag named after
+  the environment's prerelease identifier).
+
+Publish a NuGet package to a private GitHub Enterprise feed, with versioning and
+publishing in a single Diatreme call:
+
+```yaml
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: magmamoose/diatreme@v1
+        with:
+          versioning-tool: gitversion
+          environment: prod
+          environments: '["prod"]'
+          prerelease-identifiers: '{}'
+          publish-package: 'true'
+          package-ecosystem: nuget
+          package-path: src/MyLibrary/MyLibrary.csproj
+          package-feed-url: https://nuget.example.ghe.com/my-org/index.json
+          package-token: ${{ secrets.NUGET_FEED_TOKEN }}
+```
+
+For the repository owner's GitHub Packages NuGet feed, omit `package-feed-url`
+and `package-token` — they default to `https://nuget.pkg.github.com/<owner>/index.json`
+and the workflow `GITHUB_TOKEN` (which needs `packages: write`).
+
+> When `package-ecosystem: npm`, let Diatreme do the publish — set
+> `npmPublish: false` on `@semantic-release/npm` so versioning and publishing
+> don't both push the package.
+
 ## Inputs
 
 All inputs are optional unless noted. Defaults match `action.yml`.
@@ -145,6 +203,15 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `registry-password` | `''` | Explicit registry login password or token. |
 | `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
+| `publish-package` | `false` | Pack and push a language package to `package-feed-url` after versioning. Opt-in. |
+| `package-ecosystem` | `''` | `nuget`, `pip`, or `npm`. Required when `publish-package` is true. |
+| `package-path` | `''` | Project/path to pack/build/publish. Defaults to `working-directory`. |
+| `package-feed-url` | `''` | Feed/registry URL. Defaults to the owner's GitHub Packages NuGet feed for `nuget`. |
+| `package-token` | `''` | Feed auth token. Defaults to the workflow `GITHUB_TOKEN` (GitHub Packages). |
+| `package-username` | `''` | Feed username for `pip`/twine. Defaults to `__token__`. Ignored by nuget/npm. |
+| `dotnet-version` | `8.0.x` | .NET SDK version for `package-ecosystem: nuget`. |
+| `python-version` | `3.x` | Python version for `package-ecosystem: pip`. |
+| `node-version` | `20` | Node.js version for `package-ecosystem: npm`. |
 | `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
 | `require-copilot-review` | `false` | Require a fresh Copilot PR review before CI passes. |
 | `copilot-review-freshness` | `after_latest_commit` | Freshness rule for Copilot review acceptance. |
@@ -191,6 +258,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `released` | `true` when a new version was created and published. |
 | `prerelease-identifier` | Prerelease identifier, or empty for production. |
 | `resolved-environment` | The resolved environment name. |
+| `package-published` | `true` when a language package was packed and pushed to the configured feed. |
 
 ## Release Notes
 
