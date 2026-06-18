@@ -162,4 +162,7 @@ teardown() {
 @test "action.yml SHA-pins the new setup actions" {
   grep -Fq "actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2" "${ACTION_YML}"
   grep -Fq "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405" "${ACTION_YML}"
+  grep -Fq "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e" "${ACTION_YML}"
+  # No setup-node left pinned to a floating major tag.
+  ! grep -Eq "actions/setup-node@v[0-9]" "${ACTION_YML}"
 }
