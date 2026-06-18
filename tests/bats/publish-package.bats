@@ -45,10 +45,14 @@ fi
 exit 0
 EOF
 
-  # npm stub: just record the call.
+  # npm stub: record the call, plus the auth userconfig the script points us at
+  # (so tests can assert the token is configured there, not left in the checkout).
   cat > "${BIN}/npm" <<'EOF'
 #!/usr/bin/env bash
 echo "npm $*" >> "${STUB_LOG}"
+if [ -n "${npm_config_userconfig:-}" ] && [ -f "${npm_config_userconfig}" ]; then
+  sed 's/^/userconfig: /' "${npm_config_userconfig}" >> "${STUB_LOG}"
+fi
 exit 0
 EOF
 
@@ -112,14 +116,16 @@ teardown() {
 
 # ── npm ──────────────────────────────────────────────────────────────────
 
-@test "npm: prerelease publishes under the identifier dist-tag and writes an auth .npmrc" {
+@test "npm: prerelease publishes under the identifier dist-tag and auths via a throwaway userconfig" {
   PKG="${WORK}/pkg"; mkdir -p "${PKG}"; echo '{"name":"@acme/x","version":"0.0.0"}' > "${PKG}/package.json"
   run env ECOSYSTEM=npm VERSION=1.0.0-dev.2 IS_PRERELEASE=true PRERELEASE_IDENTIFIER=dev \
     FEED_URL=https://npm.pkg.github.com PACKAGE_PATH="${PKG}" "${SCRIPT}"
   [ "$status" -eq 0 ]
   grep -Eq 'npm version 1.0.0-dev.2 --no-git-tag-version --allow-same-version' "${STUB_LOG}"
   grep -Eq 'npm publish --registry https://npm.pkg.github.com --tag dev' "${STUB_LOG}"
-  grep -Fq "//npm.pkg.github.com/:_authToken=s3cr3t-token" "${PKG}/.npmrc"
+  # Token configured via the throwaway userconfig, not a .npmrc in the checkout.
+  grep -Fq "userconfig: //npm.pkg.github.com/:_authToken=s3cr3t-token" "${STUB_LOG}"
+  [ ! -f "${PKG}/.npmrc" ]
   grep -Fq "published=true" "${GITHUB_OUTPUT}"
 }
 

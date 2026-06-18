@@ -160,10 +160,17 @@ case "${ECOSYSTEM:-}" in
     # Strip the scheme to the //host/path form npm uses for _authToken, and
     # drop any trailing slash so the key matches the registry npm computes.
     REG_KEY="$(printf '%s' "${FEED}" | sed -E 's#^[a-zA-Z]+:##; s#/+$##')"
+    # Write auth to a throwaway userconfig outside the working tree (removed on
+    # exit) instead of appending it to a .npmrc in the package dir — the latter
+    # leaves the token on disk in the checkout and could clobber an existing
+    # .npmrc.
+    NPMRC="$(mktemp)"
+    trap 'rm -f "${NPMRC}"' EXIT
     {
       echo "registry=${FEED}"
       echo "${REG_KEY}/:_authToken=${TOKEN}"
-    } >> .npmrc
+    } > "${NPMRC}"
+    export npm_config_userconfig="${NPMRC}"
 
     # Align package.json with the released version (no-op if already there).
     npm version "${VERSION}" --no-git-tag-version --allow-same-version >/dev/null
