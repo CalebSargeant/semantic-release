@@ -112,7 +112,10 @@ case "${ECOSYSTEM:-}" in
     USER="${USERNAME:-}"
     [ -z "${USER}" ] && USER="__token__"
     SRC_DIR="${TARGET:-${BASE_DIR}}"
-    DIST_DIR="${SRC_DIR%/}/dist"
+    # Build into a fresh temp dir (not ${SRC_DIR}/dist) so only this run's
+    # artifacts are uploaded — a pre-existing/checked-in dist/ would otherwise
+    # get swept up by the glob below. Mirrors the nuget path's mktemp -d.
+    DIST_DIR="$(mktemp -d)/dist"
 
     echo "python -m build '${SRC_DIR}'"
     python -m pip install --upgrade build twine >/dev/null
