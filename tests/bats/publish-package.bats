@@ -56,7 +56,48 @@ fi
 exit 0
 EOF
 
-  chmod +x "${BIN}/dotnet" "${BIN}/python" "${BIN}/npm"
+  # mvn stub: log calls; on deploy, record the generated settings.xml (so tests
+  # can assert the credentials are there, off the project tree).
+  cat > "${BIN}/mvn" <<'EOF'
+#!/usr/bin/env bash
+echo "mvn $*" >> "${STUB_LOG}"
+s=""
+while [ $# -gt 0 ]; do [ "$1" = "--settings" ] && s="${2:-}"; shift; done
+if [ -n "${s}" ] && [ -f "${s}" ]; then sed 's/^/settings: /' "${s}" >> "${STUB_LOG}"; fi
+exit 0
+EOF
+
+  # gradle stub: log the call + the credential env the script exported (off argv).
+  cat > "${BIN}/gradle" <<'EOF'
+#!/usr/bin/env bash
+echo "gradle $*" >> "${STUB_LOG}"
+echo "gradle-env: GITHUB_ACTOR=${GITHUB_ACTOR:-} GITHUB_TOKEN=${GITHUB_TOKEN:-}" >> "${STUB_LOG}"
+exit 0
+EOF
+
+  # gem stub: on build, create the .gem the push glob expects; on push, record
+  # the GEM_HOST_API_KEY env (auth off argv).
+  cat > "${BIN}/gem" <<'EOF'
+#!/usr/bin/env bash
+echo "gem $*" >> "${STUB_LOG}"
+if [ "${1:-}" = "build" ]; then
+  out=""
+  while [ $# -gt 0 ]; do [ "$1" = "--output" ] && out="${2:-}"; shift; done
+  [ -n "${out}" ] && { mkdir -p "$(dirname "${out}")"; : > "${out}"; }
+fi
+[ "${1:-}" = "push" ] && echo "gem-env: GEM_HOST_API_KEY=${GEM_HOST_API_KEY:-}" >> "${STUB_LOG}"
+exit 0
+EOF
+
+  # docker stub: log calls; on login, capture the token piped via --password-stdin.
+  cat > "${BIN}/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "docker $*" >> "${STUB_LOG}"
+if [ "${1:-}" = "login" ]; then read -r pw || true; echo "docker-login-stdin: ${pw}" >> "${STUB_LOG}"; fi
+exit 0
+EOF
+
+  chmod +x "${BIN}/dotnet" "${BIN}/python" "${BIN}/npm" "${BIN}/mvn" "${BIN}/gradle" "${BIN}/gem" "${BIN}/docker"
   export PATH="${BIN}:${PATH}"
 
   export TOKEN="s3cr3t-token"
@@ -138,6 +179,55 @@ teardown() {
   ! grep -Eq -- '--tag' "${STUB_LOG}"
 }
 
+# ── maven ────────────────────────────────────────────────────────────────
+
+@test "maven: sets the version and deploys to the derived GitHub Packages feed with creds in a temp settings.xml" {
+  POM="${WORK}/pom.xml"; echo '<project/>' > "${POM}"
+  run env ECOSYSTEM=maven VERSION=1.2.3 REPOSITORY=acme/widget PACKAGE_PATH="${POM}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq 'versions:set -DnewVersion=1.2.3' "${STUB_LOG}"
+  grep -Fq -- '-DaltDeploymentRepository=github::https://maven.pkg.github.com/acme/widget' "${STUB_LOG}"
+  grep -Fq '<password>s3cr3t-token</password>' "${STUB_LOG}"   # token in the settings.xml, not on argv
+  [ ! -f "${WORK}/settings.xml" ]                              # not written into the project tree
+  grep -Fq 'published=true' "${GITHUB_OUTPUT}"
+}
+
+# ── gradle ───────────────────────────────────────────────────────────────
+
+@test "gradle: publishes with the version and credentials passed via env" {
+  PROJ="${WORK}/proj"; mkdir -p "${PROJ}"; : > "${PROJ}/build.gradle"
+  run env ECOSYSTEM=gradle VERSION=4.5.6 PACKAGE_PATH="${PROJ}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq 'gradle --no-daemon publish -Pversion=4.5.6' "${STUB_LOG}"
+  grep -Fq 'gradle-env: GITHUB_ACTOR=x-access-token GITHUB_TOKEN=s3cr3t-token' "${STUB_LOG}"
+  grep -Fq 'published=true' "${GITHUB_OUTPUT}"
+}
+
+# ── rubygems ─────────────────────────────────────────────────────────────
+
+@test "rubygems: builds the gemspec and pushes to the derived host with the key in env" {
+  PROJ="${WORK}/proj"; mkdir -p "${PROJ}"; : > "${PROJ}/widget.gemspec"
+  run env ECOSYSTEM=rubygems VERSION=2.0.0 OWNER=Acme PACKAGE_PATH="${PROJ}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq 'gem build widget.gemspec' "${STUB_LOG}"
+  grep -Fq 'gem push --host https://rubygems.pkg.github.com/acme' "${STUB_LOG}"
+  grep -Fq 'gem-env: GEM_HOST_API_KEY=Bearer s3cr3t-token' "${STUB_LOG}"
+  grep -Fq 'published=true' "${GITHUB_OUTPUT}"
+}
+
+# ── container ────────────────────────────────────────────────────────────
+
+@test "container: builds and pushes to ghcr with the token via --password-stdin" {
+  CTX="${WORK}/ctx"; mkdir -p "${CTX}"; echo 'FROM scratch' > "${CTX}/Dockerfile"
+  run env ECOSYSTEM=container VERSION=1.0.0 REPOSITORY=Acme/Widget PACKAGE_PATH="${CTX}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq 'docker login ghcr.io --username x-access-token --password-stdin' "${STUB_LOG}"
+  grep -Fq 'docker-login-stdin: s3cr3t-token' "${STUB_LOG}"   # token via stdin, not argv
+  grep -Fq 'docker build --tag ghcr.io/acme/widget:1.0.0' "${STUB_LOG}"
+  grep -Fq 'docker push ghcr.io/acme/widget:1.0.0' "${STUB_LOG}"
+  grep -Fq 'published=true' "${GITHUB_OUTPUT}"
+}
+
 # ── validation ───────────────────────────────────────────────────────────
 
 @test "empty ecosystem -> exit 1 with actionable message" {
@@ -147,9 +237,9 @@ teardown() {
 }
 
 @test "unknown ecosystem -> exit 1" {
-  run env ECOSYSTEM=maven VERSION=1.2.3 "${SCRIPT}"
+  run env ECOSYSTEM=cargo VERSION=1.2.3 "${SCRIPT}"
   [ "$status" -eq 1 ]
-  echo "$output" | grep -Fq "Unsupported package-ecosystem 'maven'"
+  echo "$output" | grep -Fq "Unsupported package-ecosystem 'cargo'"
 }
 
 @test "missing VERSION -> exit 1" {
@@ -169,6 +259,15 @@ teardown() {
   grep -Fq "actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2" "${ACTION_YML}"
   grep -Fq "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405" "${ACTION_YML}"
   grep -Fq "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e" "${ACTION_YML}"
-  # No setup-node left pinned to a floating major tag.
-  ! grep -Eq "actions/setup-node@v[0-9]" "${ACTION_YML}"
+  grep -Fq "actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287" "${ACTION_YML}"
+  grep -Fq "ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af" "${ACTION_YML}"
+  # No setup action left pinned to a floating major tag.
+  ! grep -Eq "actions/setup-(node|java)@v[0-9]" "${ACTION_YML}"
+  ! grep -Eq "ruby/setup-ruby@v[0-9]" "${ACTION_YML}"
+}
+
+@test "action.yml wires Java/Ruby setup for the JVM/Ruby ecosystems" {
+  grep -Fq "inputs.package-ecosystem == 'maven' || inputs.package-ecosystem == 'gradle'" "${ACTION_YML}"
+  grep -Fq "actions/setup-java@" "${ACTION_YML}"
+  grep -Fq "ruby/setup-ruby@" "${ACTION_YML}"
 }

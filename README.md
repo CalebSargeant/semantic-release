@@ -125,12 +125,25 @@ version (e.g. `1.2.3-rc.1`), prod runs publish the stable version. The package
 is pushed before the GitHub Release is published, so a `release:published`
 listener finds it already in the feed.
 
-Supported ecosystems:
+Supported ecosystems — everything except `pip` is a GitHub Packages ecosystem
+and defaults to this repo's GitHub Packages feed, so `package-feed-url` /
+`package-token` can be omitted:
 
 - `nuget` — `dotnet pack` + `dotnet nuget push`.
-- `pip` — `python -m build` + `twine upload`.
 - `npm` — `npm publish` (prereleases go to a non-`latest` dist-tag named after
   the environment's prerelease identifier).
+- `maven` — `mvn versions:set` + `mvn deploy` (credentials in a per-run
+  `settings.xml`, kept off the project tree).
+- `gradle` — `gradle publish` via the project's `maven-publish` block; the
+  version and the conventional `GITHUB_ACTOR`/`GITHUB_TOKEN` credentials are
+  passed through for the `GitHubPackages` repository.
+- `rubygems` — `gem build` + `gem push`.
+- `container` — `docker build` + `docker push` to
+  `ghcr.io/<owner>/<repo>:<version>` (override the name with `package-name`).
+  Complements the existing image *promotion* — this builds and publishes the
+  release version.
+- `pip` — `python -m build` + `twine upload` (PyPI or any index; not a GitHub
+  Packages ecosystem, kept for convenience).
 
 Publish a NuGet package to a private GitHub Enterprise feed, with versioning and
 publishing in a single Diatreme call:
@@ -166,6 +179,15 @@ jobs:
 For the repository owner's GitHub Packages NuGet feed, omit `package-feed-url`
 and `package-token` — they default to `https://nuget.pkg.github.com/<owner>/index.json`
 and the workflow `GITHUB_TOKEN` (which needs `packages: write`).
+
+The same defaults apply to the other GitHub Packages ecosystems (Maven, Gradle,
+RubyGems, and Container → `ghcr.io`). For `container`, `package-path` is the
+Docker build context and `package-name` defaults to `<owner>/<repo>`.
+
+> **Version source.** Diatreme sets the published version where the tooling
+> allows (`-p:Version`, `npm version`, `mvn versions:set`, `-Pversion`, the image
+> tag). For `pip` and `rubygems` it comes from the project manifest
+> (`pyproject.toml` / the `.gemspec`), so persist it there before publishing.
 
 > When `package-ecosystem: npm`, let Diatreme do the publish — set
 > `npmPublish: false` on `@semantic-release/npm` so versioning and publishing
@@ -204,14 +226,18 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
 | `publish-package` | `false` | Pack and push a language package to `package-feed-url` after versioning. Opt-in. |
-| `package-ecosystem` | `''` | `nuget`, `pip`, or `npm`. Required when `publish-package` is true. |
+| `package-ecosystem` | `''` | `nuget`, `npm`, `maven`, `gradle`, `rubygems`, `container`, or `pip`. Required when `publish-package` is true. |
 | `package-path` | `''` | Project/path to pack/build/publish. Defaults to `working-directory`. |
-| `package-feed-url` | `''` | Feed/registry URL. Defaults to the owner's GitHub Packages NuGet feed for `nuget`. |
+| `package-feed-url` | `''` | Feed/registry URL. Empty → the repo's GitHub Packages feed per ecosystem (`ghcr.io` for container; the public registry for npm/pip). |
 | `package-token` | `''` | Feed auth token. Defaults to the workflow `GITHUB_TOKEN` (GitHub Packages). |
-| `package-username` | `''` | Feed username for `pip`/twine. Defaults to `__token__`. Ignored by nuget/npm. |
+| `package-username` | `''` | Login username. Default `__token__` (pip) / `x-access-token` (maven, gradle, rubygems, container). Ignored by nuget/npm. |
 | `dotnet-version` | `8.0.x` | .NET SDK version for `package-ecosystem: nuget`. |
 | `python-version` | `3.x` | Python version for `package-ecosystem: pip`. |
 | `node-version` | `20` | Node.js version for `package-ecosystem: npm`. |
+| `java-version` | `17` | JDK version for `package-ecosystem: maven`/`gradle`. |
+| `java-distribution` | `temurin` | JDK distribution for `maven`/`gradle` (setup-java). |
+| `ruby-version` | `3.3` | Ruby version for `package-ecosystem: rubygems`. |
+| `package-name` | `''` | Image name for `package-ecosystem: container`. Defaults to `<owner>/<repo>`. |
 | `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
 | `require-copilot-review` | `false` | Require a fresh Copilot PR review before CI passes. |
 | `copilot-review-freshness` | `after_latest_commit` | Freshness rule for Copilot review acceptance. |
