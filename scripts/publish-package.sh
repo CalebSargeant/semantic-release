@@ -37,7 +37,7 @@
 #
 # Exit codes:
 #   0 - package published (re-runs are idempotent: nuget --skip-duplicate,
-#       twine --skip-existing, npm refuses to overwrite an existing version)
+#       twine --skip-existing, npm tolerates an already-published version)
 #   1 - misconfiguration or a publish error
 
 set -euo pipefail
@@ -177,7 +177,22 @@ case "${ECOSYSTEM:-}" in
     else
       echo "npm publish → ${FEED} (dist-tag: latest)"
     fi
-    npm "${PUBLISH_ARGS[@]}"
+    # npm publish isn't natively idempotent — it errors if the version already
+    # exists — so tolerate that specific conflict to match the nuget
+    # (--skip-duplicate) and twine (--skip-existing) re-run behaviour.
+    PUBLISH_ERR="$(mktemp)"
+    NPM_STATUS=0
+    npm "${PUBLISH_ARGS[@]}" 2>"${PUBLISH_ERR}" || NPM_STATUS=$?
+    cat "${PUBLISH_ERR}" >&2
+    if [ "${NPM_STATUS}" -ne 0 ]; then
+      if grep -qiE 'cannot publish over|previously published|EPUBLISHCONFLICT' "${PUBLISH_ERR}"; then
+        echo "npm: version ${VERSION} already published — idempotent re-run, treating as success."
+      else
+        rm -f "${PUBLISH_ERR}"
+        exit 1
+      fi
+    fi
+    rm -f "${PUBLISH_ERR}"
     ;;
 
   '')
