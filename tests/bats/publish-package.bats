@@ -171,6 +171,20 @@ teardown() {
   grep -Fq "published=true" "${GITHUB_OUTPUT}"
 }
 
+@test "pip: trusted publishing targets TestPyPI when feed is test.pypi.org" {
+  # TestPyPI path: mint host derives to test.pypi.org and twine gets an explicit
+  # --repository-url (unlike the public-PyPI default above).
+  run env -u TOKEN ECOSYSTEM=pip VERSION=3.4.5 PYPI_TRUSTED_PUBLISHING=true \
+    FEED_URL=https://test.pypi.org/legacy/ \
+    ACTIONS_ID_TOKEN_REQUEST_URL=https://example/oidc \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=req-token \
+    PACKAGE_PATH="${WORK}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Eq 'python - test.pypi.org' "${STUB_LOG}"                       # mint host = TestPyPI
+  grep -Eq -- '--repository-url https://test.pypi.org/legacy/' "${STUB_LOG}"
+  grep -Fq "published=true" "${GITHUB_OUTPUT}"
+}
+
 @test "pip: trusted publishing refuses a private/non-PyPI index" {
   run env -u TOKEN ECOSYSTEM=pip VERSION=3.4.5 PYPI_TRUSTED_PUBLISHING=true \
     FEED_URL=https://nexus.example.com/repository/pypi/ \
