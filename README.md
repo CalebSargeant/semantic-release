@@ -378,6 +378,11 @@ preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
 Publishing to public PyPI via Trusted Publishing (no `package-token`):
 
 ```yaml
+    # Needs id-token: write on the job — granted by default `auth-mode:
+    # public-app`; add it explicitly under `auth-mode: github-token`.
+    permissions:
+      id-token: write
+    steps:
       - uses: magmamoose/diatreme@v1
         with:
           # …versioning inputs…
