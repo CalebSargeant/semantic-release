@@ -1,0 +1,57 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-worker.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate worker
+        run: npm run check
+
+      # Bind the production KV namespace without committing the ID (keeps
+      # wrangler.jsonc clean for self-hosters). Set repo/org Actions variable
+      # COPILOT_QUOTA_KV_ID to the namespace ID; skipped when it's unset.
+      - name: Inject KV namespace binding
+        if: ${{ vars.COPILOT_QUOTA_KV_ID != '' }}
+        env:
+          KV_ID: ${{ vars.COPILOT_QUOTA_KV_ID }}
+        run: |
+          # shellcheck disable=SC2016  # ${process.env.KV_ID} is a JS template, not shell
+          node -e 'const fs=require("fs");const f="wrangler.jsonc";const s=fs.readFileSync(f,"utf8");if(!s.includes("// __KV_NAMESPACES__")){console.error("KV marker missing");process.exit(1);}fs.writeFileSync(f,s.replace("// __KV_NAMESPACES__",`"kv_namespaces": [{ "binding": "COPILOT_QUOTA_KV", "id": "${process.env.KV_ID}" }],`));console.log("Injected COPILOT_QUOTA_KV binding");'
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy

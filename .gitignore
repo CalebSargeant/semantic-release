@@ -4,6 +4,13 @@ __pycache__/
 .idea/
 .vscode/
 
+# Node / Cloudflare Worker build artifacts (worker/)
+node_modules/
+.wrangler/
+coverage/
+dist/
+*.tsbuildinfo
+
 # Local secrets must never be committed.
 .env
 .env.*

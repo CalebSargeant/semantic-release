@@ -23,10 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Leaned the Marketplace repository down to the published action surface:
-  root metadata, runtime scripts, Marketplace README, release metadata, and
-  action validation. The Diatreme Worker source now lives only in the
-  MagmaMoose platform monorepo.
+- The action surface (root metadata, runtime scripts, Marketplace README,
+  release metadata, validation) and the Cloudflare Worker backend (`worker/`)
+  now live together in this repository and deploy independently. CI validates
+  both surfaces.
 - The repository release workflow now dogfoods this action directly.
 
 ### Fixed

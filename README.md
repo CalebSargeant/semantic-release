@@ -5,9 +5,16 @@
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
 [![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
-Diatreme is a composite GitHub Action for semantic release orchestration across TBD and BBD workflows. It can run release-only flows, build PR Docker images, promote already-built GHCR images by retagging, open promotion PRs, enforce Copilot review gates, and normalize release outputs across multiple versioning tools.
+Diatreme is a composite GitHub Action for semantic-release orchestration across TBD and BBD workflows. It can run release-only flows, build PR Docker images, promote already-built GHCR images by retagging, open promotion PRs, enforce Copilot review gates, publish language packages, and normalize release outputs across multiple versioning tools.
 
-This repository is intentionally thin for GitHub Marketplace: the root `action.yml`, the shell helpers it calls, a small validation suite, and release metadata. The Cloudflare Worker that backs public GitHub App auth and Copilot quota checks is owned in [MagmaMoose/platform `apps/diatreme`](https://github.com/MagmaMoose/platform/tree/0acafb2cb991d84e772be412a60c08b7dda3a44e/apps/diatreme). Marketplace metadata stays here.
+This repository holds **both surfaces** of Diatreme:
+
+| Surface | Path | What it is |
+| --- | --- | --- |
+| **Composite Action** | [`action.yml`](action.yml) + [`scripts/`](scripts) | The GitHub Marketplace action your workflows call as `uses: magmamoose/diatreme@v1`. |
+| **Cloudflare Worker** | [`worker/`](worker) | The hosted backend the action calls at `api.diatreme.magmamoose.com` — the GitHub App token broker, commit signer, Copilot quota/review service, and Claude Code dispatch trigger. |
+
+The Action is what you install from the Marketplace; the Worker is the service that backs `auth-mode: public-app` so you don't have to run your own GitHub App. **Most users only need the Action** — start at [Quickstart](#quickstart). To self-host or develop the backend, see [The Diatreme Worker](#the-diatreme-worker).
 
 ## Quickstart
 
@@ -456,6 +463,31 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `prerelease-identifier` | Prerelease identifier, or empty for production. |
 | `resolved-environment` | The resolved environment name. |
 | `package-published` | `true` when a language package was packed and pushed to the configured feed. |
+
+## The Diatreme Worker
+
+The [`worker/`](worker) directory is the Cloudflare Worker behind the hosted broker at `https://api.diatreme.magmamoose.com`. The Action's default `auth-mode: public-app` calls it so you never have to register and run your own GitHub App. You can also self-host it and point the Action at your own deployment with the `token-broker-url` input.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /process` | Triage Copilot PR-review comments and route each to a fix or a dismissal. |
+| `POST /sign` | Create a GitHub-signed, user-attributed commit via `createCommitOnBranch`. |
+| `POST /dispatch` | Hand an autonomous coding task to Claude Code (see [`worker/DISPATCH.md`](worker/DISPATCH.md)). |
+| `GET /copilot-quota` | Report remaining Copilot review quota for the review gate. |
+| `/oauth/connect` + callback | Authorize user-attributed signing. |
+
+Develop and deploy with [Wrangler](https://developers.cloudflare.com/workers/wrangler/):
+
+```bash
+cd worker
+npm install
+npm run check     # typecheck + tests + wrangler dry-run deploy
+npm test          # vitest only
+wrangler dev      # run locally
+wrangler deploy   # ship to Cloudflare
+```
+
+Configuration (secrets and vars) is documented in [`worker/README.md`](worker/README.md) and [`worker/.dev.vars.example`](worker/.dev.vars.example). The private observability dashboard for this worker is the separate [`MagmaMoose/diatreme-pro`](https://github.com/MagmaMoose/diatreme-pro) repository.
 
 ## Release Notes
 
