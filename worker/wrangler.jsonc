@@ -18,16 +18,14 @@
   //
   // GitHub Enterprise (ghe.com / GHES) — OPT-IN. Set these to also accept OIDC
   // tokens from a GHE tenant and mint via a GHE-side ("duplicate") App against
-  // the GHE REST API. /process also uses these to triage GHE PR URLs (the PR
-  // host is matched against GHE_API_BASE):
+  // the GHE REST API:
   //   GHE_OIDC_ISSUER                 e.g. https://token.actions.<tenant>.ghe.com
   //   GHE_API_BASE                    e.g. https://<tenant>.ghe.com/api/v3
   //   GHE_GITHUB_APP_ID
   //   GHE_GITHUB_APP_PRIVATE_KEY
   //   GHE_GITHUB_APP_INSTALLATION_ID  (optional — skips the per-repo lookup)
   //
-  // KV namespace backing /copilot-quota (manual override + billing/metrics
-  // cache + webhook signal) and the /oauth connect-state store.
+  // KV namespace caching the GET /releases aggregate.
   //   wrangler kv namespace create COPILOT_QUOTA_KV
   // Binding name MUST be COPILOT_QUOTA_KV — env.COPILOT_QUOTA_KV is read.
   //
@@ -35,15 +33,7 @@
   // namespace ID. For the hosted deploy, CI replaces the marker line below
   // with the real kv_namespaces block from the COPILOT_QUOTA_KV_ID Actions
   // variable (see .github/workflows/deploy-worker.yaml). Deploy without the
-  // variable (or run locally) → no KV binding → the endpoint and OAuth state
-  // degrade gracefully. For local dev, add the block by hand.
+  // variable (or run locally) → no KV binding → /releases just skips its
+  // cache and recomputes each request. For local dev, add the block by hand.
   // __KV_NAMESPACES__
-  //
-  // Cron trigger: every 15 minutes refresh the billing cache for owners
-  // we've already seen (manual override, webhook event, or prior cache).
-  // This keeps `GET /copilot-quota` fast and offloads billing-API hits
-  // from the action's hot path. Skipped when COPILOT_QUOTA_KV is absent.
-  "triggers": {
-    "crons": ["*/15 * * * *"]
-  }
 }
