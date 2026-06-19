@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Removed
+
+- **Scoped Diatreme to release/deployment orchestration only.** Removed the
+  Copilot review gate (the `require-copilot-review` / `copilot-review-*` inputs
+  and `scripts/require-copilot-review.sh`), and from the worker: Copilot-comment
+  triage, the inline LLM fixer, CodeQL/GHAS alert triage, Claude Code agent
+  dispatch, the `/copilot-quota` endpoint and its billing cron, the OAuth
+  user-attribution flow, and the `TRIAGE_LLM_*` / `DISPATCH_*` config. The worker
+  is now just the GitHub App backend for releases: the OIDC **token broker** and
+  the **App/bot-attributed commit/tag signer** (`/sign` now mints an App
+  installation token instead of a user OAuth token), plus `/releases` and the
+  push auto-update webhook.
+
 ### Added
 
 - Shared public GitHub App auth through the Cloudflare Worker token broker.

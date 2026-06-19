@@ -440,113 +440,6 @@ inputs:
     required: false
     default: 'true'
 
-  require-copilot-review:
-    description: |
-      Enforce GitHub Copilot PR Review as a required PR policy (mode: ci).
-
-      When true, Diatreme reads pull request reviews, detects a
-      configured Copilot reviewer identity, verifies that the review covers
-      the current PR head, and reports a stable required status named
-      `Diatreme / Require Copilot Review` by default.
-
-      This does not request Copilot review automatically. Configure GitHub's
-      automatic Copilot review separately in repository or organization
-      rulesets, then require this status in branch protection.
-    required: false
-    default: 'false'
-
-  copilot-review-freshness:
-    description: |
-      Freshness rule for `require-copilot-review`. One of:
-        after_latest_commit  (default) Prefer the review's commit_id matching the current PR head; if commit_id is unavailable, require submitted_at to be at or after the latest PR commit timestamp.
-        exact_head_sha       Require the review's commit_id to equal the current PR head SHA.
-    required: false
-    default: 'after_latest_commit'
-
-  copilot-review-allowed-logins:
-    description: |
-      JSON array or comma-separated list of Copilot reviewer logins accepted
-      by `require-copilot-review`.
-
-      Override this for GitHub Enterprise Server or organization-specific
-      bot identities.
-    required: false
-    default: '["copilot-pull-request-reviewer[bot]"]'
-
-  copilot-review-allow-login-pattern:
-    description: |
-      When true, entries in `copilot-review-allowed-logins` are treated as
-      shell-style login patterns. Keep false for exact login matching.
-    required: false
-    default: 'false'
-
-  copilot-review-fail-on-unknown-identity:
-    description: |
-      When true, fail closed unless a submitted review matches
-      `copilot-review-allowed-logins`. When false, Diatreme may accept
-      a submitted reviewer login containing `copilot` as a compatibility
-      fallback for environments with different bot names.
-    required: false
-    default: 'true'
-
-  copilot-review-ignore-drafts:
-    description: 'Skip the Copilot review gate for draft pull requests.'
-    required: false
-    default: 'true'
-
-  copilot-review-ignore-labels:
-    description: |
-      JSON array or comma-separated list of pull request labels that bypass
-      `require-copilot-review`, for example `["skip-copilot-review"]`.
-    required: false
-    default: '[]'
-
-  copilot-review-ignore-authors:
-    description: |
-      JSON array or comma-separated list of pull request authors that bypass
-      `require-copilot-review`, for example `["dependabot[bot]"]`.
-    required: false
-    default: '[]'
-
-  copilot-review-ignore-paths:
-    description: |
-      JSON array or comma-separated list of shell-style file path patterns
-      that bypass `require-copilot-review` when every changed PR file matches
-      one of the patterns. Example: `["docs/*","*.md"]`.
-    required: false
-    default: '[]'
-
-  copilot-review-reporter:
-    description: |
-      Reporter used for `require-copilot-review`. One of:
-        commit-status  (default) Create a commit status with context `copilot-review-check-name`; requires `statuses: write`.
-        check-run      Create or update a GitHub Check Run named `copilot-review-check-name`; requires `checks: write`.
-        none           Evaluate only; useful for local tests.
-    required: false
-    default: 'commit-status'
-
-  copilot-review-check-name:
-    description: |
-      Stable status context or check-run name for `require-copilot-review`.
-      Add this exact value to branch protection or rulesets when making the
-      gate required.
-    required: false
-    default: 'Diatreme / Require Copilot Review'
-
-  copilot-review-quota-check-url:
-    description: |
-      `/copilot-quota` worker endpoint. When set, the gate calls this URL
-      before failing for "no Copilot review" and passes gracefully (with
-      a `::warning::`) if the worker reports `rate_limited: true`.
-
-      Under `auth-mode: public-app` (the default) the URL is auto-derived
-      from `token-broker-url` as `${token-broker-url}/copilot-quota`, so
-      public-app callers get rate-limit bypass without any wiring.
-      Self-hosted brokers and callers using `auth-mode: private-app` or
-      `github-token` opt in explicitly by setting this input.
-    required: false
-    default: ''
-
   # ── Integrations: GitHub Projects ─────────────────────────────────────────
   aggregate-github-projects:
     description: |
@@ -931,33 +824,6 @@ runs:
       env:
         PROMOTE_BRANCH_PREFIX: ${{ inputs.promote-branch-prefix }}
       run: "${GITHUB_ACTION_PATH}/scripts/check-branch-naming.sh"
-
-    - name: Require Copilot Review
-      if: inputs.mode == 'ci' && inputs.require-copilot-review == 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ steps.auth.outputs.token }}
-        OWNER: ${{ github.repository_owner }}
-        REPO: ${{ github.event.repository.name }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        COPILOT_REVIEW_FRESHNESS: ${{ inputs.copilot-review-freshness }}
-        COPILOT_REVIEW_ALLOWED_LOGINS: ${{ inputs.copilot-review-allowed-logins }}
-        COPILOT_REVIEW_ALLOW_LOGIN_PATTERN: ${{ inputs.copilot-review-allow-login-pattern }}
-        COPILOT_REVIEW_FAIL_ON_UNKNOWN_IDENTITY: ${{ inputs.copilot-review-fail-on-unknown-identity }}
-        COPILOT_REVIEW_IGNORE_DRAFTS: ${{ inputs.copilot-review-ignore-drafts }}
-        COPILOT_REVIEW_IGNORE_LABELS: ${{ inputs.copilot-review-ignore-labels }}
-        COPILOT_REVIEW_IGNORE_AUTHORS: ${{ inputs.copilot-review-ignore-authors }}
-        COPILOT_REVIEW_IGNORE_PATHS: ${{ inputs.copilot-review-ignore-paths }}
-        COPILOT_REVIEW_REPORTER: ${{ inputs.copilot-review-reporter }}
-        COPILOT_REVIEW_CHECK_NAME: ${{ inputs.copilot-review-check-name }}
-        # When the caller didn't pass an explicit quota URL and they are
-        # using the public-app broker, auto-derive `${token-broker-url}/copilot-quota`
-        # so the rate-limit bypass works out-of-the-box. Self-hosted callers
-        # (private-app, github-token) keep the strict default unless they
-        # opt in explicitly.
-        COPILOT_REVIEW_QUOTA_CHECK_URL: ${{ inputs.copilot-review-quota-check-url || (inputs.auth-mode == 'public-app' && format('{0}/copilot-quota', inputs.token-broker-url)) || '' }}
-      run: "${GITHUB_ACTION_PATH}/scripts/require-copilot-review.sh"
 
     - name: Validate version override
       id: version-override
@@ -2402,8 +2268,7 @@ runs:
     #
     # Invoked from a separate caller workflow (typically `pull_request`) to
     # opt a non-promotion PR into native auto-merge so it lands as soon as
-    # required checks pass and required reviews approve. Pairs naturally
-    # with the `require-copilot-review` gate for hands-off PR handling.
+    # required checks pass and required reviews approve.
     #
     # Repo prerequisites (GitHub-side, not enforced by this action):
     #   - "Allow auto-merge" enabled in Settings → General → Pull Requests

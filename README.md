@@ -53,8 +53,6 @@ For the default `auth-mode: public-app`, the workflow needs `id-token: write` so
 | Package publishing to a GitHub Packages feed (`publish-package`) | `packages: write` |
 | Public-npm provenance (`npm-provenance`) or PyPI Trusted Publishing (`pypi-trusted-publishing`) | `id-token: write` (already required by the default `auth-mode: public-app`) |
 | Promotion PR creation | handled by the Diatreme App token; use `pull-requests: write` only when using `auth-mode: github-token` |
-| Copilot review gate with commit statuses | `statuses: write`, `pull-requests: read` |
-| Copilot review gate with check runs | `checks: write`, `pull-requests: read` |
 | `auth-mode: github-token` release writes | `contents: write`, plus `pull-requests: write` when creating PRs |
 
 ## Examples
@@ -448,18 +446,6 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `npm-provenance` | `false` | Publish to npmjs with `npm publish --provenance`. npmjs-only; needs `id-token: write`. |
 | `pypi-trusted-publishing` | `false` | Upload to public PyPI/TestPyPI via GitHub OIDC instead of `package-token`. Needs `id-token: write`. |
 | `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
-| `require-copilot-review` | `false` | Require a fresh Copilot PR review before CI passes. |
-| `copilot-review-freshness` | `after_latest_commit` | Freshness rule for Copilot review acceptance. |
-| `copilot-review-allowed-logins` | `["copilot-pull-request-reviewer[bot]"]` | JSON list of accepted reviewer logins. |
-| `copilot-review-allow-login-pattern` | `false` | Treat allowed logins as patterns. |
-| `copilot-review-fail-on-unknown-identity` | `true` | Fail when reviewer identity cannot be resolved. |
-| `copilot-review-ignore-drafts` | `true` | Pass draft PRs without requiring Copilot review. |
-| `copilot-review-ignore-labels` | `[]` | JSON labels that bypass the Copilot review gate. |
-| `copilot-review-ignore-authors` | `[]` | JSON author logins that bypass the Copilot review gate. |
-| `copilot-review-ignore-paths` | `[]` | JSON path globs that bypass the Copilot review gate. |
-| `copilot-review-reporter` | `commit-status` | Report as `commit-status` or `check-run`. |
-| `copilot-review-check-name` | `Diatreme / Require Copilot Review` | Status/check name to protect. |
-| `copilot-review-quota-check-url` | `''` | Optional Copilot quota endpoint. Public App mode derives this from the broker URL. |
 | `aggregate-github-projects` | `false` | Append linked Projects v2 items to release docs. |
 | `move-github-projects-on-release` | `false` | Move linked Projects v2 items after release. |
 | `github-projects-target-status` | `Released` | Target Projects v2 status. |
