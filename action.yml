@@ -265,6 +265,104 @@ inputs:
     required: false
     default: ''
 
+  # ── Package publishing ────────────────────────────────────────────────────
+  # Native library-package publishing, in addition to (or instead of) Docker
+  # image promotion. Opt-in via `publish-package: true`; gated on the same
+  # `released` signal and environment logic as versioning/tagging, so each run
+  # publishes the version diatreme just computed for its environment —
+  # prereleases on dev/staging, stable on prod (the prerelease state is
+  # encoded in the version string itself, e.g. 1.2.3-rc.1).
+  publish-package:
+    description: |
+      When true, pack and push a language package to `package-feed-url` after
+      versioning, using the version diatreme computed (the `version` output).
+      Off by default so existing image-promotion / versioning-only consumers
+      are unaffected. Runs only when a new version was released
+      (`released == true`), after Docker image promotion and before the
+      GitHub Release is published — so a `release:published` listener finds
+      the package already in the feed (same ordering rationale as images).
+    required: false
+    default: 'false'
+
+  package-ecosystem:
+    description: |
+      Package ecosystem to publish when `publish-package` is true. One of:
+        nuget   .NET — `dotnet pack` + `dotnet nuget push`.
+        pip     Python — `python -m build` + `twine upload`.
+        npm     Node.js — `npm publish` (versioning via semantic-release-npm
+                already exists; this performs the publish).
+      Required when `publish-package` is true.
+    required: false
+    default: ''
+
+  package-path:
+    description: |
+      Project or path to pack/build/publish.
+        nuget   A .csproj/.sln/.nupkg path or a directory. Defaults to
+                `working-directory`.
+        pip     The source directory containing pyproject.toml/setup.py.
+                Defaults to `working-directory`.
+        npm     The package directory (or a package.json path). Defaults to
+                `working-directory`.
+      Leave empty to fall back to `working-directory`.
+    required: false
+    default: ''
+
+  package-feed-url:
+    description: |
+      Feed / registry URL to publish to.
+        nuget   NuGet v3 index, e.g.
+                https://nuget.pkg.github.com/<owner>/index.json (GitHub
+                Packages) or a private feed
+                (https://nuget.example.com/<org>/index.json). Defaults to the
+                repository owner's GitHub Packages NuGet feed when empty.
+        pip     twine repository URL. Empty publishes to PyPI.
+        npm     npm registry URL. Empty publishes to https://registry.npmjs.org.
+    required: false
+    default: ''
+
+  package-token:
+    description: |
+      Auth token / API key for the package feed. Defaults to the workflow
+      GITHUB_TOKEN (the `github-token` input, or `github.token`), which is
+      what GitHub Packages feeds expect with `packages: write`. This is the
+      registry-login token, independent of the git/release auth token — pass
+      a workflow secret (e.g. secrets.NUGET_FEED_TOKEN) when targeting a feed
+      that requires fixed credentials, such as a GitHub Enterprise Packages
+      feed on another host.
+    required: false
+    default: ''
+
+  package-username:
+    description: |
+      Feed username. Only used for `pip` (twine). Defaults to `__token__`,
+      the PyPI convention for token auth. Ignored for nuget and npm, which
+      authenticate with the token alone.
+    required: false
+    default: ''
+
+  dotnet-version:
+    description: |
+      .NET SDK version range for `package-ecosystem: nuget`, passed to
+      actions/setup-dotnet. Override to match the project's target framework
+      (e.g. 9.0.x). Multiple versions can be newline-separated.
+    required: false
+    default: '8.0.x'
+
+  python-version:
+    description: |
+      Python version for `package-ecosystem: pip`, passed to
+      actions/setup-python.
+    required: false
+    default: '3.x'
+
+  node-version:
+    description: |
+      Node.js version for `package-ecosystem: npm`, passed to
+      actions/setup-node.
+    required: false
+    default: '20'
+
   # ── CI-specific ──────────────────────────────────────────────────────────
   enforce_branch_naming:
     description: |
@@ -684,6 +782,9 @@ outputs:
   resolved-environment:
     description: 'The resolved environment name.'
     value: ${{ steps.detect-env.outputs.environment }}
+  package-published:
+    description: '"true" if a language package was packed and pushed to the configured feed.'
+    value: ${{ steps.publish-package.outputs.published }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEPS
@@ -1095,7 +1196,7 @@ runs:
 
     - name: Set up Node.js (semantic-release-npm)
       if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'semantic-release-npm'
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version: '20'
 
@@ -1811,6 +1912,77 @@ runs:
               --push
           fi
         done
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # RELEASE MODE — Native package publishing (opt-in)
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Pack and push a language package (NuGet / pip / npm) to a configurable
+    # feed, using the version diatreme just computed. Opt-in via
+    # `publish-package: true`, gated on `released == 'true'` exactly like
+    # image promotion — so environment/branch logic is inherited: each run
+    # targets one environment and publishes that environment's version
+    # (prereleases on dev/staging, stable on prod; the prerelease state is
+    # carried in the version string, e.g. 1.2.3-rc.1).
+    #
+    # Runs after image promotion and before the GitHub Release is published,
+    # so a downstream `release:published` listener finds the package already
+    # available in the feed — the same race-avoidance ordering used for the
+    # Docker image promote step.
+
+    - name: Set up .NET (package publishing)
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        inputs.package-ecosystem == 'nuget' &&
+        steps.normalize.outputs.released == 'true'
+      uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Set up Python (package publishing)
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        inputs.package-ecosystem == 'pip' &&
+        steps.normalize.outputs.released == 'true'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Set up Node.js (package publishing)
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        inputs.package-ecosystem == 'npm' &&
+        steps.normalize.outputs.released == 'true'
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Publish package
+      id: publish-package
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        steps.normalize.outputs.released == 'true'
+      shell: bash
+      env:
+        ECOSYSTEM: ${{ inputs.package-ecosystem }}
+        VERSION: ${{ steps.normalize.outputs.version }}
+        # Registry-login token. Defaults to the workflow GITHUB_TOKEN
+        # (resolve-auth-token.sh exposes it as registry-token), which is what
+        # GitHub Packages feeds expect with `packages: write` — independent of
+        # the git/release auth token used for tagging.
+        TOKEN: ${{ inputs.package-token || steps.auth.outputs.registry-token }}
+        FEED_URL: ${{ inputs.package-feed-url }}
+        PACKAGE_PATH: ${{ inputs.package-path }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        USERNAME: ${{ inputs.package-username }}
+        OWNER: ${{ github.repository_owner }}
+        IS_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
+        PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
+      run: "${GITHUB_ACTION_PATH}/scripts/publish-package.sh"
 
     # ═════════════════════════════════════════════════════════════════════════
     # RELEASE MODE — Publish GitHub Release (deferred until after image promote)
