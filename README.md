@@ -44,6 +44,7 @@ For the default `auth-mode: public-app`, the workflow needs `id-token: write` so
 | --- | --- |
 | Docker PR image push or release promotion | `packages: write` |
 | Package publishing to a GitHub Packages feed (`publish-package`) | `packages: write` |
+| Public-npm provenance (`npm-provenance`) or PyPI Trusted Publishing (`pypi-trusted-publishing`) | `id-token: write` (already required by the default `auth-mode: public-app`) |
 | Promotion PR creation | handled by the Diatreme App token; use `pull-requests: write` only when using `auth-mode: github-token` |
 | Copilot review gate with commit statuses | `statuses: write`, `pull-requests: read` |
 | Copilot review gate with check runs | `checks: write`, `pull-requests: read` |
@@ -248,8 +249,14 @@ Docker build context and `package-name` defaults to `<owner>/<repo>`.
 > `https://registry.npmjs.org`, which serves public packages without auth. If
 > you instead point `package-feed-url` at `npm.pkg.github.com`, consumers need a
 > token to `npm install` the package — even when it is public — so reserve
-> GitHub Packages for *internal* npm packages. (Public-npm `--provenance` is a
-> planned follow-up.)
+> GitHub Packages for *internal* npm packages.
+>
+> Set `npm-provenance: true` to publish to npmjs with build
+> [provenance](https://docs.npmjs.com/generating-provenance-statements)
+> (`npm publish --provenance`). It needs `id-token: write` on the job (the
+> default `auth-mode: public-app` already grants it) and a public `repository`
+> field in `package.json` matching this repo; it is rejected on any non-npmjs
+> feed.
 
 ### GitHub Enterprise
 
@@ -359,10 +366,27 @@ preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
 > namespace your packages. [PEP 708](https://peps.python.org/pep-0708/) is the
 > standards-side fix as indexes adopt it.
 
-> **Trusted Publishing (OIDC) is public-PyPI only.** PyPI's tokenless OIDC
-> publishing is not available for private indexes — those still authenticate
-> with `package-token`. (Trusted Publishing for the public-PyPI path is a
-> planned Diatreme follow-up.)
+> **Trusted Publishing (OIDC) for public PyPI.** Set
+> `pypi-trusted-publishing: true` to upload to public PyPI / TestPyPI with **no
+> stored token** — Diatreme mints a short-lived token from the job's GitHub OIDC
+> identity. It needs `id-token: write` (the default `auth-mode: public-app`
+> already grants it) and a
+> [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) configured for
+> this repo + workflow on the PyPI project. It is public-PyPI/TestPyPI only;
+> private indexes still authenticate with `package-token`.
+
+Publishing to public PyPI via Trusted Publishing (no `package-token`):
+
+```yaml
+      - uses: magmamoose/diatreme@v1
+        with:
+          # …versioning inputs…
+          publish-package: 'true'
+          package-ecosystem: pip
+          pypi-trusted-publishing: 'true'
+          # package-feed-url omitted → public PyPI; for TestPyPI set it to
+          # https://test.pypi.org/legacy/
+```
 
 ## Inputs
 
@@ -409,6 +433,8 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `java-distribution` | `temurin` | JDK distribution for `maven`/`gradle` (setup-java). |
 | `ruby-version` | `3.3` | Ruby version for `package-ecosystem: rubygems`. |
 | `package-name` | `''` | Image name for `package-ecosystem: container`. Defaults to `<owner>/<repo>`. |
+| `npm-provenance` | `false` | Publish to npmjs with `npm publish --provenance`. npmjs-only; needs `id-token: write`. |
+| `pypi-trusted-publishing` | `false` | Upload to public PyPI/TestPyPI via GitHub OIDC instead of `package-token`. Needs `id-token: write`. |
 | `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
 | `require-copilot-review` | `false` | Require a fresh Copilot PR review before CI passes. |
 | `copilot-review-freshness` | `after_latest_commit` | Freshness rule for Copilot review acceptance. |

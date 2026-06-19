@@ -37,6 +37,9 @@ EOF
   cat > "${BIN}/python" <<'EOF'
 #!/usr/bin/env bash
 echo "python $*" >> "${STUB_LOG}"
+# `python - <host>` is the PyPI OIDC token-mint heredoc; emit a fake token on
+# stdout (the real exchange needs network + id-token, unavailable under test).
+if [ "${1:-}" = "-" ]; then echo "pypi-OIDC-MINTED-TOKEN"; exit 0; fi
 if [ "${1:-}" = "-m" ] && [ "${2:-}" = "build" ]; then
   out=""; shift 2
   while [ $# -gt 0 ]; do [ "$1" = "--outdir" ] && out="${2:-}"; shift; done
@@ -155,6 +158,28 @@ teardown() {
   ! grep -Eq -- '--repository-url' "${STUB_LOG}"
 }
 
+@test "pip: trusted publishing mints a token via OIDC and uploads to PyPI without package-token" {
+  # No TOKEN in the environment — auth comes entirely from the (stubbed) mint.
+  run env -u TOKEN ECOSYSTEM=pip VERSION=3.4.5 PYPI_TRUSTED_PUBLISHING=true \
+    ACTIONS_ID_TOKEN_REQUEST_URL=https://example/oidc \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=req-token \
+    PACKAGE_PATH="${WORK}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Eq 'python - pypi.org' "${STUB_LOG}"          # mint call for public PyPI
+  grep -Eq 'python -m twine upload' "${STUB_LOG}"
+  ! grep -Eq -- '--repository-url' "${STUB_LOG}"       # PyPI default endpoint
+  grep -Fq "published=true" "${GITHUB_OUTPUT}"
+}
+
+@test "pip: trusted publishing refuses a private/non-PyPI index" {
+  run env -u TOKEN ECOSYSTEM=pip VERSION=3.4.5 PYPI_TRUSTED_PUBLISHING=true \
+    FEED_URL=https://nexus.example.com/repository/pypi/ \
+    PACKAGE_PATH="${WORK}" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -Fq "only supported for public PyPI"
+  ! grep -Fq "published=true" "${GITHUB_OUTPUT}"
+}
+
 # ── npm ──────────────────────────────────────────────────────────────────
 
 @test "npm: prerelease publishes under the identifier dist-tag and auths via a throwaway userconfig" {
@@ -177,6 +202,34 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -Eq 'npm publish --registry https://registry.npmjs.org' "${STUB_LOG}"
   ! grep -Eq -- '--tag' "${STUB_LOG}"
+}
+
+@test "npm: provenance adds --provenance for npmjs when id-token is present" {
+  PKG="${WORK}/pkg"; mkdir -p "${PKG}"; echo '{"name":"@acme/x","version":"0.0.0"}' > "${PKG}/package.json"
+  run env ECOSYSTEM=npm VERSION=1.0.0 IS_PRERELEASE=false NPM_PROVENANCE=true \
+    FEED_URL=https://registry.npmjs.org \
+    ACTIONS_ID_TOKEN_REQUEST_URL=https://example/oidc \
+    PACKAGE_PATH="${PKG}" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Eq 'npm publish --registry https://registry.npmjs.org --provenance' "${STUB_LOG}"
+  grep -Fq "published=true" "${GITHUB_OUTPUT}"
+}
+
+@test "npm: provenance refuses a non-npmjs (GitHub Packages) feed" {
+  PKG="${WORK}/pkg"; mkdir -p "${PKG}"; echo '{"name":"@acme/x","version":"0.0.0"}' > "${PKG}/package.json"
+  run env -u ACTIONS_ID_TOKEN_REQUEST_URL ECOSYSTEM=npm VERSION=1.0.0 NPM_PROVENANCE=true \
+    FEED_URL=https://npm.pkg.github.com PACKAGE_PATH="${PKG}" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -Fq "only supported when publishing to the public npm registry"
+  ! grep -Fq "published=true" "${GITHUB_OUTPUT}"
+}
+
+@test "npm: provenance requires id-token: write" {
+  PKG="${WORK}/pkg"; mkdir -p "${PKG}"; echo '{"name":"@acme/x","version":"0.0.0"}' > "${PKG}/package.json"
+  run env -u ACTIONS_ID_TOKEN_REQUEST_URL ECOSYSTEM=npm VERSION=1.0.0 NPM_PROVENANCE=true \
+    FEED_URL=https://registry.npmjs.org PACKAGE_PATH="${PKG}" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -Fq "id-token: write"
 }
 
 # ── maven ────────────────────────────────────────────────────────────────
