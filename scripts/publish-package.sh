@@ -14,7 +14,7 @@
 # prerelease versions, prod runs publish stable versions, all on `released`.
 #
 # Required env:
-#   ECOSYSTEM   - nuget | pip | npm
+#   ECOSYSTEM   - nuget | pip | npm | maven | gradle | rubygems | container
 #   VERSION     - semver to publish (e.g. 1.2.3 or 1.2.3-rc.1)
 #   TOKEN       - auth token / API key for the feed
 #
@@ -24,9 +24,14 @@
 #   PACKAGE_PATH          - project file or directory to pack/build/publish.
 #                           Defaults to WORKING_DIRECTORY, then '.'.
 #   WORKING_DIRECTORY     - base directory (the action's working-directory).
-#   USERNAME              - feed username (pip/twine only). Defaults to
-#                           '__token__'. Ignored by nuget and npm.
+#   USERNAME              - feed/login username. pip/twine default '__token__';
+#                           maven/gradle/rubygems/container login default
+#                           'x-access-token'. Ignored by nuget and npm.
 #   OWNER                 - repo owner, used to derive GitHub Packages URLs.
+#   REPOSITORY            - owner/repo (github.repository). The default maven
+#                           feed and container image name are derived from it.
+#   PACKAGE_NAME          - container image name override (defaults to
+#                           REPOSITORY lowercased). Ignored by the others.
 #   IS_PRERELEASE         - true | false (selects the npm dist-tag).
 #   PRERELEASE_IDENTIFIER - e.g. dev, rc; npm dist-tag for prereleases
 #                           (falls back to 'next').
@@ -56,6 +61,28 @@ emit_published() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "published=$1" >> "${GITHUB_OUTPUT}"
   fi
+}
+
+# Run a publish command, treating an "already published / version exists"
+# conflict as success — GitHub Packages (and npmjs) reject overwriting a
+# released version, so a re-run must be a no-op, not a hard failure. $1 is an
+# extended-regex of conflict messages to tolerate; the rest is the command.
+run_publish() {
+  local conflict_re="$1"; shift
+  local err rc=0
+  err="$(mktemp)"
+  "$@" 2>"${err}" || rc=$?
+  cat "${err}" >&2
+  if [ "${rc}" -ne 0 ]; then
+    if grep -qiE "${conflict_re}" "${err}"; then
+      echo "Already published — idempotent re-run, treating as success."
+    else
+      rm -f "${err}"
+      return "${rc}"
+    fi
+  fi
+  rm -f "${err}"
+  return 0
 }
 
 OWNER_LOWER="$(printf '%s' "${OWNER:-}" | tr '[:upper:]' '[:lower:]')"
@@ -187,31 +214,135 @@ case "${ECOSYSTEM:-}" in
     else
       echo "npm publish → ${FEED} (dist-tag: latest)"
     fi
-    # npm publish isn't natively idempotent — it errors if the version already
-    # exists — so tolerate that specific conflict to match the nuget
-    # (--skip-duplicate) and twine (--skip-existing) re-run behaviour.
-    PUBLISH_ERR="$(mktemp)"
-    NPM_STATUS=0
-    npm "${PUBLISH_ARGS[@]}" 2>"${PUBLISH_ERR}" || NPM_STATUS=$?
-    cat "${PUBLISH_ERR}" >&2
-    if [ "${NPM_STATUS}" -ne 0 ]; then
-      if grep -qiE 'cannot publish over|previously published|EPUBLISHCONFLICT' "${PUBLISH_ERR}"; then
-        echo "npm: version ${VERSION} already published — idempotent re-run, treating as success."
-      else
-        rm -f "${PUBLISH_ERR}"
+    # npm publish errors if the version already exists; tolerate that so re-runs
+    # are idempotent like the nuget/twine paths.
+    run_publish 'cannot publish over|previously published|EPUBLISHCONFLICT' \
+      npm "${PUBLISH_ARGS[@]}"
+    ;;
+
+  maven)
+    : "${TOKEN:?TOKEN is required for maven publishing}"
+    POM="${TARGET:-${BASE_DIR}}"
+    [ -d "${POM}" ] && POM="${POM%/}/pom.xml"
+    if [ ! -f "${POM}" ]; then
+      echo "::error::maven: no pom.xml at '${POM}'. Point package-path at the project dir or its pom.xml."
+      exit 1
+    fi
+    FEED="${FEED_URL:-}"
+    if [ -z "${FEED}" ]; then
+      if [ -z "${REPOSITORY:-}" ]; then
+        echo "::error::package-feed-url is empty and the repository (owner/repo) is unknown; cannot derive a GitHub Packages Maven feed."
         exit 1
       fi
+      FEED="https://maven.pkg.github.com/${REPOSITORY}"
+      echo "No package-feed-url set — defaulting to GitHub Packages: ${FEED}"
     fi
-    rm -f "${PUBLISH_ERR}"
+    # Per-run settings.xml with the feed credentials (server id 'github' matches
+    # the altDeploymentRepository id below). Written outside the project tree and
+    # removed on exit so the token isn't left on disk.
+    SETTINGS="$(mktemp)"
+    trap 'rm -f "${SETTINGS}"' EXIT
+    cat > "${SETTINGS}" <<XML
+<settings>
+  <servers>
+    <server>
+      <id>github</id>
+      <username>${USERNAME:-x-access-token}</username>
+      <password>${TOKEN}</password>
+    </server>
+  </servers>
+</settings>
+XML
+    echo "mvn deploy '${POM}' → ${FEED} (version ${VERSION})"
+    mvn --batch-mode --no-transfer-progress -f "${POM}" \
+      versions:set -DnewVersion="${VERSION}" -DgenerateBackupPoms=false
+    # altDeploymentRepository in the 'id::url' form (Maven 3.9+, the runner default).
+    run_publish '409|status code: ?409|already exists|cannot be deployed|Conflict' \
+      mvn --batch-mode --no-transfer-progress -f "${POM}" --settings "${SETTINGS}" \
+        -DskipTests -DaltDeploymentRepository="github::${FEED}" deploy
+    ;;
+
+  gradle)
+    : "${TOKEN:?TOKEN is required for gradle publishing}"
+    PROJECT_DIR="${TARGET:-${BASE_DIR}}"
+    [ -f "${PROJECT_DIR}" ] && PROJECT_DIR="$(dirname "${PROJECT_DIR}")"
+    cd "${PROJECT_DIR}" || { echo "::error::gradle project dir '${PROJECT_DIR}' not found."; exit 1; }
+    GRADLE_BIN="gradle"
+    [ -x ./gradlew ] && GRADLE_BIN="./gradlew"
+    # Gradle publishing is defined by the project's maven-publish block. Pass the
+    # version (-Pversion) and the credentials the GitHubPackages repository
+    # conventionally reads — GITHUB_ACTOR/GITHUB_TOKEN and the gpr.* project
+    # properties — via env so they never reach argv.
+    echo "${GRADLE_BIN} publish (version ${VERSION}) → ${FEED_URL:-GitHub Packages (maven)}"
+    run_publish '409|Conflict|already exists|received status code 409' \
+      env GITHUB_ACTOR="${USERNAME:-x-access-token}" GITHUB_TOKEN="${TOKEN}" \
+          ORG_GRADLE_PROJECT_gprUser="${USERNAME:-x-access-token}" \
+          ORG_GRADLE_PROJECT_gprToken="${TOKEN}" \
+          ORG_GRADLE_PROJECT_githubToken="${TOKEN}" \
+        "${GRADLE_BIN}" --no-daemon publish -Pversion="${VERSION}"
+    ;;
+
+  rubygems)
+    : "${TOKEN:?TOKEN is required for rubygems publishing}"
+    FEED="${FEED_URL:-}"
+    if [ -z "${FEED}" ]; then
+      if [ -z "${OWNER_LOWER}" ]; then
+        echo "::error::package-feed-url is empty and the repository owner is unknown; cannot derive a GitHub Packages RubyGems host."
+        exit 1
+      fi
+      FEED="https://rubygems.pkg.github.com/${OWNER_LOWER}"
+      echo "No package-feed-url set — defaulting to GitHub Packages: ${FEED}"
+    fi
+    SRC_DIR="${TARGET:-${BASE_DIR}}"
+    [ -f "${SRC_DIR}" ] && SRC_DIR="$(dirname "${SRC_DIR}")"
+    cd "${SRC_DIR}" || { echo "::error::rubygems project dir '${SRC_DIR}' not found."; exit 1; }
+    shopt -s nullglob
+    GEMSPECS=(*.gemspec)
+    shopt -u nullglob
+    if [ "${#GEMSPECS[@]}" -eq 0 ]; then
+      echo "::error::rubygems: no .gemspec in '${SRC_DIR}'. The gemspec must carry the released version."
+      exit 1
+    fi
+    GEM_OUT="$(mktemp -d)"
+    for spec in "${GEMSPECS[@]}"; do
+      echo "gem build '${spec}'"
+      gem build "${spec}" --output "${GEM_OUT}/$(basename "${spec%.gemspec}").gem"
+    done
+    for gem in "${GEM_OUT}"/*.gem; do
+      echo "gem push '$(basename "${gem}")' → ${FEED}"
+      # API key via env (off argv); 'Bearer <token>' is what GitHub Packages wants.
+      run_publish 'already exists|already been pushed|conflict|status: ?422' \
+        env GEM_HOST_API_KEY="Bearer ${TOKEN}" gem push --host "${FEED}" "${gem}"
+    done
+    ;;
+
+  container)
+    : "${TOKEN:?TOKEN is required for container publishing}"
+    REGISTRY="${FEED_URL:-ghcr.io}"
+    REGISTRY="${REGISTRY#http://}"; REGISTRY="${REGISTRY#https://}"; REGISTRY="${REGISTRY%/}"
+    IMAGE_NAME="${PACKAGE_NAME:-}"
+    [ -z "${IMAGE_NAME}" ] && IMAGE_NAME="$(printf '%s' "${REPOSITORY:-${OWNER_LOWER}}" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "${IMAGE_NAME}" ]; then
+      echo "::error::container: cannot determine the image name. Set package-name (or provide the repository)."
+      exit 1
+    fi
+    CONTEXT="${TARGET:-${BASE_DIR}}"
+    IMAGE_REF="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+    echo "docker login ${REGISTRY}"
+    printf '%s' "${TOKEN}" | docker login "${REGISTRY}" --username "${USERNAME:-x-access-token}" --password-stdin
+    echo "docker build + push → ${IMAGE_REF}"
+    docker build --tag "${IMAGE_REF}" "${CONTEXT}"
+    # docker push overwrites a mutable tag, so a re-run is naturally idempotent.
+    docker push "${IMAGE_REF}"
     ;;
 
   '')
-    echo "::error::publish-package is true but package-ecosystem is empty. Set package-ecosystem to nuget, pip, or npm."
+    echo "::error::publish-package is true but package-ecosystem is empty. Set package-ecosystem to nuget, pip, npm, maven, gradle, rubygems, or container."
     exit 1
     ;;
 
   *)
-    echo "::error::Unsupported package-ecosystem '${ECOSYSTEM}'. Use nuget, pip, or npm."
+    echo "::error::Unsupported package-ecosystem '${ECOSYSTEM}'. Use nuget, pip, npm, maven, gradle, rubygems, or container."
     exit 1
     ;;
 esac

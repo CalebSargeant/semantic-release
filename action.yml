@@ -287,37 +287,51 @@ inputs:
   package-ecosystem:
     description: |
       Package ecosystem to publish when `publish-package` is true. One of:
-        nuget   .NET — `dotnet pack` + `dotnet nuget push`.
-        pip     Python — `python -m build` + `twine upload`.
-        npm     Node.js — `npm publish` (versioning via semantic-release-npm
-                already exists; this performs the publish).
-      Required when `publish-package` is true.
+        nuget     .NET — `dotnet pack` + `dotnet nuget push`.
+        npm       Node.js — `npm publish`.
+        maven     JVM — `mvn versions:set` + `mvn deploy`.
+        gradle    JVM — `gradle publish` (project's maven-publish block).
+        rubygems  Ruby — `gem build` + `gem push`.
+        container OCI image — `docker build` + `docker push` (ghcr.io).
+        pip       Python — `python -m build` + `twine upload` (PyPI / any
+                  index; not a GitHub Packages ecosystem, kept for convenience).
+      All but pip are GitHub Packages ecosystems and default to this repo's
+      GitHub Packages feed. Required when `publish-package` is true.
     required: false
     default: ''
 
   package-path:
     description: |
-      Project or path to pack/build/publish.
-        nuget   A .csproj/.sln/.nupkg path or a directory. Defaults to
-                `working-directory`.
-        pip     The source directory containing pyproject.toml/setup.py.
-                Defaults to `working-directory`.
-        npm     The package directory (or a package.json path). Defaults to
-                `working-directory`.
-      Leave empty to fall back to `working-directory`.
+      Project or path to pack/build/publish. Defaults to `working-directory`.
+        nuget     A .csproj/.sln/.nupkg path or a directory.
+        npm       The package directory (or a package.json path).
+        maven     The project dir or its pom.xml.
+        gradle    The project dir (or a build.gradle(.kts) path).
+        rubygems  The dir containing the .gemspec.
+        container The Docker build context (must contain a Dockerfile).
+        pip       The source dir containing pyproject.toml/setup.py.
     required: false
     default: ''
 
   package-feed-url:
     description: |
-      Feed / registry URL to publish to.
-        nuget   NuGet v3 index, e.g.
-                https://nuget.pkg.github.com/<owner>/index.json (GitHub
-                Packages) or a private feed
-                (https://nuget.example.com/<org>/index.json). Defaults to the
-                repository owner's GitHub Packages NuGet feed when empty.
-        pip     twine repository URL. Empty publishes to PyPI.
-        npm     npm registry URL. Empty publishes to https://registry.npmjs.org.
+      Upload / publish endpoint. Accepts a public GitHub Packages host, a
+      canonical public registry (npmjs / nuget.org / rubygems.org / Maven
+      Central / PyPI) for public distribution, or a GitHub Enterprise host —
+      Enterprise Server `<ecosystem>.HOSTNAME` or data-residency
+      `<ecosystem>.SUBDOMAIN.ghe.com`. The auth model is unchanged; only the
+      host differs. Empty defaults per-ecosystem (the repo's GitHub Packages
+      feed, except npm/pip which default to the public registry):
+        nuget     NuGet v3 index. Default https://nuget.pkg.github.com/<owner>/index.json.
+        npm       npm registry. Default https://registry.npmjs.org (public).
+        maven     Maven repo URL. Default https://maven.pkg.github.com/<owner>/<repo>.
+        gradle    Informational only — the repository is defined in build.gradle.
+        rubygems  Gem host. Default https://rubygems.pkg.github.com/<owner>.
+        container Image registry host. Default ghcr.io; set this to publish to
+                  another registry, e.g. an enterprise containers.HOSTNAME.
+        pip       twine repository URL (--repository-url). Empty publishes to PyPI.
+      Note: the GitHub Packages Apache Maven registry is not available on
+      data-residency (*.ghe.com) tenants — use your enterprise Maven host there.
     required: false
     default: ''
 
@@ -335,9 +349,9 @@ inputs:
 
   package-username:
     description: |
-      Feed username. Only used for `pip` (twine). Defaults to `__token__`,
-      the PyPI convention for token auth. Ignored for nuget and npm, which
-      authenticate with the token alone.
+      Feed / registry-login username. Defaults to `__token__` for `pip` (twine)
+      and `x-access-token` for `maven`/`gradle`/`rubygems`/`container`. Ignored
+      by `nuget` and `npm`, which authenticate with the token alone.
     required: false
     default: ''
 
@@ -362,6 +376,35 @@ inputs:
       actions/setup-node.
     required: false
     default: '20'
+
+  java-version:
+    description: |
+      Java (JDK) version for `package-ecosystem: maven` / `gradle`, passed to
+      actions/setup-java.
+    required: false
+    default: '17'
+
+  java-distribution:
+    description: |
+      JDK distribution for `package-ecosystem: maven` / `gradle`, passed to
+      actions/setup-java (e.g. temurin, zulu, corretto).
+    required: false
+    default: 'temurin'
+
+  ruby-version:
+    description: |
+      Ruby version for `package-ecosystem: rubygems`, passed to ruby/setup-ruby.
+    required: false
+    default: '3.3'
+
+  package-name:
+    description: |
+      Image name for `package-ecosystem: container`, published as
+      `<package-feed-url|ghcr.io>/<package-name>:<version>`. Defaults to the
+      repository (owner/repo) lowercased. Ignored by the other ecosystems,
+      which take their name from the project manifest.
+    required: false
+    default: ''
 
   # ── CI-specific ──────────────────────────────────────────────────────────
   enforce_branch_naming:
@@ -1960,6 +2003,30 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
 
+    - name: Set up Java (package publishing)
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        (inputs.package-ecosystem == 'maven' || inputs.package-ecosystem == 'gradle') &&
+        steps.normalize.outputs.released == 'true'
+      uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+      with:
+        distribution: ${{ inputs.java-distribution }}
+        java-version: ${{ inputs.java-version }}
+
+    - name: Set up Ruby (package publishing)
+      if: |
+        inputs.mode == 'release' &&
+        inputs.publish-package == 'true' &&
+        inputs.package-ecosystem == 'rubygems' &&
+        steps.normalize.outputs.released == 'true'
+      uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1.313.0
+      with:
+        ruby-version: ${{ inputs.ruby-version }}
+
+    # No setup step for `container` — docker is preinstalled on the runners; the
+    # script does `docker login`/`build`/`push` directly.
+
     - name: Publish package
       id: publish-package
       if: |
@@ -1980,6 +2047,8 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         USERNAME: ${{ inputs.package-username }}
         OWNER: ${{ github.repository_owner }}
+        REPOSITORY: ${{ github.repository }}
+        PACKAGE_NAME: ${{ inputs.package-name }}
         IS_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
       run: "${GITHUB_ACTION_PATH}/scripts/publish-package.sh"
