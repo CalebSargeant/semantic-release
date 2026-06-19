@@ -406,6 +406,31 @@ inputs:
     required: false
     default: ''
 
+  npm-provenance:
+    description: |
+      When true, publish npm packages with build provenance
+      (`npm publish --provenance`). Valid only for the public npm registry
+      (registry.npmjs.org) — the run fails if package-feed-url points elsewhere,
+      since GitHub Packages and other registries don't accept npmjs provenance
+      attestations. Requires `id-token: write` on the job (the default
+      `auth-mode: public-app` already grants it) and a public `repository`
+      field in package.json matching the publishing repo. Ignored unless
+      package-ecosystem is npm.
+    required: false
+    default: 'false'
+
+  pypi-trusted-publishing:
+    description: |
+      When true, authenticate pip/twine uploads via GitHub OIDC (PyPI Trusted
+      Publishing) instead of package-token — no stored token. Valid only for
+      public PyPI / TestPyPI; the run fails for any other index (private indexes
+      keep using package-token). Requires `id-token: write` on the job (the
+      default `auth-mode: public-app` already grants it) and a Trusted Publisher
+      configured for this repo+workflow on the PyPI project. Ignored unless
+      package-ecosystem is pip.
+    required: false
+    default: 'false'
+
   # ── CI-specific ──────────────────────────────────────────────────────────
   enforce_branch_naming:
     description: |
@@ -2051,6 +2076,8 @@ runs:
         PACKAGE_NAME: ${{ inputs.package-name }}
         IS_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
+        NPM_PROVENANCE: ${{ inputs.npm-provenance }}
+        PYPI_TRUSTED_PUBLISHING: ${{ inputs.pypi-trusted-publishing }}
       run: "${GITHUB_ACTION_PATH}/scripts/publish-package.sh"
 
     # ═════════════════════════════════════════════════════════════════════════

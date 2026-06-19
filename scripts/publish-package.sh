@@ -16,7 +16,8 @@
 # Required env:
 #   ECOSYSTEM   - nuget | pip | npm | maven | gradle | rubygems | container
 #   VERSION     - semver to publish (e.g. 1.2.3 or 1.2.3-rc.1)
-#   TOKEN       - auth token / API key for the feed
+#   TOKEN       - auth token / API key for the feed (not required for pip when
+#                 PYPI_TRUSTED_PUBLISHING=true — a token is minted via OIDC)
 #
 # Optional env:
 #   FEED_URL              - feed/registry URL. Defaults per-ecosystem (GitHub
@@ -35,6 +36,11 @@
 #   IS_PRERELEASE         - true | false (selects the npm dist-tag).
 #   PRERELEASE_IDENTIFIER - e.g. dev, rc; npm dist-tag for prereleases
 #                           (falls back to 'next').
+#   NPM_PROVENANCE        - true | false. `npm publish --provenance` (public
+#                           npmjs only; needs id-token: write).
+#   PYPI_TRUSTED_PUBLISHING - true | false. Mint a PyPI upload token from the
+#                           workflow's GitHub OIDC identity instead of TOKEN
+#                           (public PyPI / TestPyPI only; needs id-token: write).
 #
 # Side effects:
 #   - Writes `published=true|false` to $GITHUB_OUTPUT when that var is set.
@@ -83,6 +89,50 @@ run_publish() {
   fi
   rm -f "${err}"
   return 0
+}
+
+# Mint a short-lived PyPI/TestPyPI upload token from the ambient GitHub Actions
+# OIDC identity (PyPI "trusted publishing") — no stored secret. $1 is the PyPI
+# host (pypi.org | test.pypi.org), which also selects the OIDC audience. Prints
+# the minted token on stdout; on any failure prints a ::error:: line to stderr
+# and returns non-zero. Uses python (always present in the pip path) so we don't
+# add a jq/curl dependency.
+mint_pypi_token() {
+  local host="$1"
+  python - "${host}" <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+host = sys.argv[1]
+audience = "testpypi" if host == "test.pypi.org" else "pypi"
+try:
+    req_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+    req_tok = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+except KeyError:
+    sys.exit("::error::pypi-trusted-publishing needs 'id-token: write' on the job "
+             "(ACTIONS_ID_TOKEN_REQUEST_URL is unset).")
+sep = "&" if "?" in req_url else "?"
+oidc_req = urllib.request.Request(req_url + sep + "audience=" + audience,
+                                  headers={"Authorization": "bearer " + req_tok})
+try:
+    oidc = json.load(urllib.request.urlopen(oidc_req))["value"]
+except Exception as exc:  # noqa: BLE001
+    sys.exit("::error::could not obtain a GitHub OIDC token: %s" % exc)
+mint_req = urllib.request.Request("https://%s/_/oidc/mint-token" % host,
+                                  data=json.dumps({"token": oidc}).encode(),
+                                  headers={"Content-Type": "application/json"})
+try:
+    resp = json.load(urllib.request.urlopen(mint_req))
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", "replace")
+    sys.exit("::error::%s rejected the OIDC token (HTTP %s) — is a Trusted Publisher "
+             "configured for this repo+workflow? %s" % (host, exc.code, body))
+except Exception as exc:  # noqa: BLE001
+    sys.exit("::error::PyPI token mint failed: %s" % exc)
+token = resp.get("token")
+if not token:
+    sys.exit("::error::PyPI mint-token response had no 'token': %s" % json.dumps(resp))
+print(token)
+PY
 }
 
 OWNER_LOWER="$(printf '%s' "${OWNER:-}" | tr '[:upper:]' '[:lower:]')"
@@ -134,10 +184,31 @@ case "${ECOSYSTEM:-}" in
     ;;
 
   pip)
-    : "${TOKEN:?TOKEN is required for pip publishing}"
     FEED="${FEED_URL:-}"          # empty → PyPI default
     USER="${USERNAME:-}"
     [ -z "${USER}" ] && USER="__token__"
+    if [ "${PYPI_TRUSTED_PUBLISHING:-false}" = "true" ]; then
+      # Tokenless: mint a short-lived token from the workflow's OIDC identity.
+      # Only public PyPI / TestPyPI expose the mint endpoint we target; private
+      # indexes must keep using package-token.
+      case "${FEED}" in
+        "")                                MINT_HOST="pypi.org" ;;
+        *test.pypi.org*)                   MINT_HOST="test.pypi.org" ;;
+        https://pypi.org*|*upload.pypi.org*) MINT_HOST="pypi.org" ;;
+        *)
+          echo "::error::pypi-trusted-publishing is only supported for public PyPI / TestPyPI, not '${FEED}'. Use package-token for private indexes."
+          exit 1
+          ;;
+      esac
+      echo "Minting a short-lived ${MINT_HOST} token via GitHub OIDC (trusted publishing)…"
+      if ! TOKEN="$(mint_pypi_token "${MINT_HOST}")"; then
+        exit 1
+      fi
+      echo "::add-mask::${TOKEN}"
+      USER="__token__"
+    else
+      : "${TOKEN:?TOKEN is required for pip publishing (set pypi-trusted-publishing: true to mint one via GitHub OIDC for public PyPI instead).}"
+    fi
     SRC_DIR="${TARGET:-${BASE_DIR}}"
     # Build into a fresh temp dir (not ${SRC_DIR}/dist) so only this run's
     # artifacts are uploaded — a pre-existing/checked-in dist/ would otherwise
@@ -177,6 +248,22 @@ case "${ECOSYSTEM:-}" in
     : "${TOKEN:?TOKEN is required for npm publishing}"
     FEED="${FEED_URL:-}"
     [ -z "${FEED}" ] && FEED="https://registry.npmjs.org"
+    NPM_PROVENANCE="${NPM_PROVENANCE:-false}"
+    if [ "${NPM_PROVENANCE}" = "true" ]; then
+      # Provenance attestations are only accepted by the public npm registry.
+      case "${FEED}" in
+        https://registry.npmjs.org|https://registry.npmjs.org/) : ;;
+        *)
+          echo "::error::npm-provenance is only supported when publishing to the public npm registry (registry.npmjs.org), not '${FEED}'."
+          exit 1
+          ;;
+      esac
+      # The npm CLI signs the attestation with the job's OIDC identity.
+      if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+        echo "::error::npm-provenance needs 'id-token: write' on the job (ACTIONS_ID_TOKEN_REQUEST_URL is unset)."
+        exit 1
+      fi
+    fi
     PKG_DIR="${TARGET:-${BASE_DIR}}"
     # Accept a package.json path as well as a directory.
     if [ -f "${PKG_DIR}" ]; then
@@ -203,6 +290,10 @@ case "${ECOSYSTEM:-}" in
     npm version "${VERSION}" --no-git-tag-version --allow-same-version >/dev/null
 
     PUBLISH_ARGS=(publish --registry "${FEED}")
+    if [ "${NPM_PROVENANCE}" = "true" ]; then
+      PUBLISH_ARGS+=(--provenance)
+      echo "npm provenance: on (--provenance)"
+    fi
     if [ "${IS_PRERELEASE}" = "true" ]; then
       # Keep prereleases off the default `latest` dist-tag so consumers don't
       # pick them up implicitly. Use the environment's prerelease identifier
