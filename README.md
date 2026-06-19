@@ -5,16 +5,16 @@
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
 [![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
-Diatreme is a composite GitHub Action for semantic-release orchestration across TBD and BBD workflows. It can run release-only flows, build PR Docker images, promote already-built GHCR images by retagging, open promotion PRs, enforce Copilot review gates, publish language packages, and normalize release outputs across multiple versioning tools.
+Diatreme is a **release/deployment orchestrator**: a composite GitHub Action for semantic-release across TBD and BBD workflows. It runs release flows, builds PR Docker images, promotes already-built GHCR images by retagging, opens promotion PRs, publishes language packages (npm/maven/gradle/rubygems/containers), and normalizes release outputs across multiple versioning tools.
 
 This repository holds **both surfaces** of Diatreme:
 
 | Surface | Path | What it is |
 | --- | --- | --- |
 | **Composite Action** | [`action.yml`](action.yml) + [`scripts/`](scripts) | The GitHub Marketplace action your workflows call as `uses: magmamoose/diatreme@v1`. |
-| **Cloudflare Worker** | [`worker/`](worker) | The hosted backend the action calls at `api.diatreme.magmamoose.com` — the GitHub App token broker, commit signer, Copilot quota/review service, and Claude Code dispatch trigger. |
+| **Cloudflare Worker** | [`worker/`](worker) | The hosted GitHub App backend the action calls at `api.diatreme.magmamoose.com` — the OIDC **token broker** and the **commit/tag signer** that makes App/bot-attributed release commits. |
 
-The Action is what you install from the Marketplace; the Worker is the service that backs `auth-mode: public-app` so you don't have to run your own GitHub App. **Most users only need the Action** — start at [Quickstart](#quickstart). To self-host or develop the backend, see [The Diatreme Worker](#the-diatreme-worker).
+The Action is what you install from the Marketplace; the Worker is the GitHub App backend that lets `auth-mode: public-app` mint release tokens and sign release commits without you registering your own App. **Most users only need the Action** — start at [Quickstart](#quickstart). To self-host or develop the backend, see [The Diatreme Worker](#the-diatreme-worker).
 
 ## Quickstart
 
@@ -466,15 +466,13 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 
 ## The Diatreme Worker
 
-The [`worker/`](worker) directory is the Cloudflare Worker behind the hosted broker at `https://api.diatreme.magmamoose.com`. The Action's default `auth-mode: public-app` calls it so you never have to register and run your own GitHub App. You can also self-host it and point the Action at your own deployment with the `token-broker-url` input.
+The [`worker/`](worker) directory is the Cloudflare Worker — the GitHub App backend — behind the hosted broker at `https://api.diatreme.magmamoose.com`. The Action's default `auth-mode: public-app` calls it so you never have to register and run your own GitHub App. You can also self-host it and point the Action at your own deployment with the `token-broker-url` input.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /process` | Triage Copilot PR-review comments and route each to a fix or a dismissal. |
-| `POST /sign` | Create a GitHub-signed, user-attributed commit via `createCommitOnBranch`. |
-| `POST /dispatch` | Hand an autonomous coding task to Claude Code (see [`worker/DISPATCH.md`](worker/DISPATCH.md)). |
-| `GET /copilot-quota` | Report remaining Copilot review quota for the review gate. |
-| `/oauth/connect` + callback | Authorize user-attributed signing. |
+| `POST /token` | Exchange a GitHub Actions OIDC token for a short-lived App installation token. |
+| `POST /sign` | Create a GitHub-signed, **App/bot-attributed** release commit (version bumps / tags) via `createCommitOnBranch`. |
+| `GET /releases` | Aggregated release history (for the dashboard). |
 
 Develop and deploy with [Wrangler](https://developers.cloudflare.com/workers/wrangler/):
 

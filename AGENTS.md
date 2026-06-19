@@ -33,9 +33,8 @@ Action surface:
 - `.github/workflows/release.yaml` — publishes the action and updates floating major tags.
 
 Worker surface:
-- `worker/src/index.ts` — the Worker entry (`default.fetch` request router + scheduled handler).
+- `worker/src/index.ts` — the Worker entry (`default.fetch` request router).
 - `worker/README.md` — endpoint and configuration reference.
-- `worker/DISPATCH.md` — Claude Code dispatch setup.
 - `worker/wrangler.jsonc` — Cloudflare deploy config.
 - `worker/test/index.test.ts` — vitest suite.
 
@@ -61,8 +60,8 @@ npm run check   # typecheck + tests + wrangler dry-run
 
 ## Architecture Notes
 
-- `mode: ci` optionally enforces branch naming, can require Copilot review, and
-  builds/pushes Docker Bake targets as `pr-<number>` tags.
+- `mode: ci` optionally enforces branch naming and builds/pushes Docker Bake
+  targets as `pr-<number>` tags.
 - `mode: release` resolves auth, determines the target environment, delegates
   versioning to the selected backend, normalizes outputs, optionally promotes
   Docker images, publishes GitHub Releases, and can create promotion PRs.
@@ -70,8 +69,9 @@ npm run check   # typecheck + tests + wrangler dry-run
 - Auth selection is centralized in `scripts/resolve-auth-token.sh`; public-App
   token exchange is requested by `scripts/request-public-app-token.sh`, which
   calls the worker's broker endpoint.
-- The worker exposes `/process` (Copilot triage), `/sign` (signed commits),
-  `/dispatch` (Claude Code tasks), `/copilot-quota`, and OAuth connect/callback.
+- The worker exposes `/token` (OIDC → App installation-token broker), `/sign`
+  (App/bot-attributed signed release commits), `/releases` (release history),
+  and a `push` auto-update webhook.
 
 ## Editing Rules
 

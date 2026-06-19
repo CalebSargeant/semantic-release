@@ -1,27 +1,27 @@
 # Diatreme
 
-> Diatreme is a GitHub Marketplace composite action for semantic-release orchestration across TBD and BBD workflows, plus the Cloudflare Worker that backs it (GitHub App token broker, commit signer, Copilot review gate, and Claude Code dispatch trigger). Install the action with `uses: magmamoose/diatreme@v1`.
+> Diatreme is a release/deployment orchestrator: a GitHub Marketplace composite action for semantic-release across TBD and BBD workflows, plus the Cloudflare Worker GitHub App backend that supports it (OIDC token broker + App/bot-attributed commit/tag signer). Install the action with `uses: magmamoose/diatreme@v1`.
 
 This repository has two surfaces: the **composite action** (`action.yml` + `scripts/`) published to the GitHub Marketplace, and the **Cloudflare Worker** (`worker/`) deployed to `api.diatreme.magmamoose.com`. They communicate over HTTP and neither imports the other. Most users only need the action.
 
 ## Documentation
 
 - [README](README.md): Marketplace user guide — quickstart, required permissions, examples, inputs, outputs, and language-package publishing.
-- [Worker reference](worker/README.md): Worker endpoints (`/token`, `/process`, `/sign`, `/dispatch`, `/copilot-quota`), configuration, and deploy.
-- [Dispatch setup](worker/DISPATCH.md): wiring `POST /dispatch` to a Claude Code routine for autonomous fixes.
+- [Worker reference](worker/README.md): Worker endpoints (`/token` broker, `/sign` signer, `/releases`), configuration, and deploy.
 - [AGENTS.md](AGENTS.md): contributor/agent guide — repository boundary, required files, local validation, editing rules.
 - [Changelog](CHANGELOG.md): notable changes (Keep a Changelog + Semantic Versioning).
 
 ## Action
 
 - Install: `uses: magmamoose/diatreme@v1` (floating major tag). The default `auth-mode: public-app` needs `id-token: write` and the hosted [Diatreme GitHub App](https://github.com/apps/diatreme).
-- Modes: `ci` (PR image build, branch-naming and Copilot-review gates), `release` (versioning, GitHub Release, image promotion, promotion PRs), `enable-auto-merge`.
+- Modes: `ci` (PR image build, branch-naming gate), `release` (versioning, GitHub Release, image promotion, promotion PRs), `enable-auto-merge`.
 - Versioning tools: `semantic-release-python`, `semantic-release-npm`, `gitversion`, `release-please`.
 - Package publishing: `nuget`, `npm`, `maven`, `gradle`, `rubygems`, `container`, `pip` — to GitHub Packages or public registries, on github.com and GitHub Enterprise.
 
 ## Worker
 
-- Source: [worker/src/index.ts](worker/src/index.ts) — `export default { fetch, scheduled }`.
+- Role: the GitHub App backend for release flows — OIDC token broker and App/bot-attributed commit/tag signer. No Copilot/triage/PR-automation features.
+- Source: [worker/src/index.ts](worker/src/index.ts) — `export default { fetch }`.
 - Deploy: [.github/workflows/deploy-worker.yaml](.github/workflows/deploy-worker.yaml) via Cloudflare Wrangler.
 - Hosted broker base URL: `https://api.diatreme.magmamoose.com`.
 
