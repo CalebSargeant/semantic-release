@@ -315,15 +315,23 @@ inputs:
 
   package-feed-url:
     description: |
-      Feed / registry URL to publish to. Empty defaults per-ecosystem to this
-      repo's GitHub Packages feed (or the public registry for npm/pip):
+      Upload / publish endpoint. Accepts a public GitHub Packages host, a
+      canonical public registry (npmjs / nuget.org / rubygems.org / Maven
+      Central / PyPI) for public distribution, or a GitHub Enterprise host —
+      Enterprise Server `<ecosystem>.HOSTNAME` or data-residency
+      `<ecosystem>.SUBDOMAIN.ghe.com`. The auth model is unchanged; only the
+      host differs. Empty defaults per-ecosystem (the repo's GitHub Packages
+      feed, except npm/pip which default to the public registry):
         nuget     NuGet v3 index. Default https://nuget.pkg.github.com/<owner>/index.json.
-        npm       npm registry. Default https://registry.npmjs.org.
+        npm       npm registry. Default https://registry.npmjs.org (public).
         maven     Maven repo URL. Default https://maven.pkg.github.com/<owner>/<repo>.
         gradle    Informational only — the repository is defined in build.gradle.
         rubygems  Gem host. Default https://rubygems.pkg.github.com/<owner>.
-        container Image registry host. Default ghcr.io.
-        pip       twine repository URL. Empty publishes to PyPI.
+        container Image registry host. Default ghcr.io; set this to publish to
+                  another registry, e.g. an enterprise containers.HOSTNAME.
+        pip       twine repository URL (--repository-url). Empty publishes to PyPI.
+      Note: the GitHub Packages Apache Maven registry is not available on
+      data-residency (*.ghe.com) tenants — use your enterprise Maven host there.
     required: false
     default: ''
 

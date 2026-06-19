@@ -125,9 +125,58 @@ version (e.g. `1.2.3-rc.1`), prod runs publish the stable version. The package
 is pushed before the GitHub Release is published, so a `release:published`
 listener finds it already in the feed.
 
-Supported ecosystems — everything except `pip` is a GitHub Packages ecosystem
-and defaults to this repo's GitHub Packages feed, so `package-feed-url` /
-`package-token` can be omitted:
+### Choosing where to publish
+
+`package-feed-url` is the **upload/publish endpoint**. Two questions decide what
+to point it at.
+
+**1. Which GitHub host are you on?** The registry hostname tracks the host:
+
+| Host | Language-package hosts | Container host |
+| --- | --- | --- |
+| github.com / standard Enterprise Cloud | `<ecosystem>.pkg.github.com` | `ghcr.io` |
+| Enterprise Server (e.g. `github.example.com`) | `<ecosystem>.HOSTNAME` | `containers.HOSTNAME` |
+| Enterprise Cloud with data residency (`SUBDOMAIN.ghe.com`) | `<ecosystem>.SUBDOMAIN.ghe.com` | `containers.SUBDOMAIN.ghe.com` |
+
+Diatreme is host-agnostic for the language ecosystems — `package-feed-url` is an
+input, so point it at whichever host applies. The per-ecosystem defaults below
+assume github.com. See [GitHub Enterprise](#github-enterprise) for the exact
+host forms and caveats (notably: the Container registry needs subdomain
+isolation on Enterprise Server, and the Apache Maven registry is not offered on
+data-residency tenants).
+
+**2. Public or internal?** (a github.com / Enterprise Cloud distinction)
+
+- **Containers** → GitHub Packages (`ghcr.io`) works at any visibility: public
+  images can be pulled anonymously with `docker pull`, so ghcr is a good default
+  for both internal and public images.
+- **Internal/private language packages** — consumers are authenticated org
+  members → GitHub Packages (`*.pkg.github.com`) is a good default, which is why
+  Diatreme defaults the GitHub Packages ecosystems there.
+- **Public language packages** — you want anonymous installs → point
+  `package-feed-url` at the canonical public registry instead (npmjs,
+  nuget.org, rubygems.org, Maven Central, PyPI). **Every GitHub Packages
+  registry except the Container registry requires a token to *consume*, even for
+  public packages**
+  ([GitHub docs](https://docs.github.com/en/packages/learn-github-packages/about-permissions-for-github-packages)),
+  so a package on `*.pkg.github.com` cannot be installed anonymously.
+
+On GitHub Enterprise the two axes collapse. A private Enterprise Server or
+data-residency instance has no "public" tier in the github.com sense —
+everything lives behind the enterprise's auth boundary. There, "internal" means
+the enterprise's *own* registry host, and public/upstream dependencies are
+normally proxied through the enterprise's artifact manager (Nexus, Artifactory,
+…) rather than pulled from the canonical public registries. The "use the
+canonical public registry" advice above is a github.com / Enterprise Cloud
+concept.
+
+Supported ecosystems. `nuget`, `maven`, `gradle`, `rubygems`, and `container`
+default to **this repo's own GitHub Packages feed** (`*.pkg.github.com` /
+`ghcr.io` on github.com), so `package-feed-url` / `package-token` can be omitted
+for *internal* distribution. `npm` and `pip` default to the **public** registry
+(`registry.npmjs.org` / PyPI). Override `package-feed-url` for public
+distribution of the GitHub Packages ecosystems, or for any GitHub Enterprise
+host (see above):
 
 - `nuget` — `dotnet pack` + `dotnet nuget push`.
 - `npm` — `npm publish` (prereleases go to a non-`latest` dist-tag named after
@@ -139,14 +188,16 @@ and defaults to this repo's GitHub Packages feed, so `package-feed-url` /
   passed through for the `GitHubPackages` repository.
 - `rubygems` — `gem build` + `gem push`.
 - `container` — `docker build` + `docker push` to
-  `ghcr.io/<owner>/<repo>:<version>` (override the name with `package-name`).
-  Complements the existing image *promotion* — this builds and publishes the
-  release version.
+  `ghcr.io/<owner>/<repo>:<version>` (override the registry host with
+  `package-feed-url` — e.g. an enterprise `containers.HOSTNAME` — and the image
+  name with `package-name`). Complements the existing image *promotion* — this
+  builds and publishes the release version.
 - `pip` — `python -m build` + `twine upload` (PyPI or any index; not a GitHub
   Packages ecosystem, kept for convenience).
 
-Publish a NuGet package to a private GitHub Enterprise feed, with versioning and
-publishing in a single Diatreme call:
+Publish an internal shared-components library to a private GitHub Enterprise
+NuGet feed — Diatreme's originating use case — with versioning and publishing in
+a single call:
 
 ```yaml
 name: Release
@@ -171,7 +222,7 @@ jobs:
           prerelease-identifiers: '{}'
           publish-package: 'true'
           package-ecosystem: nuget
-          package-path: src/MyLibrary/MyLibrary.csproj
+          package-path: src/SharedComponents/SharedComponents.csproj
           package-feed-url: https://nuget.example.ghe.com/my-org/index.json
           package-token: ${{ secrets.NUGET_FEED_TOKEN }}
 ```
@@ -192,6 +243,126 @@ Docker build context and `package-name` defaults to `<owner>/<repo>`.
 > When `package-ecosystem: npm`, let Diatreme do the publish — set
 > `npmPublish: false` on `@semantic-release/npm` so versioning and publishing
 > don't both push the package.
+
+> **Public npm = npmjs, not GitHub Packages.** Diatreme's npm default is
+> `https://registry.npmjs.org`, which serves public packages without auth. If
+> you instead point `package-feed-url` at `npm.pkg.github.com`, consumers need a
+> token to `npm install` the package — even when it is public — so reserve
+> GitHub Packages for *internal* npm packages. (Public-npm `--provenance` is a
+> planned follow-up.)
+
+### GitHub Enterprise
+
+Publishing works the same on GitHub Enterprise — the auth model is unchanged
+(the Actions `GITHUB_TOKEN`, or the `package-token` you pass, just authenticates
+against the enterprise instance instead of github.com). Only the **host**
+changes, so set `package-feed-url` to the matching registry host. (The NuGet
+example above already targets an enterprise host.)
+
+**Enterprise Server** (self-hosted, subdomain isolation enabled) — hosts are
+derived from the instance hostname (`HOSTNAME`):
+
+| Ecosystem | `package-feed-url` |
+| --- | --- |
+| `nuget` | `https://nuget.HOSTNAME/<org>/index.json` |
+| `npm` | `https://npm.HOSTNAME` |
+| `maven` / `gradle` | `https://maven.HOSTNAME/<org>/<repo>` |
+| `rubygems` | `https://rubygems.HOSTNAME` |
+| `container` | `containers.HOSTNAME` |
+
+The Container registry **requires subdomain isolation** to be enabled on the
+instance — without it there is no container host. (Older releases exposed a
+legacy Docker registry at `docker.HOSTNAME`; image refs that use it keep working
+after the instance migrates to `containers.HOSTNAME`.)
+
+**Enterprise Cloud with data residency** — a `SUBDOMAIN.ghe.com` tenant, where
+`SUBDOMAIN` is your enterprise's unique subdomain:
+
+| Ecosystem | `package-feed-url` |
+| --- | --- |
+| `nuget` | `https://nuget.SUBDOMAIN.ghe.com/<org>/index.json` |
+| `npm` | `https://npm.SUBDOMAIN.ghe.com` |
+| `rubygems` | `https://rubygems.SUBDOMAIN.ghe.com` |
+| `container` | `containers.SUBDOMAIN.ghe.com` |
+
+> **Maven/Gradle on data residency.** The GitHub Packages Apache Maven registry
+> is **not available** on data-residency (`*.ghe.com`) tenants. Publish JVM
+> artifacts to your enterprise's own Maven host (Nexus, Artifactory, …) via
+> `package-feed-url` instead.
+
+Standard Enterprise Cloud organizations (accessed at github.com, no data
+residency) use the public `*.pkg.github.com` / `ghcr.io` hosts — the same
+defaults as github.com.
+
+### Maven and Gradle: not a Maven Central release
+
+The `maven` and `gradle` paths run `mvn deploy` / `gradle publish` against a
+**Maven-style repository** — GitHub Packages by default, or your enterprise
+Maven host. This is *not* a Maven Central release flow: Central requires GPG
+signing and a staging / Central Portal (formerly OSSRH) deployment that this
+action does not perform. To release to Maven Central, drive it from a tool built
+for that flow — [JReleaser](https://jreleaser.org/) or the
+[`central-publishing-maven-plugin`](https://central.sonatype.org/publish/publish-portal-maven/) —
+rather than `publish-package`.
+
+### Private Python indexes (pip)
+
+GitHub Packages has **no Python registry** (on github.com or Enterprise), so
+`pip` is not a GitHub Packages ecosystem — it always targets PyPI or a separate
+index. Two endpoints are involved, and they are independent:
+
+- **Upload** — `package-feed-url` is twine's `--repository-url`. Empty publishes
+  to PyPI.
+- **Install** — consumers set `pip install --index-url`; that's a separate
+  concern Diatreme does not configure.
+
+Options for the private upload target:
+
+- [pypiserver](https://github.com/pypiserver/pypiserver) — minimal; serves a
+  directory of wheels.
+- [devpi](https://www.devpi.net/) — private index with staging and a
+  pull-through PyPI mirror.
+- [Nexus](https://www.sonatype.com/products/sonatype-nexus-repository) /
+  [Artifactory](https://jfrog.com/artifactory/) — multi-format artifact managers
+  (the usual enterprise target).
+- Managed: AWS CodeArtifact, GCP Artifact Registry, Azure Artifacts, Cloudsmith,
+  Gemfury.
+
+In an Enterprise context the pip target is usually the org's *existing* internal
+index (Nexus / Artifactory / CodeArtifact), since GitHub Enterprise has no
+Python registry either.
+
+For the managed clouds the upload token is often short-lived — mint it in a
+preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
+
+```yaml
+      - name: CodeArtifact token
+        id: ca
+        run: |
+          echo "token=$(aws codeartifact get-authorization-token \
+            --domain my-domain --query authorizationToken --output text)" >> "$GITHUB_OUTPUT"
+      - uses: magmamoose/diatreme@v1
+        with:
+          # …versioning inputs…
+          publish-package: 'true'
+          package-ecosystem: pip
+          package-feed-url: https://my-domain-111122223333.d.codeartifact.us-east-1.amazonaws.com/pypi/my-repo/
+          package-username: aws
+          package-token: ${{ steps.ca.outputs.token }}
+```
+
+> **Dependency-confusion footgun.** Don't naively add a private
+> `--extra-index-url` alongside PyPI: pip considers *all* configured indexes and
+> installs the highest version, so a public squatter can shadow a private
+> package name. Prefer a single `--index-url` pointing at a pull-through proxy
+> (devpi, Nexus, Artifactory) that fronts both your packages and PyPI, or
+> namespace your packages. [PEP 708](https://peps.python.org/pep-0708/) is the
+> standards-side fix as indexes adopt it.
+
+> **Trusted Publishing (OIDC) is public-PyPI only.** PyPI's tokenless OIDC
+> publishing is not available for private indexes — those still authenticate
+> with `package-token`. (Trusted Publishing for the public-PyPI path is a
+> planned Diatreme follow-up.)
 
 ## Inputs
 
