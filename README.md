@@ -422,6 +422,11 @@ and does not fail the build. Each sink activates only when its URL is set.
 The scanned `pr-<N>` image is the exact artifact that `mode: release` later
 promotes by digest, so what is scanned on the PR is what ships.
 
+The uploads use the same wire format as [Chargate](https://github.com/MagmaMoose/chargate),
+which ships SBOMs and SARIF to these backends today: the SBOM is `POST`ed to
+Dependency-Track's `/api/v1/bom` as a multipart raw file, and DefectDojo imports
+via `reimport-scan` (one Test per engagement, updated across PR re-runs).
+
 ```yaml
 name: CI
 
@@ -492,11 +497,14 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `dependency-track-api-key` | `''` | Dependency-Track API key with BOM upload permission. |
 | `dependency-track-project-name` | `''` | DT project name. Defaults to the image repository path with an `(image)` suffix (e.g. `owner/app (image)`), distinct from a source-SBOM project for the same repo. |
 | `dependency-track-project-version` | `''` | DT project version. Defaults to the image tag (e.g. `pr-12`). |
+| `dependency-track-auto-create` | `true` | Auto-create the DT project/version on first upload (needs `PROJECT_CREATION_UPLOAD` on the key). |
 | `defectdojo-url` | `''` | DefectDojo base URL. When set, the Trivy findings report is imported. Optional; outages are non-blocking. |
 | `defectdojo-api-key` | `''` | DefectDojo API v2 token. |
 | `defectdojo-engagement` | `''` | DefectDojo engagement id to import into. Or set `defectdojo-product-name` for auto-created context. With neither set (and a URL), the import is skipped with a warning. |
 | `defectdojo-product-name` | `''` | DefectDojo product name for the auto-create-context import path. |
+| `defectdojo-product-type` | `''` | DefectDojo product type for the auto-create-context path. |
 | `defectdojo-engagement-name` | `''` | DefectDojo engagement name for auto-create-context. Default `Diatreme image scan`. |
+| `defectdojo-close-old` | `true` | Close findings no longer present on reimport (Diatreme imports via `reimport-scan`). |
 | `publish-package` | `false` | Pack and push a language package to `package-feed-url` after versioning. Opt-in. |
 | `package-ecosystem` | `''` | `nuget`, `npm`, `maven`, `gradle`, `rubygems`, `container`, or `pip`. Required when `publish-package` is true. |
 | `package-path` | `''` | Project/path to pack/build/publish. Defaults to `working-directory`. |

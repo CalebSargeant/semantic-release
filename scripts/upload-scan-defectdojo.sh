@@ -25,7 +25,13 @@
 #
 # Optional env:
 #   SCAN_TYPE           - DefectDojo parser name. Default 'Trivy Scan'.
+#   REIMPORT            - true | false. Use reimport-scan (one Test per engagement
+#                         updated across re-runs) vs import-scan. Default true.
+#   CLOSE_OLD           - true | false. close_old_findings on reimport. Default true.
+#   MIN_SEVERITY        - minimum_severity floor. Default 'Info'.
+#   PRODUCT_TYPE_NAME   - product type for the auto-create-context path.
 #   AUTO_CREATE_CONTEXT - true | false. Default true (used with PRODUCT_NAME).
+#   DD_USER_AGENT       - override the request User-Agent.
 #   STRICT              - true | false. Treat an import error as fatal. Default false.
 #
 # Side effects:
@@ -68,7 +74,19 @@ fi
 DD_URL="${DD_URL%/}"
 SCAN_TYPE="${SCAN_TYPE:-Trivy Scan}"
 AUTO_CREATE_CONTEXT="${AUTO_CREATE_CONTEXT:-true}"
-ENDPOINT="${DD_URL}/api/v2/import-scan/"
+CLOSE_OLD="${CLOSE_OLD:-true}"
+MIN_SEVERITY="${MIN_SEVERITY:-Info}"
+# reimport-scan keeps one Test per engagement updated across PR re-runs (with
+# close_old_findings mitigating findings that disappear), instead of stacking a
+# new Test each push. This is Chargate's default; set REIMPORT=false for import.
+REIMPORT="${REIMPORT:-true}"
+if [ "${REIMPORT}" = "true" ]; then
+  ENDPOINT="${DD_URL}/api/v2/reimport-scan/"
+else
+  ENDPOINT="${DD_URL}/api/v2/import-scan/"
+fi
+# Identify ourselves rather than the default "curl/X.Y" client signature.
+USER_AGENT="${DD_USER_AGENT:-diatreme (+https://github.com/MagmaMoose/diatreme)}"
 
 # A plaintext endpoint would put the API token on the wire in the clear.
 case "${DD_URL}" in
@@ -76,17 +94,28 @@ case "${DD_URL}" in
   *) echo "::warning::DefectDojo URL is not https (${DD_URL}) — the API token will be sent in cleartext." ;;
 esac
 
-# Build the multipart form. Either import into an explicit engagement id, or let
-# DefectDojo create the product/engagement context from names.
-FORM=(-F "scan_type=${SCAN_TYPE}" -F "file=@${REPORT_FILE};type=application/json")
+# Build the multipart form (field set mirrors Chargate's working client). Either
+# import into an explicit engagement id, or let DefectDojo create the
+# product/engagement context from names.
+FORM=(
+  -F "scan_type=${SCAN_TYPE}"
+  -F "file=@${REPORT_FILE};type=application/json"
+  -F "active=true"
+  -F "verified=false"
+  -F "close_old_findings=${CLOSE_OLD}"
+  -F "minimum_severity=${MIN_SEVERITY}"
+)
+VERB="importing"
+[ "${REIMPORT}" = "true" ] && VERB="reimporting"
 if [ -n "${ENGAGEMENT:-}" ]; then
   FORM+=(-F "engagement=${ENGAGEMENT}")
-  echo "DefectDojo: importing '${SCAN_TYPE}' into engagement ${ENGAGEMENT} (${ENDPOINT})"
+  echo "DefectDojo: ${VERB} '${SCAN_TYPE}' into engagement ${ENGAGEMENT} (${ENDPOINT})"
 elif [ -n "${PRODUCT_NAME:-}" ]; then
   FORM+=(-F "product_name=${PRODUCT_NAME}")
+  [ -n "${PRODUCT_TYPE_NAME:-}" ] && FORM+=(-F "product_type_name=${PRODUCT_TYPE_NAME}")
   FORM+=(-F "engagement_name=${ENGAGEMENT_NAME:-Diatreme image scan}")
   FORM+=(-F "auto_create_context=${AUTO_CREATE_CONTEXT}")
-  echo "DefectDojo: importing '${SCAN_TYPE}' into product '${PRODUCT_NAME}' (auto_create_context=${AUTO_CREATE_CONTEXT}) (${ENDPOINT})"
+  echo "DefectDojo: ${VERB} '${SCAN_TYPE}' into product '${PRODUCT_NAME}' (auto_create_context=${AUTO_CREATE_CONTEXT}) (${ENDPOINT})"
 else
   sink_fail "set DEFECTDOJO_ENGAGEMENT (id) or DEFECTDOJO_PRODUCT_NAME to choose where to import"
 fi
@@ -103,6 +132,8 @@ printf 'header = "Authorization: Token %s"\n' "${DEFECTDOJO_API_KEY}" > "${CURL_
 
 HTTP_CODE="$(curl -sS --config "${CURL_CFG}" -o "${BODY}" -w '%{http_code}' \
   -X POST "${ENDPOINT}" \
+  -A "${USER_AGENT}" \
+  -H 'Accept: application/json' \
   "${FORM[@]}" 2>"${ERR}" || true)"
 
 if ! printf '%s' "${HTTP_CODE}" | grep -qE '^2[0-9][0-9]$'; then

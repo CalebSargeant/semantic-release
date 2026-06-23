@@ -109,48 +109,48 @@ teardown() {
   run env IMAGE_REFS="ghcr.io/acme/app:pr-7" \
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Eq 'curl .*-X PUT https://dt.example.com/api/v1/bom' "${STUB_LOG}"
+  grep -Eq 'curl .*-X POST https://dt.example.com/api/v1/bom' "${STUB_LOG}"
   # Registry host stripped; "(image)" suffix keeps it distinct from a source SBOM project.
-  grep -Fq '"projectName":"acme/app (image)"' "${STUB_LOG}"
-  grep -Fq '"projectVersion":"pr-7"' "${STUB_LOG}"    # tag becomes the version
+  grep -Fq 'projectName=acme/app (image)' "${STUB_LOG}"
+  grep -Fq 'projectVersion=pr-7' "${STUB_LOG}"    # tag becomes the version
 }
 
 @test "ref derivation: a digest ref strips the digest and versions as latest" {
   run env IMAGE_REFS="ghcr.io/acme/app@sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Fq '"projectName":"acme/app (image)"' "${STUB_LOG}"
-  grep -Fq '"projectVersion":"latest"' "${STUB_LOG}"
+  grep -Fq 'projectName=acme/app (image)' "${STUB_LOG}"
+  grep -Fq 'projectVersion=latest' "${STUB_LOG}"
 }
 
 @test "ref derivation: a tagless ref versions as latest" {
   run env IMAGE_REFS="ghcr.io/acme/app" \
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Fq '"projectVersion":"latest"' "${STUB_LOG}"
+  grep -Fq 'projectVersion=latest' "${STUB_LOG}"
 }
 
 @test "ref derivation: a host-less ref keeps the full path as the name" {
   run env IMAGE_REFS="acme/app:pr-9" \
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Fq '"projectName":"acme/app (image)"' "${STUB_LOG}"
-  grep -Fq '"projectVersion":"pr-9"' "${STUB_LOG}"
+  grep -Fq 'projectName=acme/app (image)' "${STUB_LOG}"
+  grep -Fq 'projectVersion=pr-9' "${STUB_LOG}"
 }
 
 @test "ref derivation: a registry with a port strips host:port, keeps the tag" {
   run env IMAGE_REFS="localhost:5000/acme/app:pr-2" \
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Fq '"projectName":"acme/app (image)"' "${STUB_LOG}"
-  grep -Fq '"projectVersion":"pr-2"' "${STUB_LOG}"
+  grep -Fq 'projectName=acme/app (image)' "${STUB_LOG}"
+  grep -Fq 'projectVersion=pr-2' "${STUB_LOG}"
 }
 
 @test "imports findings into DefectDojo when configured" {
   run env IMAGE_REFS="ghcr.io/acme/app:pr-7" STUB_FINDINGS=2 \
     DEFECTDOJO_URL=https://dd.example.com DEFECTDOJO_API_KEY=dd-key DEFECTDOJO_ENGAGEMENT=9 "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Eq 'curl .*-X POST https://dd.example.com/api/v2/import-scan/' "${STUB_LOG}"
+  grep -Eq 'curl .*-X POST https://dd.example.com/api/v2/reimport-scan/' "${STUB_LOG}"
   grep -Fq 'engagement=9' "${STUB_LOG}"
 }
 
@@ -201,8 +201,8 @@ teardown() {
     DEPENDENCY_TRACK_URL=https://dt.example.com DEPENDENCY_TRACK_API_KEY=dt-key \
     DEPENDENCY_TRACK_PROJECT_NAME=acme-images "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Fq '"projectName":"acme-images/app1"' "${STUB_LOG}"
-  grep -Fq '"projectName":"acme-images/app2"' "${STUB_LOG}"
+  grep -Fq 'projectName=acme-images/app1' "${STUB_LOG}"
+  grep -Fq 'projectName=acme-images/app2' "${STUB_LOG}"
 }
 
 @test "a Dependency-Track outage does not fail the scan" {

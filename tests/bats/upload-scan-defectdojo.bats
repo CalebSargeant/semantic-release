@@ -55,21 +55,45 @@ teardown() {
     DEFECTDOJO_API_KEY=dd-key REPORT_FILE="${REPORT}" \
     ENGAGEMENT=42 "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -Eq 'curl .*-X POST https://dd.example.com/api/v2/import-scan/' "${STUB_LOG}"
+  # reimport-scan is the default (idempotent recurring gate — Chargate-compatible).
+  grep -Eq 'curl .*-X POST https://dd.example.com/api/v2/reimport-scan/' "${STUB_LOG}"
   grep -Fq 'Authorization: Token dd-key' "${STUB_LOG}"
   grep -Fq 'scan_type=Trivy Scan' "${STUB_LOG}"
   grep -Eq "file=@${REPORT};type=application/json" "${STUB_LOG}"
   grep -Fq 'engagement=42' "${STUB_LOG}"
+  # Chargate-parity field set.
+  grep -Fq 'active=true' "${STUB_LOG}"
+  grep -Fq 'verified=false' "${STUB_LOG}"
+  grep -Fq 'close_old_findings=true' "${STUB_LOG}"
+  grep -Fq 'minimum_severity=Info' "${STUB_LOG}"
+  # Identifying User-Agent, not the default curl signature.
+  grep -Eq 'curl .*-A diatreme' "${STUB_LOG}"
   # No auto-create fields on the explicit-engagement path.
   ! grep -Fq 'auto_create_context' "${STUB_LOG}"
 }
 
-@test "auto-create-context path when only a product name is given" {
+@test "REIMPORT=false uses the import-scan endpoint" {
+  run env DEFECTDOJO_URL=https://dd.example.com REIMPORT=false \
+    DEFECTDOJO_API_KEY=dd-key REPORT_FILE="${REPORT}" ENGAGEMENT=1 "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Eq 'curl .*-X POST https://dd.example.com/api/v2/import-scan/' "${STUB_LOG}"
+  ! grep -Eq 'reimport-scan' "${STUB_LOG}"
+}
+
+@test "CLOSE_OLD=false is forwarded as close_old_findings=false" {
+  run env DEFECTDOJO_URL=https://dd.example.com CLOSE_OLD=false \
+    DEFECTDOJO_API_KEY=dd-key REPORT_FILE="${REPORT}" ENGAGEMENT=1 "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq 'close_old_findings=false' "${STUB_LOG}"
+}
+
+@test "auto-create-context path when only a product name is given (with product type)" {
   run env DEFECTDOJO_URL=https://dd.example.com \
     DEFECTDOJO_API_KEY=dd-key REPORT_FILE="${REPORT}" \
-    PRODUCT_NAME="My App" ENGAGEMENT_NAME="PR scan" "${SCRIPT}"
+    PRODUCT_NAME="My App" PRODUCT_TYPE_NAME="Apps" ENGAGEMENT_NAME="PR scan" "${SCRIPT}"
   [ "$status" -eq 0 ]
   grep -Fq 'product_name=My App' "${STUB_LOG}"
+  grep -Fq 'product_type_name=Apps' "${STUB_LOG}"
   grep -Fq 'engagement_name=PR scan' "${STUB_LOG}"
   grep -Fq 'auto_create_context=true' "${STUB_LOG}"
 }
@@ -119,5 +143,5 @@ teardown() {
     DEFECTDOJO_API_KEY=dd-key REPORT_FILE="${REPORT}" ENGAGEMENT=1 "${SCRIPT}"
   [ "$status" -eq 0 ]
   echo "$output" | grep -Fq "not https"
-  grep -Eq 'curl .*-X POST http://dd.example.com/api/v2/import-scan/' "${STUB_LOG}"
+  grep -Eq 'curl .*-X POST http://dd.example.com/api/v2/reimport-scan/' "${STUB_LOG}"
 }

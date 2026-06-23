@@ -336,6 +336,13 @@ inputs:
     required: false
     default: ''
 
+  dependency-track-auto-create:
+    description: |
+      Create the Dependency-Track project/version on first upload. Default true
+      (the API key then needs PROJECT_CREATION_UPLOAD in addition to BOM_UPLOAD).
+    required: false
+    default: 'true'
+
   defectdojo-url:
     description: |
       DefectDojo base URL (e.g. https://dd.example.com). When set, the Trivy
@@ -366,10 +373,23 @@ inputs:
     required: false
     default: ''
 
+  defectdojo-product-type:
+    description: 'DefectDojo product type for the auto-create-context path (optional).'
+    required: false
+    default: ''
+
   defectdojo-engagement-name:
     description: 'DefectDojo engagement name for the auto-create-context path. Default "Diatreme image scan".'
     required: false
     default: ''
+
+  defectdojo-close-old:
+    description: |
+      Close findings that are no longer present, on reimport. Default true.
+      Diatreme imports via DefectDojo's reimport-scan so one Test per engagement
+      is updated across PR re-runs (mirrors Chargate).
+    required: false
+    default: 'true'
 
   # ── Package publishing ────────────────────────────────────────────────────
   # Native library-package publishing, in addition to (or instead of) Docker
@@ -1057,11 +1077,14 @@ runs:
         DEPENDENCY_TRACK_API_KEY: ${{ inputs.dependency-track-api-key }}
         DEPENDENCY_TRACK_PROJECT_NAME: ${{ inputs.dependency-track-project-name }}
         DEPENDENCY_TRACK_PROJECT_VERSION: ${{ inputs.dependency-track-project-version }}
+        DEPENDENCY_TRACK_AUTO_CREATE: ${{ inputs.dependency-track-auto-create }}
         DEFECTDOJO_URL: ${{ inputs.defectdojo-url }}
         DEFECTDOJO_API_KEY: ${{ inputs.defectdojo-api-key }}
         DEFECTDOJO_ENGAGEMENT: ${{ inputs.defectdojo-engagement }}
         DEFECTDOJO_PRODUCT_NAME: ${{ inputs.defectdojo-product-name }}
+        DEFECTDOJO_PRODUCT_TYPE: ${{ inputs.defectdojo-product-type }}
         DEFECTDOJO_ENGAGEMENT_NAME: ${{ inputs.defectdojo-engagement-name }}
+        DEFECTDOJO_CLOSE_OLD: ${{ inputs.defectdojo-close-old }}
       run: |
         set -euo pipefail
 
