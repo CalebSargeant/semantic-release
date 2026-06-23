@@ -14,7 +14,7 @@ This repository has two surfaces: the **composite action** (`action.yml` + `scri
 ## Action
 
 - Install: `uses: magmamoose/diatreme@v1` (floating major tag). The default `auth-mode: public-app` needs `id-token: write` and the hosted [Diatreme GitHub App](https://github.com/apps/diatreme).
-- Modes: `ci` (PR image build, branch-naming gate), `release` (versioning, GitHub Release, image promotion, promotion PRs), `enable-auto-merge`.
+- Modes: `ci` (PR image build, branch-naming gate, optional image scan → CycloneDX SBOM to Dependency-Track + optional findings to DefectDojo), `release` (versioning, GitHub Release, image promotion, promotion PRs), `enable-auto-merge`.
 - Versioning tools: `semantic-release-python`, `semantic-release-npm`, `gitversion`, `release-please`.
 - Package publishing: `nuget`, `npm`, `maven`, `gradle`, `rubygems`, `container`, `pip` — to GitHub Packages or public registries, on github.com and GitHub Enterprise.
 

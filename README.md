@@ -5,7 +5,7 @@
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
 [![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
 
-Diatreme is a **release/deployment orchestrator**: a composite GitHub Action for semantic-release across TBD and BBD workflows. It runs release flows, builds PR Docker images, promotes already-built GHCR images by retagging, opens promotion PRs, publishes language packages (npm/maven/gradle/rubygems/containers), and normalizes release outputs across multiple versioning tools.
+Diatreme is a **release/deployment orchestrator**: a composite GitHub Action for semantic-release across TBD and BBD workflows. It runs release flows, builds PR Docker images, scans the assembled image and ships its SBOM to Dependency-Track (and optional findings to DefectDojo), promotes already-built GHCR images by retagging, opens promotion PRs, publishes language packages (npm/maven/gradle/rubygems/containers), and normalizes release outputs across multiple versioning tools.
 
 This repository holds **both surfaces** of Diatreme:
 
@@ -398,6 +398,59 @@ Publishing to public PyPI via Trusted Publishing (no `package-token`):
           # https://test.pypi.org/legacy/
 ```
 
+## Image scanning and SBOMs
+
+In `mode: ci`, after the `pr-<N>` image is built, Diatreme can scan the
+**assembled** image and route the results to two sinks. This is the image's
+view of the world — base-image packages and whatever the Dockerfile added —
+which a source-dependency scan never sees.
+
+- **CycloneDX SBOM → Dependency-Track.** The image's component inventory is
+  uploaded as its own Dependency-Track project (distinct from any
+  source-dependency SBOM project for the same repo). Dependency-Track derives
+  component CVEs from the SBOM and re-checks them as new advisories land.
+- **Findings → DefectDojo** *(optional)*. The Trivy report is imported for what
+  SBOM matching misses — OS-level CVEs, image misconfigurations, and secrets
+  baked into layers.
+
+Reporting is **visibility-first**: a successful scan never blocks the PR unless
+you opt in with `image-scan-gate: true`. A scanner that cannot run at all is a
+build error, never reported as "no findings". Both sinks are
+**failure-isolated** — a Dependency-Track or DefectDojo outage logs a warning
+and does not fail the build. Each sink activates only when its URL is set.
+
+The scanned `pr-<N>` image is the exact artifact that `mode: release` later
+promotes by digest, so what is scanned on the PR is what ships.
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - uses: magmamoose/diatreme@v1
+        with:
+          mode: ci
+          image_name: my-app
+          image-scan: 'true'
+          dependency-track-url: https://dtrack.example.com
+          dependency-track-api-key: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+          # Optional findings feed:
+          defectdojo-url: https://defectdojo.example.com
+          defectdojo-api-key: ${{ secrets.DEFECTDOJO_API_KEY }}
+          defectdojo-product-name: my-app
+          # Stay non-blocking at first; flip on once the signal is trusted:
+          # image-scan-gate: 'true'
+```
+
 ## Inputs
 
 All inputs are optional unless noted. Defaults match `action.yml`.
@@ -430,6 +483,20 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `registry-password` | `''` | Explicit registry login password or token. |
 | `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
+| `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires `image_name`. |
+| `image-scan-severity` | `CRITICAL,HIGH` | Trivy severity filter for findings and the gate. The SBOM still inventories all components. |
+| `image-scan-scanners` | `vuln,secret,misconfig` | Trivy scanners for the findings report. |
+| `image-scan-gate` | `false` | Fail the build when findings at/above `image-scan-severity` exist. Non-blocking by default. |
+| `image-scan-strict` | `false` | Treat a Dependency-Track / DefectDojo sink failure as fatal. Default keeps sinks failure-isolated. |
+| `dependency-track-url` | `''` | Dependency-Track base URL. When set, the image's CycloneDX SBOM is uploaded. Outages are non-blocking. |
+| `dependency-track-api-key` | `''` | Dependency-Track API key with BOM upload permission. |
+| `dependency-track-project-name` | `''` | DT project name. Defaults to the image repository path with an `(image)` suffix (e.g. `owner/app (image)`), distinct from a source-SBOM project for the same repo. |
+| `dependency-track-project-version` | `''` | DT project version. Defaults to the image tag (e.g. `pr-12`). |
+| `defectdojo-url` | `''` | DefectDojo base URL. When set, the Trivy findings report is imported. Optional; outages are non-blocking. |
+| `defectdojo-api-key` | `''` | DefectDojo API v2 token. |
+| `defectdojo-engagement` | `''` | DefectDojo engagement id to import into. Or set `defectdojo-product-name` for auto-created context. With neither set (and a URL), the import is skipped with a warning. |
+| `defectdojo-product-name` | `''` | DefectDojo product name for the auto-create-context import path. |
+| `defectdojo-engagement-name` | `''` | DefectDojo engagement name for auto-create-context. Default `Diatreme image scan`. |
 | `publish-package` | `false` | Pack and push a language package to `package-feed-url` after versioning. Opt-in. |
 | `package-ecosystem` | `''` | `nuget`, `npm`, `maven`, `gradle`, `rubygems`, `container`, or `pip`. Required when `publish-package` is true. |
 | `package-path` | `''` | Project/path to pack/build/publish. Defaults to `working-directory`. |
@@ -480,6 +547,8 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `prerelease-identifier` | Prerelease identifier, or empty for production. |
 | `resolved-environment` | The resolved environment name. |
 | `package-published` | `true` when a language package was packed and pushed to the configured feed. |
+| `image-scanned` | `true` when the assembled `pr-<N>` image(s) were scanned (`mode: ci` with `image-scan`). |
+| `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
 
 ## The Diatreme Worker
 
