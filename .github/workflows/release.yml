@@ -1,0 +1,75 @@
+# Chargate/KICS suppression (reviewed false positive, not a vulnerability):
+#   baee238e... Passwords And Secrets - Generic Token misfires on the required
+#   `id-token: write` GitHub OIDC permission key below — no secret is present.
+# kics-scan disable=baee238e-1921-4801-9c3f-79ae1d7b2cbc
+name: Release
+
+# Diatreme release workflow (one image-aware template for the whole org).
+#
+# Detects a container build (docker-bake.hcl / Dockerfile):
+#   - pull_request: image repos run `mode: ci` -> BUILD + push a pr-<N> image to
+#     GHCR, so the build is verified BEFORE merge. Non-image repos no-op (the
+#     required `diatreme` check passes trivially).
+#   - push to the default branch: `mode: release` -> version + GitHub Release;
+#     image repos also promote the image.
+#
+# versioning-tool defaults to gitversion (language-agnostic). Per-repo overrides:
+#   - Python: versioning-tool: semantic-release-python (+ a pyproject config).
+#   - Node:   versioning-tool: semantic-release-npm.
+#   - Non-`main` default branch (e.g. master): set on.push.branches to match.
+#
+# All actions are SHA-pinned (Chargate's pre-commit hook enforces this); the
+# trailing `# vX.Y.Z` comment tracks the tag each pinned SHA corresponds to.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - docs/**
+      - mkdocs.yml
+      - LICENSE
+      - .gitignore
+  workflow_dispatch:
+
+permissions:
+  contents: write     # version bump + tag on release
+  id-token: write     # OIDC for the Diatreme public-app token broker
+  packages: write     # push the PR/release container image to GHCR
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diatreme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - id: detect
+        shell: bash
+        # image_name is set only when the repo builds a container image; Diatreme
+        # gates all image steps on image_name != '', so non-image repos no-op.
+        run: |
+          if [ -f docker-bake.hcl ] || [ -f Dockerfile ]; then
+            echo "image_name=${{ github.event.repository.name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_name=" >> "$GITHUB_OUTPUT"
+          fi
+      # PR: verify the image builds (image repos only).
+      - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
+        uses: magmamoose/diatreme@f31adec7d62907cc81b9b880cd776e24fcdcbaf1 # v2.0.0
+        with:
+          mode: ci
+          image_name: ${{ steps.detect.outputs.image_name }}
+      # Default-branch push (or manual dispatch): version + release.
+      - if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: magmamoose/diatreme@f31adec7d62907cc81b9b880cd776e24fcdcbaf1 # v2.0.0
+        with:
+          mode: release
+          versioning-tool: gitversion
+          environment: prod
+          environments: '["prod"]'
+          prerelease-identifiers: '{}'
+          image_name: ${{ steps.detect.outputs.image_name }}
