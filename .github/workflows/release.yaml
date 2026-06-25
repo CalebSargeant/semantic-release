@@ -4,8 +4,15 @@ name: Release
 # Creates GitHub Releases (v1.0.0, v1.1.0, etc.) that callers pin to.
 # Keeps the floating major action tag (v1, v2, etc.) pointing at the latest
 # stable release so Marketplace examples can pin to the major version.
+#
+# The job is named `diatreme` so it reports the org-required `diatreme`
+# status check. diatreme keeps this BESPOKE release (dogfoods `uses: ./` and
+# maintains the major tag) instead of Caldrith's managed release.yml, which
+# runs the published action — diatreme must release with its own code. On
+# pull_request the job no-ops; the real release runs only on push to main.
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths-ignore:
@@ -15,7 +22,7 @@ on:
       - 'LICENSE'
 
 jobs:
-  release:
+  diatreme:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,7 +30,14 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: PR no-op
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "No release on pull requests (the action is validated by ci.yaml)."
+          echo "This job reports the org-required diatreme check; release runs on push to main."
+
       - id: release
+        if: github.event_name != 'pull_request'
         uses: ./
         with:
           mode: release
@@ -33,11 +47,11 @@ jobs:
 
       - name: Request Diatreme token for major tag
         id: major-token
-        if: steps.release.outputs.released == 'true' && !contains(steps.release.outputs.version, '-')
+        if: github.event_name != 'pull_request' && steps.release.outputs.released == 'true' && !contains(steps.release.outputs.version, '-')
         run: ./scripts/request-public-app-token.sh
 
       - name: Update major action tag
-        if: steps.release.outputs.released == 'true' && !contains(steps.release.outputs.version, '-')
+        if: github.event_name != 'pull_request' && steps.release.outputs.released == 'true' && !contains(steps.release.outputs.version, '-')
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
