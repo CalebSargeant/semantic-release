@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `versioning-tool: semantic-release-python` releases no longer break when
+  Docker Hub rebuilds `python:3.14-slim-trixie`. The upstream action's
+  container moved to that rolling base in v10.5.0, where its `apt install
+  ... cargo` build step fails intermittently (apt exit 100). We now pin
+  `python-semantic-release` to v10.4.1 (built `FROM python:3.13-bookworm`,
+  a stable Debian base) by commit SHA, instead of the floating `@v10` tag
+  that silently advanced to the trixie-based v10.5.x.
 - `versioning-tool: semantic-release-npm` no longer crashes with
   `Cannot find module '@semantic-release/changelog'` (or `/git`,
   `/github`) when the consumer's `.releaserc.json` configures
