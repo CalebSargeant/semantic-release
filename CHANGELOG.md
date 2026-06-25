@@ -22,6 +22,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image scanning and SBOMs (`mode: ci`).** After the `pr-<N>` image is built,
+  Diatreme can scan the assembled image with Trivy and route the results to two
+  sinks: a CycloneDX **SBOM → Dependency-Track** (its own assembled-image
+  project, distinct from any source-dependency SBOM for the repo) and, optionally,
+  **findings → DefectDojo** (OS CVEs, image misconfigurations, secrets in layers
+  — what SBOM matching misses). Opt-in via `image-scan: true`. New inputs:
+  `image-scan`, `image-scan-severity`, `image-scan-scanners`, `image-scan-gate`,
+  `image-scan-strict`,
+  `dependency-track-url` / `-api-key` / `-project-name` / `-project-version` /
+  `-auto-create`,
+  `defectdojo-url` / `-api-key` / `-engagement` / `-product-name` /
+  `-product-type` / `-engagement-name` / `-close-old`. New outputs:
+  `image-scanned`, `image-findings`. Reporting is visibility-first — a
+  successful scan never blocks the PR unless `image-scan-gate` is on, and both
+  sinks are failure-isolated (an outage logs a warning, never fails the build).
+  A scanner that cannot run is a build error, not "0 findings". The scanned
+  `pr-<N>` image is the exact artifact release promotes by digest, so what is
+  scanned is what ships. The upload wire format matches Chargate's known-working
+  clients: the SBOM is `POST`ed to Dependency-Track `/api/v1/bom` as a multipart
+  raw file (UTF-8 BOM stripped, identifying User-Agent), and DefectDojo imports
+  via `reimport-scan` (idempotent across PR re-runs, `close_old_findings`).
 - Shared public GitHub App auth through the Cloudflare Worker token broker.
 - Repository CI for action metadata parsing, actionlint, ShellCheck, and Bats tests.
 - `registry-username` and `registry-password` inputs so callers can target

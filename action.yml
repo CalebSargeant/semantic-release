@@ -265,6 +265,132 @@ inputs:
     required: false
     default: ''
 
+  # ── Image scanning & SBOM (mode: ci) ──────────────────────────────────────
+  # Scan the assembled pr-<N> image and route results to their sinks: a
+  # CycloneDX SBOM to Dependency-Track (component CVEs), and optional findings
+  # to DefectDojo (OS CVEs, misconfigurations, secrets in layers). Reporting is
+  # visibility-first — a successful scan never blocks the PR unless
+  # `image-scan-gate` is on. A scanner that cannot run is a build error.
+  image-scan:
+    description: |
+      Scan the assembled pr-<N> image after build (mode: ci) and emit its
+      SBOM + findings. Off by default. Requires `image_name`.
+    required: false
+    default: 'false'
+
+  image-scan-severity:
+    description: |
+      Trivy `--severity` filter for findings and the optional gate
+      (comma-separated). The CycloneDX SBOM still inventories all components.
+    required: false
+    default: 'CRITICAL,HIGH'
+
+  image-scan-scanners:
+    description: |
+      Trivy `--scanners` to run for the findings report. Default covers OS/lib
+      CVEs, secrets baked into layers, and image misconfigurations.
+    required: false
+    default: 'vuln,secret,misconfig'
+
+  image-scan-gate:
+    description: |
+      Block the build when findings at/above `image-scan-severity` exist.
+      Default false (non-blocking, visibility only) — start here and tighten
+      later. This is a blunt severity threshold; net-new diffing against the
+      base image is the intended direction.
+    required: false
+    default: 'false'
+
+  image-scan-strict:
+    description: |
+      Treat a *sink* failure (Dependency-Track / DefectDojo unreachable or
+      rejecting) as fatal instead of a non-blocking warning. Default false —
+      reporting backends stay failure-isolated, so an outage never fails the PR.
+    required: false
+    default: 'false'
+
+  dependency-track-url:
+    description: |
+      Dependency-Track base URL (e.g. https://dtrack.example.com). When set,
+      the image's CycloneDX SBOM is uploaded as the assembled-image project —
+      distinct from any source-dependency SBOM project for the same repo.
+      Empty disables the sink. Outages are non-blocking.
+    required: false
+    default: ''
+
+  dependency-track-api-key:
+    description: 'Dependency-Track API key with BOM upload permission. Pass a workflow secret.'
+    required: false
+    default: ''
+
+  dependency-track-project-name:
+    description: |
+      Dependency-Track project name. Defaults to the image repository path
+      (e.g. owner/app). With multiple bake targets, the image leaf name is
+      appended to keep the projects distinct.
+    required: false
+    default: ''
+
+  dependency-track-project-version:
+    description: 'Dependency-Track project version. Defaults to the image tag (e.g. pr-12).'
+    required: false
+    default: ''
+
+  dependency-track-auto-create:
+    description: |
+      Create the Dependency-Track project/version on first upload. Default true
+      (the API key then needs PROJECT_CREATION_UPLOAD in addition to BOM_UPLOAD).
+    required: false
+    default: 'true'
+
+  defectdojo-url:
+    description: |
+      DefectDojo base URL (e.g. https://dd.example.com). When set, the Trivy
+      findings report is imported. Empty disables the sink. Outages are
+      non-blocking. Optional — the SBOM → Dependency-Track feed already yields
+      component CVEs; this adds OS CVEs / misconfigs / secrets.
+    required: false
+    default: ''
+
+  defectdojo-api-key:
+    description: 'DefectDojo API v2 token. Pass a workflow secret.'
+    required: false
+    default: ''
+
+  defectdojo-engagement:
+    description: |
+      DefectDojo engagement id to import into. If empty, set
+      `defectdojo-product-name` to import via auto-created context instead.
+      If both are empty while `defectdojo-url` is set, the import is skipped
+      with a warning (non-blocking).
+    required: false
+    default: ''
+
+  defectdojo-product-name:
+    description: |
+      DefectDojo product name for the auto-create-context import path (used
+      when `defectdojo-engagement` is empty).
+    required: false
+    default: ''
+
+  defectdojo-product-type:
+    description: 'DefectDojo product type for the auto-create-context path (optional).'
+    required: false
+    default: ''
+
+  defectdojo-engagement-name:
+    description: 'DefectDojo engagement name for the auto-create-context path. Default "Diatreme image scan".'
+    required: false
+    default: ''
+
+  defectdojo-close-old:
+    description: |
+      Close findings that are no longer present, on reimport. Default true.
+      Diatreme imports via DefectDojo's reimport-scan so one Test per engagement
+      is updated across PR re-runs (mirrors Chargate).
+    required: false
+    default: 'true'
+
   # ── Package publishing ────────────────────────────────────────────────────
   # Native library-package publishing, in addition to (or instead of) Docker
   # image promotion. Opt-in via `publish-package: true`; gated on the same
@@ -746,6 +872,12 @@ outputs:
   package-published:
     description: '"true" if a language package was packed and pushed to the configured feed.'
     value: ${{ steps.publish-package.outputs.published }}
+  image-scanned:
+    description: '"true" if the assembled pr-<N> image(s) were scanned (mode: ci with image-scan).'
+    value: ${{ steps.scan-image.outputs.scanned }}
+  image-findings:
+    description: 'Count of image-scan findings at/above image-scan-severity across all scanned images.'
+    value: ${{ steps.scan-image.outputs.image-findings }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEPS
@@ -912,6 +1044,67 @@ runs:
           "${INPUT_BAKE_TARGET}" \
           "${CACHE_ARGS[@]}" \
           --push
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CI MODE — scan the assembled image, emit SBOM + findings
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Install Trivy
+      if: inputs.mode == 'ci' && inputs.image_name != '' && inputs.image-scan == 'true'
+      uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+      with:
+        cache: true
+
+    - name: Scan image and report
+      id: scan-image
+      if: inputs.mode == 'ci' && inputs.image_name != '' && inputs.image-scan == 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version-override != '' && steps.version-override.outputs.version || format('pr-{0}', github.event.pull_request.number) }}
+        OWNER: ${{ github.repository_owner }}
+        INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        # Same build secret the build step passed, so `bake --print` renders the
+        # identical tag set here (matters only if a bake file gates targets on it).
+        BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
+        SCAN_SEVERITY: ${{ inputs.image-scan-severity }}
+        SCANNERS: ${{ inputs.image-scan-scanners }}
+        SCAN_GATE: ${{ inputs.image-scan-gate }}
+        STRICT: ${{ inputs.image-scan-strict }}
+        DEPENDENCY_TRACK_URL: ${{ inputs.dependency-track-url }}
+        DEPENDENCY_TRACK_API_KEY: ${{ inputs.dependency-track-api-key }}
+        DEPENDENCY_TRACK_PROJECT_NAME: ${{ inputs.dependency-track-project-name }}
+        DEPENDENCY_TRACK_PROJECT_VERSION: ${{ inputs.dependency-track-project-version }}
+        DEPENDENCY_TRACK_AUTO_CREATE: ${{ inputs.dependency-track-auto-create }}
+        DEFECTDOJO_URL: ${{ inputs.defectdojo-url }}
+        DEFECTDOJO_API_KEY: ${{ inputs.defectdojo-api-key }}
+        DEFECTDOJO_ENGAGEMENT: ${{ inputs.defectdojo-engagement }}
+        DEFECTDOJO_PRODUCT_NAME: ${{ inputs.defectdojo-product-name }}
+        DEFECTDOJO_PRODUCT_TYPE: ${{ inputs.defectdojo-product-type }}
+        DEFECTDOJO_ENGAGEMENT_NAME: ${{ inputs.defectdojo-engagement-name }}
+        DEFECTDOJO_CLOSE_OLD: ${{ inputs.defectdojo-close-old }}
+      run: |
+        set -euo pipefail
+
+        # Re-resolve the bake env exactly as the build step did so `bake --print`
+        # renders the same tags that were just pushed.
+        OWNER_LOWER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
+        export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
+        export REGISTRY="${INPUT_REGISTRY}"
+        export VERSION="${VERSION}"
+        export PLATFORMS="${INPUT_PLATFORMS}"
+
+        # One ref per bake target — the canonical tag (tags[0]), which carries
+        # the pr-<N> version. This is the exact image that release promotes by
+        # digest, so what we scan here is what ships.
+        IMAGE_REFS=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null \
+          | jq -r '.target[].tags[0] // empty' | sort -u)
+        echo "Image refs to scan:"
+        echo "${IMAGE_REFS}"
+
+        IMAGE_REFS="${IMAGE_REFS}" "${GITHUB_ACTION_PATH}/scripts/scan-image.sh"
 
     # ═════════════════════════════════════════════════════════════════════════
     # RELEASE MODE — versioning

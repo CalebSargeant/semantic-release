@@ -62,6 +62,12 @@ npm run check   # typecheck + tests + wrangler dry-run
 
 - `mode: ci` optionally enforces branch naming and builds/pushes Docker Bake
   targets as `pr-<number>` tags.
+- `mode: ci` can also scan the assembled `pr-<N>` image (Trivy) and route a
+  CycloneDX SBOM to Dependency-Track and optional findings to DefectDojo, via
+  `scripts/scan-image.sh` and the `scripts/upload-*-{dependency-track,defectdojo}.sh`
+  uploaders. Reporting is visibility-first (non-blocking unless
+  `image-scan-gate`); sinks are failure-isolated; a scanner that cannot run is a
+  build error, not a finding.
 - `mode: release` resolves auth, determines the target environment, delegates
   versioning to the selected backend, normalizes outputs, optionally promotes
   Docker images, publishes GitHub Releases, and can create promotion PRs.
