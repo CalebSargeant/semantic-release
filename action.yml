@@ -1106,7 +1106,18 @@ runs:
     - name: Run python-semantic-release
       id: psr
       if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'semantic-release-python'
-      uses: python-semantic-release/python-semantic-release@v10
+      # Pinned to v10.4.1 — the last release whose GitHub Action container is
+      # built FROM python:3.13-bookworm (Debian stable). v10.5.0+ switched the
+      # container to python:3.14-slim-trixie, whose `apt install ... cargo`
+      # build step breaks (apt exit 100) whenever Docker Hub rebuilds the
+      # mutable trixie base or Debian's package index shifts. The image is
+      # built at runtime from the action's Dockerfile, so a floating @v10 tag —
+      # or even a v10.5.x SHA pin — still pulls the broken base; the only fix in
+      # our control is to pin to a release whose Dockerfile uses a stable base.
+      # Our own Checkout already runs fetch-depth: 0, so we don't rely on the
+      # v10.5.0 auto-unshallow feature. Revisit once upstream restores a stable
+      # base image: https://github.com/python-semantic-release/python-semantic-release
+      uses: python-semantic-release/python-semantic-release@4d4cb0ab842247caea1963132c242c62aab1e4d5 # v10.4.1
       with:
         github_token: ${{ steps.auth.outputs.token }}
         git_committer_name: github-actions[bot]
