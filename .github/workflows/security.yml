@@ -17,4 +17,4 @@ jobs:
   chargate:
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/chargate@445fd25c95476bc1026955a157c981453a2096cb # v2.1.0
+      - uses: magmamoose/chargate@2b4730444162a52b4cb89c1b7db743967616f427 # v2.5.1

@@ -1310,7 +1310,7 @@ runs:
       # Our own Checkout already runs fetch-depth: 0, so we don't rely on the
       # v10.5.0 auto-unshallow feature. Revisit once upstream restores a stable
       # base image: https://github.com/python-semantic-release/python-semantic-release
-      uses: python-semantic-release/python-semantic-release@4d4cb0ab842247caea1963132c242c62aab1e4d5 # v10.4.1
+      uses: python-semantic-release/python-semantic-release@350c48fcb3ffcdfd2e0a235206bc2ecea6b69df0 # v10.5.3
       with:
         github_token: ${{ steps.auth.outputs.token }}
         git_committer_name: github-actions[bot]
@@ -2074,7 +2074,7 @@ runs:
         inputs.publish-package == 'true' &&
         inputs.package-ecosystem == 'nuget' &&
         steps.normalize.outputs.released == 'true'
-      uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
 
@@ -2084,7 +2084,7 @@ runs:
         inputs.publish-package == 'true' &&
         inputs.package-ecosystem == 'pip' &&
         steps.normalize.outputs.released == 'true'
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: ${{ inputs.python-version }}
 
@@ -2104,7 +2104,7 @@ runs:
         inputs.publish-package == 'true' &&
         (inputs.package-ecosystem == 'maven' || inputs.package-ecosystem == 'gradle') &&
         steps.normalize.outputs.released == 'true'
-      uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+      uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
       with:
         distribution: ${{ inputs.java-distribution }}
         java-version: ${{ inputs.java-version }}
@@ -2115,7 +2115,7 @@ runs:
         inputs.publish-package == 'true' &&
         inputs.package-ecosystem == 'rubygems' &&
         steps.normalize.outputs.released == 'true'
-      uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1.313.0
+      uses: ruby/setup-ruby@9eb537ca036ebaed86729dcb9309076e4c5c3b74 # v1.314.0
       with:
         ruby-version: ${{ inputs.ruby-version }}
 
