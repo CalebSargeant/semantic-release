@@ -10,11 +10,20 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   security-events: write
+  # codeql-action/upload-sarif (and Chargate's status telemetry) read this run's
+  # metadata via GET /actions/runs/{id}; without actions:read that 403s with
+  # "Resource not accessible by integration" and the SARIF upload errors.
+  actions: read
 
 jobs:
   chargate:
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/chargate@445fd25c95476bc1026955a157c981453a2096cb # v2.1.0
+      - uses: magmamoose/chargate@699a2b0a62c9a1ecd41fa0295a9d27a9037ac30e # v2.3.0
+        with:
+          defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
+          defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
+          dependency_track_url: ${{ vars.MM_DEPENDENCY_TRACK_URL }}
+          dependency_track_token: ${{ secrets.MM_DEPENDENCY_TRACK_API_KEY }}
