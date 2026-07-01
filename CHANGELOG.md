@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Versioning-tool autodetection (`versioning-tool: auto`, now the default).**
+  Diatreme resolves the versioning tool from repository markers under
+  `working-directory` instead of requiring every caller to hardcode one, so a
+  single shared release workflow serves repos on python-semantic-release,
+  semantic-release (npm), GitVersion, or release-please. Detection is two-tier:
+  a tool's own release config wins (`pyproject.toml` `[tool.semantic_release]`,
+  `.releaserc*`/`release.config.*`, `GitVersion.yml`,
+  `release-please-config.json`/`.release-please-manifest.json`), falling back to
+  ecosystem manifests (`pyproject.toml`/`setup.py`, `package.json`,
+  `*.csproj`/`*.sln`) with a fixed precedence
+  (`semantic-release-python` → `semantic-release-npm` → `gitversion`) so a
+  Python repo that also carries a `package.json` still resolves to
+  `semantic-release-python`. Conflicting tier-1 configs, or no markers at all,
+  fail with an actionable error. Passing an explicit `versioning-tool` skips
+  detection and behaves exactly as before. New helper:
+  `scripts/detect-versioning-tool.sh`.
+
 - **Image scanning and SBOMs (`mode: ci`).** After the `pr-<N>` image is built,
   Diatreme can scan the assembled image with Trivy and route the results to two
   sinks: a CycloneDX **SBOM → Dependency-Track** (its own assembled-image
