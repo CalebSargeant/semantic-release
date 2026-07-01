@@ -62,6 +62,24 @@ teardown() {
   [ ! -s "${STUB_LOG}" ]
 }
 
+# ── opt-out: detect-image-name=false ────────────────────────────────────────
+
+@test "detect-image-name=false skips detection even with a tagged bake file" {
+  run env INPUT_BAKE_FILE="${BAKE_FILE}" DETECT_IMAGE_NAME="false" \
+    STUB_BAKE_JSON='{"target":{"app":{"tags":["ghcr.io/acme/app:latest"]}}}' "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fxq "image_name=" "${GITHUB_OUTPUT}"   # empty → image steps skip
+  [ ! -s "${STUB_LOG}" ]                        # no bake --print attempted
+}
+
+@test "explicit image_name still wins when detect-image-name=false" {
+  run env INPUT_IMAGE_NAME="my-app" INPUT_BAKE_FILE="${BAKE_FILE}" DETECT_IMAGE_NAME="false" \
+    STUB_BAKE_JSON='{"target":{"app":{"tags":["ghcr.io/acme/app:latest"]}}}' "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "image_name=my-app" "${GITHUB_OUTPUT}"
+  [ ! -s "${STUB_LOG}" ]
+}
+
 # ── detection from Docker Bake ──────────────────────────────────────────────
 
 @test "detects base name from a GHCR tag with an org prefix" {
@@ -166,4 +184,9 @@ teardown() {
 
 @test "action.yml exposes the resolved-image-name output" {
   grep -Eq "^  resolved-image-name:" "${ACTION_YML}"
+}
+
+@test "action.yml exposes detect-image-name and wires it into the resolver" {
+  grep -Eq "^  detect-image-name:" "${ACTION_YML}"
+  grep -Eq "DETECT_IMAGE_NAME: \\\$\{\{ inputs.detect-image-name \}\}" "${ACTION_YML}"
 }

@@ -446,6 +446,18 @@ steps:
 
 The value Diatreme used is exposed as the `resolved-image-name` output.
 
+**Opting out.** If a repo keeps a tagged `docker-bake.hcl` but uses Diatreme for
+**versioning only**, set `detect-image-name: false` so a bare `mode: ci` /
+`release` run does not start building or promoting images. With detection off,
+`image_name` behaves exactly as before — empty leaves image workflows off; an
+explicit `image_name` still turns them on.
+
+For multi-target bake **groups** with distinct images, detection resolves a
+single base name (the first target `bake --print` emits) — consistent with the
+single-`IMAGE_NAME` model. It only gates the image steps and sets the
+`IMAGE_NAME` bake var; the scan and promote steps still enumerate every target
+from the bake tags, so multi-image builds are not collapsed to one.
+
 ## Image scanning and SBOMs
 
 In `mode: ci`, after the `pr-<N>` image is built, Diatreme can scan the
@@ -568,6 +580,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `image_name` | `''` | Base image name without registry or owner. Optional — auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted; an explicit value wins. See [Docker image name](#docker-image-name). |
 | `bake_file` | `docker-bake.hcl` | Docker Bake file. |
 | `bake_target` | `default` | Docker Bake target or group. |
+| `detect-image-name` | `true` | Auto-detect `image_name` from the Docker Bake config when it is empty. Set `false` to opt out (versioning-only repos with a tagged bake file). Explicit `image_name` always wins. |
 | `registry` | `ghcr.io` | Container registry. |
 | `registry-username` | `''` | Explicit registry login username. |
 | `registry-password` | `''` | Explicit registry login password or token. |

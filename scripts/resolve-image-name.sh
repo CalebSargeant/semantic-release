@@ -8,15 +8,19 @@
 #
 # Precedence:
 #   1. Explicit INPUT_IMAGE_NAME wins, verbatim — historical behavior, unchanged.
-#   2. Otherwise, when a Docker Bake file exists, derive the base image name
+#   2. Otherwise, if detection is opted out (DETECT_IMAGE_NAME != "true") leave
+#      it empty — the image steps skip, exactly as before this feature existed.
+#      This is the escape hatch for a repo that keeps a tagged docker-bake.hcl
+#      but runs Diatreme for versioning only (no image build/promotion).
+#   3. Otherwise, when a Docker Bake file exists, derive the base image name
 #      from the first non-empty target tag rendered by `docker buildx bake
 #      --print` (the same bake file + target the build/promote steps use).
-#   3. Otherwise (no explicit name, no bake file) leave it empty — versioning-
+#   4. Otherwise (no explicit name, no bake file) leave it empty — versioning-
 #      only / non-image workflows are unaffected because the consuming steps
 #      gate on a non-empty resolved name and simply skip.
 #
-# A bake file that exists but yields no tags is a hard error: Diatreme never
-# silently falls back to the repository name.
+# A bake file that exists but yields no tags is a hard error (when detection is
+# on): Diatreme never silently falls back to the repository name.
 #
 # Required env:
 #   INPUT_BAKE_FILE   - path to the Docker Bake file (e.g. docker-bake.hcl).
@@ -24,6 +28,9 @@
 #
 # Optional env:
 #   INPUT_IMAGE_NAME  - explicit base image name; wins when non-empty.
+#   DETECT_IMAGE_NAME - "true" (default) to auto-detect from the bake file when
+#                       INPUT_IMAGE_NAME is empty; any other value opts out of
+#                       detection (image_name stays empty, image steps skip).
 #   BAKE_GITHUB_TOKEN - inherited by `docker buildx bake --print` so the printed
 #                       target set matches the build/promote steps (only matters
 #                       if the bake file gates targets on that secret).
@@ -40,6 +47,7 @@ set -euo pipefail
 INPUT_IMAGE_NAME="${INPUT_IMAGE_NAME:-}"
 INPUT_BAKE_FILE="${INPUT_BAKE_FILE:-docker-bake.hcl}"
 INPUT_BAKE_TARGET="${INPUT_BAKE_TARGET:-default}"
+DETECT_IMAGE_NAME="${DETECT_IMAGE_NAME:-true}"
 
 emit() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -48,14 +56,24 @@ emit() {
 }
 
 # 1) Explicit input wins, verbatim — resolve before touching the bake file so
-#    an explicit name works even when no docker-bake.hcl is present.
+#    an explicit name works even when no docker-bake.hcl is present. Explicit
+#    always wins, even with detection opted out.
 if [ -n "${INPUT_IMAGE_NAME}" ]; then
   echo "image_name provided explicitly: '${INPUT_IMAGE_NAME}'."
   emit "${INPUT_IMAGE_NAME}"
   exit 0
 fi
 
-# 2) No explicit name and no bake file — nothing to detect. Preserve existing
+# 2) Detection opted out — leave image_name empty so image steps skip, exactly
+#    as before auto-detection existed. Escape hatch for repos that keep a tagged
+#    bake file but use Diatreme for versioning only.
+if [ "${DETECT_IMAGE_NAME}" != "true" ]; then
+  echo "No image_name provided and detect-image-name is '${DETECT_IMAGE_NAME}' (not 'true') — leaving image_name empty (image steps skipped)."
+  emit ""
+  exit 0
+fi
+
+# 3) No explicit name and no bake file — nothing to detect. Preserve existing
 #    behavior for versioning-only / non-image workflows.
 if [ ! -f "${INPUT_BAKE_FILE}" ]; then
   echo "No image_name provided and no bake file at '${INPUT_BAKE_FILE}' — leaving image_name empty (non-image workflow)."
@@ -75,7 +93,13 @@ if ! BAKE_JSON="$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGE
   exit 1
 fi
 
-# First non-empty tag across every rendered target.
+# First non-empty tag across every rendered target. For a multi-target bake
+# group with distinct images this resolves to whichever target sorts first in
+# `bake --print`, yielding a single base name — consistent with Diatreme's
+# single-IMAGE_NAME model (an explicit image_name was single too). The resolved
+# name only gates the image steps and sets the IMAGE_NAME bake var; the scan and
+# promote steps still enumerate every target from the bake tags directly, so
+# multi-image builds are not collapsed to one image downstream.
 FIRST_TAG="$(printf '%s' "${BAKE_JSON}" | jq -r '[ (.target // {})[].tags[]? | select(. != null and . != "") ] | .[0] // empty' 2>/dev/null || true)"
 
 if [ -z "${FIRST_TAG}" ]; then

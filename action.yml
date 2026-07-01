@@ -235,6 +235,9 @@ inputs:
       left empty and image workflows are skipped (versioning-only runs are
       unaffected). A bake file that exists but yields no tags is a hard error —
       Diatreme never falls back to the repository name.
+
+      To keep a tagged bake file but run versioning only, set
+      `detect-image-name: false` to opt out of detection entirely.
     required: false
     default: ''
 
@@ -249,6 +252,21 @@ inputs:
       Groups are expanded — all sub-targets are built/promoted automatically.
     required: false
     default: 'default'
+
+  detect-image-name:
+    description: |
+      When true (default) and `image_name` is empty, auto-detect the base image
+      name from the Docker Bake config (see `image_name`). Set to false to opt
+      out of detection: `image_name` then behaves as it did before this feature
+      — an empty value leaves image workflows off.
+
+      This is the escape hatch for a repo that keeps a tagged `docker-bake.hcl`
+      but runs Diatreme for versioning only (no image build/promotion) and so
+      does not want a bare `mode: ci`/`release` run to start building or
+      promoting images. An explicit `image_name` always wins regardless of this
+      flag.
+    required: false
+    default: 'true'
 
   registry:
     description: 'Container registry'
@@ -1004,6 +1022,7 @@ runs:
       shell: bash
       env:
         INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        DETECT_IMAGE_NAME: ${{ inputs.detect-image-name }}
         INPUT_BAKE_FILE: ${{ inputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
         # Inherited by `bake --print` so the printed target set matches the
