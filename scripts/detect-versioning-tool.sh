@@ -77,6 +77,17 @@ fi
 
 echo "versioning-tool: auto — detecting from markers in '${WD}'"
 
+# True if a caller-supplied config path exists. A relative path is resolved
+# against ${WD} (not the step's CWD, which is the repo root) so an explicit
+# gitversion-config / release-please-config-file honours working-directory
+# scoping exactly like the fixed-name markers do; an absolute path is used as-is.
+config_exists_in_wd() {
+  case "$1" in
+    /*) [ -f "$1" ] ;;
+    *)  [ -f "${WD}/$1" ] ;;
+  esac
+}
+
 # pyproject.toml declaring a [tool.semantic_release] table (or subtable).
 has_psr_config() {
   [ -f "${WD}/pyproject.toml" ] \
@@ -100,14 +111,14 @@ has_semrel_npm_config() {
 has_gitversion_config() {
   [ -f "${WD}/GitVersion.yml" ] && return 0
   [ -f "${WD}/GitVersion.yaml" ] && return 0
-  [ -n "${GITVERSION_CONFIG}" ] && [ -f "${GITVERSION_CONFIG}" ] && return 0
+  [ -n "${GITVERSION_CONFIG}" ] && config_exists_in_wd "${GITVERSION_CONFIG}" && return 0
   return 1
 }
 
 has_release_please_config() {
   [ -f "${WD}/release-please-config.json" ] && return 0
   [ -f "${WD}/.release-please-manifest.json" ] && return 0
-  [ -n "${RELEASE_PLEASE_CONFIG_FILE}" ] && [ -f "${RELEASE_PLEASE_CONFIG_FILE}" ] && return 0
+  [ -n "${RELEASE_PLEASE_CONFIG_FILE}" ] && config_exists_in_wd "${RELEASE_PLEASE_CONFIG_FILE}" && return 0
   return 1
 }
 
@@ -134,7 +145,7 @@ if [ -f "${WD}/pyproject.toml" ] || [ -f "${WD}/setup.py" ] || [ -f "${WD}/setup
   tier2+=("semantic-release-python")
 fi
 [ -f "${WD}/package.json" ] && tier2+=("semantic-release-npm")
-dotnet_project="$(find "${WD}" -maxdepth 3 \( -name '*.csproj' -o -name '*.sln' \) 2>/dev/null | head -n1)"
+dotnet_project="$(find "${WD}" -maxdepth 3 \( -name '*.csproj' -o -name '*.sln' \) -print -quit 2>/dev/null || true)"
 [ -n "${dotnet_project}" ] && tier2+=("gitversion")
 
 if [ "${#tier2[@]}" -eq 1 ]; then

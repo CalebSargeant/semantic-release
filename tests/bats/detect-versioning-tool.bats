@@ -212,3 +212,34 @@ resolved() {
   [ "$status" -eq 0 ]
   [ "$(resolved)" = "semantic-release-npm" ]
 }
+
+@test "relative gitversion-config is scoped to working-directory, not CWD" {
+  # Regression: gitversion-config defaults to a *relative* 'GitVersion.yml',
+  # which the old code resolved against the step's CWD (repo root) rather than
+  # working-directory. A stray root GitVersion.yml then manufactured a false
+  # tier-1 conflict against a subdir that unambiguously uses another tool.
+  mkdir -p "${WORK}/service"
+  printf '[tool.semantic_release]\n' > "${WORK}/service/pyproject.toml"  # tier-1 python, in WD
+  echo 'mode: ContinuousDelivery' > "${WORK}/GitVersion.yml"            # stray config at "repo root"
+  cd "${WORK}"                                                          # CWD = repo root
+  run env INPUT_VERSIONING_TOOL=auto WORKING_DIRECTORY="service" \
+      GITVERSION_CONFIG="GitVersion.yml" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "semantic-release-python" ]
+}
+
+# ── Robustness ───────────────────────────────────────────────────────────────
+
+@test "auto: many .csproj files resolve without a SIGPIPE crash" {
+  # Regression: `find ... | head -n1` under `set -euo pipefail` aborted the
+  # script (exit 141) once find's output exceeded the ~64 KB pipe buffer and
+  # head closed the pipe early. `find -print -quit` stops at the first match.
+  local pad i
+  pad="$(printf 'x%.0s' {1..120})"
+  for i in $(seq 1 700); do
+    echo '<Project/>' > "${WORK}/proj_${pad}_${i}.csproj"
+  done
+  detect_auto
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "gitversion" ]
+}
