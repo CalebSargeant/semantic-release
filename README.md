@@ -41,7 +41,9 @@ jobs:
           prerelease-identifiers: '{}'
 ```
 
-Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repository or organization. With the default `versioning-tool: semantic-release-python`, add a `pyproject.toml` semantic-release config and merge conventional commits. Diatreme writes the tag, GitHub Release, changelog, and normalized outputs.
+Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repository or organization. Add your versioning tool's config — a `pyproject.toml` `[tool.semantic_release]` section for the example above — and merge conventional commits. Diatreme writes the tag, GitHub Release, changelog, and normalized outputs.
+
+By default (`versioning-tool: auto`) Diatreme picks the versioning tool from repository markers, so the same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please — no per-repo `versioning-tool` needed. See [Versioning tool detection](#versioning-tool-detection).
 
 ## Required Permissions
 
@@ -456,6 +458,43 @@ jobs:
           # image-scan-gate: 'true'
 ```
 
+## Versioning tool detection
+
+`versioning-tool` defaults to `auto`, which detects the tool from markers in
+`working-directory`. This lets one shared release workflow serve repos on
+different versioning tools — set an explicit tool only to override detection.
+
+Detection runs in two tiers:
+
+**Tier 1 — a tool's own release config** (authoritative; each marker maps to
+exactly one tool):
+
+| Marker | Resolves to |
+| --- | --- |
+| `pyproject.toml` with a `[tool.semantic_release]` table | `semantic-release-python` |
+| `.releaserc*` / `release.config.*` | `semantic-release-npm` |
+| `GitVersion.yml` / `GitVersion.yaml` (or a custom `gitversion-config`) | `gitversion` |
+| `release-please-config.json` / `.release-please-manifest.json` (or a custom `release-please-config-file`) | `release-please` |
+
+If two or more distinct tier&#8209;1 tools match, the repo has conflicting
+release configs and the run **errors** — set `versioning-tool` explicitly to
+disambiguate.
+
+**Tier 2 — ecosystem manifests** (consulted only when no tier&#8209;1 config is
+found):
+
+| Marker | Resolves to |
+| --- | --- |
+| `pyproject.toml` / `setup.py` / `setup.cfg` | `semantic-release-python` |
+| `package.json` | `semantic-release-npm` |
+| `*.csproj` / `*.sln` | `gitversion` |
+
+When several tier&#8209;2 manifests coexist, a fixed precedence
+(`semantic-release-python` → `semantic-release-npm` → `gitversion`) breaks the
+tie so a Python service that also ships a `package.json` still resolves to
+`semantic-release-python`. If nothing matches at all, the run **errors** with
+the full marker list.
+
 ## Inputs
 
 All inputs are optional unless noted. Defaults match `action.yml`.
@@ -466,7 +505,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `auth-mode` | `public-app` | Token source: hosted public App, private App, workflow token, or auto. |
 | `token-broker-url` | `https://api.diatreme.magmamoose.com` | Hosted broker base URL override. |
 | `oidc-audience` | `diatreme` | OIDC audience used for public App auth. |
-| `versioning-tool` | `semantic-release-python` | `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
+| `versioning-tool` | `auto` | `auto` (detect from repo markers — see [Versioning tool detection](#versioning-tool-detection)), `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
 | `deployment-model` | `tbd` | `tbd`, `bbd`, or `tbd-pr`. |
 | `branch-map` | `''` | JSON branch-to-environment map for BBD. |
 | `promote-branch-prefix` | `promote` | Branch prefix for `tbd-pr` promotion PRs. |
