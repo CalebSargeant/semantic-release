@@ -220,7 +220,21 @@ inputs:
     description: |
       Base image name without registry or owner prefix (e.g., my-app).
       Sets IMAGE_NAME=<owner>/<image_name> for the bake file.
-      Required for mode: ci. When set in mode: release, images are promoted after versioning.
+
+      Optional — when omitted, Diatreme auto-detects it from the Docker Bake
+      config (`bake_file` / `bake_target`): it runs `docker buildx bake
+      --print`, takes the first non-empty target tag, and strips the digest,
+      tag, registry, and owner/org prefix down to the base name. An explicit
+      value always wins over detection.
+
+      Detection drives the same image workflows an explicit value does — the
+      CI image build (mode: ci), the image scan (image-scan), and release
+      image promotion (mode: release). So mode: ci and BBD release promotion
+      work without passing image_name as long as the bake file has tagged
+      targets. With no bake file present and no explicit value, image_name is
+      left empty and image workflows are skipped (versioning-only runs are
+      unaffected). A bake file that exists but yields no tags is a hard error —
+      Diatreme never falls back to the repository name.
     required: false
     default: ''
 
@@ -902,6 +916,12 @@ outputs:
   image-findings:
     description: 'Count of image-scan findings at/above image-scan-severity across all scanned images.'
     value: ${{ steps.scan-image.outputs.image-findings }}
+  resolved-image-name:
+    description: |
+      The base image name Diatreme used for image workflows — the explicit
+      `image_name` input when set, otherwise the value auto-detected from the
+      Docker Bake config. Empty when neither applies (versioning-only runs).
+    value: ${{ steps.resolve-image.outputs.image_name }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEPS
@@ -970,6 +990,28 @@ runs:
         token: ${{ steps.auth.outputs.token }}
         submodules: ${{ inputs.submodules }}
 
+    # ── 3. Resolve image name (ci + release) ─────────────────────────────────
+    # image_name is optional. When the caller omits it, derive the base image
+    # name from the repo's Docker Bake config — the same way the environment is
+    # inferred from the deployment model — so no caller needs a bespoke
+    # pre-step just to compute it. An explicit image_name always wins. Every
+    # downstream image step (CI build, image scan, release promotion) gates on
+    # and reads this resolved value, so detection and explicit input drive the
+    # identical path. Runs after Checkout so the bake file is on disk.
+    - name: Resolve image name
+      id: resolve-image
+      if: inputs.mode == 'ci' || inputs.mode == 'release'
+      shell: bash
+      env:
+        INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        # Inherited by `bake --print` so the printed target set matches the
+        # build/promote steps (only matters if the bake file gates targets on
+        # this secret).
+        BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
+      run: "${GITHUB_ACTION_PATH}/scripts/resolve-image-name.sh"
+
     # ═════════════════════════════════════════════════════════════════════════
     # CI MODE — build and push pr-<N> image
     # ═════════════════════════════════════════════════════════════════════════
@@ -1015,15 +1057,15 @@ runs:
         echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
 
     - name: Set up QEMU
-      if: inputs.mode == 'ci' && inputs.image_name != ''
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
     - name: Set up Docker Buildx (CI)
-      if: inputs.mode == 'ci' && inputs.image_name != ''
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     - name: Log in to container registry (CI)
-      if: inputs.mode == 'ci' && inputs.image_name != ''
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
         registry: ${{ inputs.registry }}
@@ -1031,7 +1073,7 @@ runs:
         password: ${{ inputs.registry-password || steps.auth.outputs.registry-token }}
 
     - name: Build and push pr-<N>
-      if: inputs.mode == 'ci' && inputs.image_name != ''
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       shell: bash
       env:
         VERSION: ${{ inputs.version-override != '' && steps.version-override.outputs.version || format('pr-{0}', github.event.pull_request.number) }}
@@ -1040,7 +1082,7 @@ runs:
         BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
         OWNER: ${{ github.repository_owner }}
         REF_NAME: ${{ github.ref_name }}
-        INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
         INPUT_BAKE_FILE: ${{ inputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
       run: |
@@ -1073,19 +1115,19 @@ runs:
     # CI MODE — scan the assembled image, emit SBOM + findings
     # ─────────────────────────────────────────────────────────────────────────
     - name: Install Trivy
-      if: inputs.mode == 'ci' && inputs.image_name != '' && inputs.image-scan == 'true'
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != '' && inputs.image-scan == 'true'
       uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
       with:
         cache: true
 
     - name: Scan image and report
       id: scan-image
-      if: inputs.mode == 'ci' && inputs.image_name != '' && inputs.image-scan == 'true'
+      if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != '' && inputs.image-scan == 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version-override != '' && steps.version-override.outputs.version || format('pr-{0}', github.event.pull_request.number) }}
         OWNER: ${{ github.repository_owner }}
-        INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_BAKE_FILE: ${{ inputs.bake_file }}
@@ -1887,11 +1929,11 @@ runs:
     # ═════════════════════════════════════════════════════════════════════════
 
     - name: Set up Docker Buildx (release)
-      if: inputs.mode == 'release' && inputs.image_name != '' && steps.normalize.outputs.released == 'true'
+      if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     - name: Log in to container registry (release)
-      if: inputs.mode == 'release' && inputs.image_name != '' && steps.normalize.outputs.released == 'true'
+      if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
         registry: ${{ inputs.registry }}
@@ -1899,7 +1941,7 @@ runs:
         password: ${{ inputs.registry-password || steps.auth.outputs.registry-token }}
 
     - name: Promote images
-      if: inputs.mode == 'release' && inputs.image_name != '' && steps.normalize.outputs.released == 'true'
+      if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ steps.auth.outputs.token }}
@@ -1913,7 +1955,7 @@ runs:
         INPUT_PRERELEASE_IDENTIFIERS: ${{ inputs.prerelease-identifiers }}
         INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
         OWNER: ${{ github.repository_owner }}
-        INPUT_IMAGE_NAME: ${{ inputs.image_name }}
+        INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
         INPUT_BAKE_FILE: ${{ inputs.bake_file }}

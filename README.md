@@ -400,6 +400,52 @@ Publishing to public PyPI via Trusted Publishing (no `package-token`):
           # https://test.pypi.org/legacy/
 ```
 
+## Docker image name
+
+`image_name` is **optional**. Just as Diatreme infers the release environment
+from your deployment model and branch-map, it infers the image name from your
+Docker Bake config when you don't pass one — so platform repos don't need a
+bespoke pre-step to compute it.
+
+Resolution order:
+
+1. **Explicit `image_name`** always wins and is used verbatim (as before). It
+   sets `IMAGE_NAME=<owner>/<image_name>` for bake files that consume that
+   variable.
+2. **Auto-detect from Docker Bake.** When `image_name` is empty and the
+   `bake_file` exists, Diatreme runs `docker buildx bake -f <bake_file>
+   <bake_target> --print`, takes the **first non-empty target tag**, and strips
+   the digest, tag, registry host, and owner/org prefix down to the base name:
+
+   | First bake tag | Detected `image_name` |
+   | --- | --- |
+   | `ghcr.io/platform1-systems/backend:latest` | `backend` |
+   | `ghcr.io/platform1-systems/camera-probe-propagator:v1` | `camera-probe-propagator` |
+   | `platform1-systems/admin-frontend:latest` | `admin-frontend` |
+
+3. **No `image_name` and no bake file** → the name stays empty and the image
+   steps (CI build, image scan, release promotion) are skipped. Versioning-only
+   workflows are unaffected.
+
+A bake file that exists but produces **no tags** is a hard error — Diatreme
+never silently falls back to the repository name; fix the bake target or pass
+`image_name` explicitly.
+
+Detection feeds every image path identically to an explicit value, so **`mode:
+ci` image builds and BBD release image promotion work without passing
+`image_name`** as long as `docker-bake.hcl` has tagged targets:
+
+```yaml
+steps:
+  - uses: magmamoose/diatreme@v1
+    with:
+      deployment-model: bbd
+      branch-map: '{"staging": "staging", "main": "prod"}'
+      # image_name omitted — detected from docker-bake.hcl tags.
+```
+
+The value Diatreme used is exposed as the `resolved-image-name` output.
+
 ## Image scanning and SBOMs
 
 In `mode: ci`, after the `pr-<N>` image is built, Diatreme can scan the
@@ -519,7 +565,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `app-id` | `''` | Private GitHub App ID. |
 | `app-private-key` | `''` | Private GitHub App PEM. |
 | `submodules` | `false` | Pass-through to checkout: `false`, `true`, or `recursive`. |
-| `image_name` | `''` | Image name without registry or owner. Required for `mode: ci`. |
+| `image_name` | `''` | Base image name without registry or owner. Optional — auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted; an explicit value wins. See [Docker image name](#docker-image-name). |
 | `bake_file` | `docker-bake.hcl` | Docker Bake file. |
 | `bake_target` | `default` | Docker Bake target or group. |
 | `registry` | `ghcr.io` | Container registry. |
@@ -527,7 +573,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `registry-password` | `''` | Explicit registry login password or token. |
 | `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
-| `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires `image_name`. |
+| `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires a resolved image name (explicit `image_name` or bake-detected). |
 | `image-scan-severity` | `CRITICAL,HIGH` | Trivy severity filter for findings and the gate. The SBOM still inventories all components. |
 | `image-scan-scanners` | `vuln,secret,misconfig` | Trivy scanners for the findings report. |
 | `image-scan-gate` | `false` | Fail the build when findings at/above `image-scan-severity` exist. Non-blocking by default. |
@@ -596,6 +642,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `package-published` | `true` when a language package was packed and pushed to the configured feed. |
 | `image-scanned` | `true` when the assembled `pr-<N>` image(s) were scanned (`mode: ci` with `image-scan`). |
 | `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
+| `resolved-image-name` | The base image name used for image workflows — explicit `image_name`, or the value auto-detected from Docker Bake. Empty on versioning-only runs. |
 
 ## The Diatreme Worker
 
