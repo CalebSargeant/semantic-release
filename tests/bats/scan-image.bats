@@ -215,7 +215,8 @@ teardown() {
 # ── action.yml wiring ──────────────────────────────────────────────────────
 
 @test "action.yml gates the scan step on mode/image_name/image-scan" {
-  grep -Eq "inputs.mode == 'ci' && inputs.image_name != '' && inputs.image-scan == 'true'" "${ACTION_YML}"
+  # image_name is now the resolved value (explicit input or bake-detected).
+  grep -Eq "inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != '' && inputs.image-scan == 'true'" "${ACTION_YML}"
   grep -Eq "scan-image.sh" "${ACTION_YML}"
 }
 
