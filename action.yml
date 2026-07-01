@@ -47,12 +47,36 @@ inputs:
   versioning-tool:
     description: |
       The versioning tool to use. One of:
-        semantic-release-python   python-semantic-release v10 (default)
+        auto                      (default) Detect the tool from repository
+                                  markers under `working-directory`. See the
+                                  detection rules below.
+        semantic-release-python   python-semantic-release v10
         semantic-release-npm      semantic-release v24 (Node.js / JavaScript)
         gitversion                GitVersion via gittools/actions
         release-please            Google release-please-action v4
+
+      Autodetection (versioning-tool: auto) inspects `working-directory` in
+      two tiers and errors if nothing matches or the signals conflict — set an
+      explicit tool to opt out.
+
+      Tier 1 — a tool's own release config (authoritative, one tool each):
+        semantic-release-python   pyproject.toml with a [tool.semantic_release] table
+        semantic-release-npm      .releaserc* / release.config.*
+        gitversion                GitVersion.yml|.yaml (or gitversion-config)
+        release-please            release-please-config.json /
+                                  .release-please-manifest.json (or
+                                  release-please-config-file)
+      Two or more distinct tier-1 tools is a conflict → error.
+
+      Tier 2 — ecosystem manifests (only when no tier-1 config is found):
+        semantic-release-python   pyproject.toml / setup.py / setup.cfg
+        semantic-release-npm      package.json
+        gitversion                *.csproj / *.sln
+      When several tier-2 manifests coexist, a fixed precedence
+      (python → npm → gitversion) breaks the tie so a Python service that also
+      carries a package.json still resolves to python.
     required: false
-    default: 'semantic-release-python'
+    default: 'auto'
 
   # ── Deployment model ─────────────────────────────────────────────────────
   deployment-model:
@@ -1296,9 +1320,26 @@ runs:
         fi
         echo "✓ ${ACTOR} is a repo admin on ${OWNER}/${REPO} — manual release to '${CURRENT_ENV}' allowed."
 
+    # Resolve the concrete versioning tool once, up front, so every tool step
+    # below (and the normalize step) gates on a single detected value rather
+    # than on the raw `versioning-tool` input. With `versioning-tool: auto`
+    # (the default) this inspects `working-directory` for release-tooling
+    # markers; with an explicit tool it validates and passes it through. Skipped
+    # when version-override is set, since that path bypasses versioning entirely.
+    - name: Resolve versioning tool
+      id: resolve-tool
+      if: inputs.mode == 'release' && inputs.version-override == ''
+      shell: bash
+      env:
+        INPUT_VERSIONING_TOOL: ${{ inputs.versioning-tool }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        GITVERSION_CONFIG: ${{ inputs.gitversion-config }}
+        RELEASE_PLEASE_CONFIG_FILE: ${{ inputs.release-please-config-file }}
+      run: "${GITHUB_ACTION_PATH}/scripts/detect-versioning-tool.sh"
+
     - name: Run python-semantic-release
       id: psr
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'semantic-release-python'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-python'
       # Pinned to v10.4.1 — the last release whose GitHub Action container is
       # built FROM python:3.13-bookworm (Debian stable). v10.5.0+ switched the
       # container to python:3.14-slim-trixie, whose `apt install ... cargo`
@@ -1333,14 +1374,14 @@ runs:
         directory: ${{ inputs.working-directory }}
 
     - name: Set up Node.js (semantic-release-npm)
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'semantic-release-npm'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-npm'
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version: '20'
 
     - name: Run semantic-release (npm)
       id: semrel-npm
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'semantic-release-npm'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-npm'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -1519,14 +1560,14 @@ runs:
         fi
 
     - name: Install GitVersion
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'gitversion'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
       uses: gittools/actions/gitversion/setup@v4
       with:
         versionSpec: ${{ inputs.gitversion-spec }}
 
     - name: Execute GitVersion
       id: gitversion
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'gitversion'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
       uses: gittools/actions/gitversion/execute@v4
       with:
         configFilePath: ${{ inputs.gitversion-config }}
@@ -1545,7 +1586,7 @@ runs:
 
     - name: Create GitVersion release tag
       id: gitversion-tag
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'gitversion'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ steps.auth.outputs.token }}
@@ -1609,7 +1650,7 @@ runs:
 
     - name: Run release-please
       id: release-please
-      if: inputs.mode == 'release' && inputs.version-override == '' && inputs.versioning-tool == 'release-please'
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'release-please'
       uses: googleapis/release-please-action@v5
       with:
         token: ${{ steps.auth.outputs.token }}
@@ -1621,7 +1662,7 @@ runs:
       if: inputs.mode == 'release'
       shell: bash
       env:
-        INPUT_TOOL: ${{ inputs.versioning-tool }}
+        INPUT_TOOL: ${{ steps.resolve-tool.outputs.tool }}
         INPUT_PREFIX: ${{ inputs.tag-prefix }}
         INPUT_VERSION_OVERRIDE: ${{ inputs.version-override }}
         OVERRIDE_TAG_VERSION: ${{ steps.version-override-tag.outputs.version }}
