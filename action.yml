@@ -617,10 +617,20 @@ inputs:
   enforce_branch_naming:
     description: |
       Enforce TBD branch naming convention on PRs (mode: ci).
-      Allowed prefixes: feat, fix, chore, hotfix, docs, refactor, perf, test, ci, style.
+      Allowed prefixes: feat, fix, chore, hotfix, docs, refactor, perf, test,
+      ci, style, build, revert, deploy, release (plus the promote prefix). Add
+      more via extra-branch-prefixes.
       Set to false for BBD (branches are named after environments).
     required: false
     default: 'true'
+
+  extra-branch-prefixes:
+    description: |
+      Additional branch-name prefixes to accept beyond the built-in set
+      (mode: ci, enforce_branch_naming: true). Comma-, space-, or
+      pipe-separated. Example: 'spike wip' accepts spike/* and wip/* branches.
+    required: false
+    default: ''
 
   # ── Integrations: GitHub Projects ─────────────────────────────────────────
   aggregate-github-projects:
@@ -1040,6 +1050,7 @@ runs:
       shell: bash
       env:
         PROMOTE_BRANCH_PREFIX: ${{ inputs.promote-branch-prefix }}
+        EXTRA_BRANCH_PREFIXES: ${{ inputs.extra-branch-prefixes }}
       run: "${GITHUB_ACTION_PATH}/scripts/check-branch-naming.sh"
 
     - name: Validate version override
