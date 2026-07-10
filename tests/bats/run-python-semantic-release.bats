@@ -258,10 +258,12 @@ PY
 
 @test "reports the pin it is installing" {
   unset PSR_BIN
-  export PIP_ARGS_FILE="${WORK}/pip-args"
   export PYTHON_BIN="${WORK}/python"
   cat > "${PYTHON_BIN}" <<'PY'
 #!/usr/bin/env bash
+# Guard the argv before touching "$3": an empty $3 would make the lines below
+# write to /bin/python, and `mkdir -p /bin` succeeds silently because it exists.
+[ "$1" = "-m" ] && [ "$2" = "venv" ] || { echo "unexpected python argv: $*" >&2; exit 1; }
 mkdir -p "$3/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'true' > "$3/bin/python"
 chmod +x "$3/bin/python"
@@ -276,7 +278,17 @@ PY
   [[ "$output" != *"# The python-semantic-release CLI"* ]]
 }
 
-@test "fails loudly when the requirements file pins nothing" {
+# Run a copy of the script beside a requirements file with the given content.
+# A copy, because the script resolves the file relative to its own location.
+run_with_requirements() {
+  local content="$1" dir="${WORK}/scripts-$2"
+  mkdir -p "${dir}"
+  cp "${SCRIPT}" "${dir}/"
+  printf '%s' "${content}" > "${dir}/psr-requirements.txt"
+  run bash "${dir}/$(basename "${SCRIPT}")"
+}
+
+@test "fails loudly when the requirements file holds only comments" {
   # `pip install -r` on an all-comments file succeeds and installs nothing; the
   # gap would otherwise surface as a missing binary several lines later.
   unset PSR_BIN
@@ -284,16 +296,48 @@ PY
   : > "${PYTHON_BIN}"
   chmod +x "${PYTHON_BIN}"
 
-  # Run a copy of the script beside a requirements file that is only comments,
-  # since the script resolves the file relative to its own location.
-  fake_scripts="${WORK}/scripts"
-  mkdir -p "${fake_scripts}"
-  cp "${SCRIPT}" "${fake_scripts}/"
-  printf '# nothing but a comment\n\n' > "${fake_scripts}/psr-requirements.txt"
+  run_with_requirements '# nothing but a comment
 
-  run bash "${fake_scripts}/$(basename "${SCRIPT}")"
+' comments
   [ "$status" -ne 0 ]
-  [[ "$output" == *"pins no requirements"* ]]
+  [[ "$output" == *"names no requirement to install"* ]]
+}
+
+@test "fails loudly when the requirements file holds only pip options" {
+  # `--index-url` alone is not a requirement: pip would install nothing and exit 0.
+  # A guard that only skipped comments would wave this through.
+  unset PSR_BIN
+  export PYTHON_BIN="${WORK}/python"
+  : > "${PYTHON_BIN}"
+  chmod +x "${PYTHON_BIN}"
+
+  run_with_requirements '# options, but nothing to install
+--index-url https://pypi.org/simple
+--no-binary :all:
+' options
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"names no requirement to install"* ]]
+}
+
+@test "an option line alongside a real requirement is accepted" {
+  # The guard must not reject a legitimate file that carries both.
+  unset PSR_BIN
+  export PYTHON_BIN="${WORK}/python"
+  cat > "${PYTHON_BIN}" <<'PY'
+#!/usr/bin/env bash
+[ "$1" = "-m" ] && [ "$2" = "venv" ] || { echo "unexpected python argv: $*" >&2; exit 1; }
+mkdir -p "$3/bin"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$3/bin/python"
+chmod +x "$3/bin/python"
+cp "${PSR_STUB}" "$3/bin/semantic-release"
+PY
+  chmod +x "${PYTHON_BIN}"
+
+  run_with_requirements '--index-url https://pypi.org/simple
+python-semantic-release==10.6.1
+' mixed
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"python-semantic-release=="* ]]
 }
 
 @test "fails loudly when the requirements file is missing" {

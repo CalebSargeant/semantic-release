@@ -81,13 +81,14 @@ if [ -z "${PSR_BIN:-}" ]; then
     exit 1
   fi
 
-  # An all-comments requirements file is a silent trap: `pip install -r` succeeds,
-  # installs nothing, and the absence only surfaces as a missing `semantic-release`
-  # further down. `|| true` because grep exits 1 on no match, which `pipefail`
-  # would otherwise turn into a bare `set -e` abort with no diagnostic.
-  PINS="$(grep -vE '^[[:space:]]*(#|$)' "${REQUIREMENTS}" || true)"
-  if [ -z "${PINS}" ]; then
-    echo "::error::${REQUIREMENTS} pins no requirements" >&2
+  # A requirements file that names no distribution is a silent trap: `pip install
+  # -r` succeeds, installs nothing, and the absence only surfaces as a missing
+  # `semantic-release` further down. That covers an empty file, an all-comments
+  # file, and one holding only pip options (`--index-url ...`), so the test is
+  # "some line starts with neither `#` nor `-`" rather than "some line is not a
+  # comment".
+  if ! grep -qE '^[[:space:]]*[^-#[:space:]]' "${REQUIREMENTS}"; then
+    echo "::error::${REQUIREMENTS} names no requirement to install" >&2
     exit 1
   fi
 
@@ -95,7 +96,7 @@ if [ -z "${PSR_BIN:-}" ]; then
   # images is PEP 668 externally-managed and rejects a bare `pip install`.
   VENV_DIR="${RUNNER_TEMP:-/tmp}/diatreme-psr-venv"
   echo "Installing into ${VENV_DIR}, pinned by ${REQUIREMENTS}:"
-  printf '%s\n' "${PINS}" | sed 's/^/  /'
+  grep -vE '^[[:space:]]*(#|$)' "${REQUIREMENTS}" | sed 's/^/  /'
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --quiet \
     --requirement "${REQUIREMENTS}"
