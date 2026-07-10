@@ -89,15 +89,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `Normalize outputs` step are unchanged. Repos on another versioning tool now
   pay nothing at all. Requires the runner to reach PyPI, as the
   `semantic-release-npm` path already requires npm.
-- The `10.4.1` pin on python-semantic-release is now a plain reproducibility pin
-  rather than a workaround. It previously could not be raised: v10.5.0+ moved the
-  action container to `python:3.14-slim-trixie`, whose `apt install ... cargo`
-  layer breaks whenever Docker Hub rebuilds the mutable base, and the image was
-  built from the action's Dockerfile so no SHA pin could avoid it. Diatreme no
-  longer builds that image, so bumping the version is now a routine change. The
-  Dependabot `ignore` rule that held the pin in place is removed with it — but so
-  is Dependabot's visibility: the version is now a pip requirement in a shell
-  string, not a `uses:` reference, so **it must be bumped by hand**.
+- **python-semantic-release is bumped `10.4.1` → `10.6.1`, and the pin moved to
+  `scripts/psr-requirements.txt` where Dependabot tracks it.** The pin could
+  previously not be raised: v10.5.0+ moved the action container to
+  `python:3.14-slim-trixie`, whose `apt install ... cargo` layer breaks whenever
+  Docker Hub rebuilds the mutable base, and the image was built from the action's
+  Dockerfile so no SHA pin could avoid it. Diatreme no longer builds that image,
+  so the constraint is gone — the default changelog templates are byte-identical
+  across the two versions, and the `version` flags this action passes are
+  unchanged. The Dependabot `ignore` rule that held the pin in place is removed
+  with it, and a `pip` ecosystem entry scoped to `/scripts` replaces the
+  `github-actions` coverage the `uses:` reference used to get. It is scoped to
+  that directory rather than `/` so Dependabot does not treat the root
+  `pyproject.toml` — python-semantic-release's own release metadata, which
+  declares no dependencies — as a manifest to update. Bumps are validated: CI
+  installs the pin and asserts the CLI still accepts the flags this action
+  passes, and majors are held back for a human.
+
+  One behaviour does change with the bump. psr v10.5.0 added an upstream-collision
+  check, which runs on every `semantic-release-python` release because this action
+  commits and pushes: before pushing the version commit, psr re-checks the remote
+  branch and aborts with `Upstream branch has changed. Please pull the latest
+  changes and try again.` if something landed on it meanwhile. Previously the
+  concurrent push surfaced later, as a rejected `git push`. The failure is the same
+  release-blocking one, reported earlier and more clearly.
 - The action surface (root metadata, runtime scripts, Marketplace README,
   release metadata, validation) and the Cloudflare Worker backend (`worker/`)
   now live together in this repository and deploy independently. CI validates
@@ -131,10 +146,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `versioning-tool: semantic-release-python` releases no longer break when
   Docker Hub rebuilds `python:3.14-slim-trixie`. The upstream action's
   container moved to that rolling base in v10.5.0, where its `apt install
-  ... cargo` build step fails intermittently (apt exit 100). We now pin
-  `python-semantic-release` to v10.4.1 (built `FROM python:3.13-bookworm`,
-  a stable Debian base) by commit SHA, instead of the floating `@v10` tag
-  that silently advanced to the trixie-based v10.5.x.
+  ... cargo` build step fails intermittently (apt exit 100). Diatreme no
+  longer builds that container at all — it installs the CLI from PyPI (see
+  Changed) — so the rolling base image is out of the release path entirely.
 - `versioning-tool: semantic-release-npm` no longer crashes with
   `Cannot find module '@semantic-release/changelog'` (or `/git`,
   `/github`) when the consumer's `.releaserc.json` configures

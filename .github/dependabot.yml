@@ -7,3 +7,25 @@ updates:
     groups:
       actions:
         patterns: ['*']
+
+  # Tracks the python-semantic-release pin in scripts/psr-requirements.txt, which
+  # scripts/run-python-semantic-release.sh installs. Nothing else in this repo is
+  # a Python dependency.
+  #
+  # Scoped to /scripts, not /, on purpose: Dependabot fetches manifests relative
+  # to `directory`, and the root pyproject.toml is python-semantic-release's own
+  # release metadata ([tool.semantic_release] — version, tag_format, changelog
+  # settings). It declares no dependencies, so pointing pip at / would hand
+  # Dependabot a manifest it has no business updating.
+  - package-ecosystem: pip
+    directory: /scripts
+    schedule:
+      interval: weekly
+    # CI smoke-tests the pinned CLI (see `Smoke-test the pinned
+    # python-semantic-release` in ci.yaml), so a bump that renames or drops a
+    # `version` flag fails the PR rather than a consumer's release run. A major
+    # can change psr's behaviour in ways that check cannot see — changelog
+    # rendering, commit parsing, tag formats — so majors stay a human decision.
+    ignore:
+      - dependency-name: python-semantic-release
+        update-types: ['version-update:semver-major']

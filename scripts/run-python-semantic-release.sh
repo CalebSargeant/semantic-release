@@ -17,9 +17,11 @@
 # commit_sha, release_notes) to $GITHUB_OUTPUT whenever that variable is set,
 # so the calling step exposes the same outputs the Docker action did.
 #
+# The psr version is pinned in scripts/psr-requirements.txt, beside this script,
+# where Dependabot's `pip` ecosystem can see and bump it.
+#
 # Required env:
 #   GH_TOKEN                 token psr uses to push commits/tags and call the API
-#   PSR_VERSION              python-semantic-release version to install
 #   PYTHON_BIN               interpreter used to create the venv
 #
 # Optional env (named after the upstream action inputs they replace):
@@ -68,16 +70,36 @@ bool_flag() {
 }
 
 if [ -z "${PSR_BIN:-}" ]; then
-  : "${PSR_VERSION:?PSR_VERSION is required}"
   : "${PYTHON_BIN:?PYTHON_BIN is required}"
+
+  # Resolved from this script's own location, not the cwd: action.yml runs the
+  # step with `working-directory: <caller's working-directory>`.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REQUIREMENTS="${SCRIPT_DIR}/psr-requirements.txt"
+  if [ ! -f "${REQUIREMENTS}" ]; then
+    echo "::error::Missing ${REQUIREMENTS}" >&2
+    exit 1
+  fi
+
+  # A requirements file that names no distribution is a silent trap: `pip install
+  # -r` succeeds, installs nothing, and the absence only surfaces as a missing
+  # `semantic-release` further down. That covers an empty file, an all-comments
+  # file, and one holding only pip options (`--index-url ...`), so the test is
+  # "some line starts with neither `#` nor `-`" rather than "some line is not a
+  # comment".
+  if ! grep -qE '^[[:space:]]*[^-#[:space:]]' "${REQUIREMENTS}"; then
+    echo "::error::${REQUIREMENTS} names no requirement to install" >&2
+    exit 1
+  fi
 
   # A venv keeps the install off the runner's Python, which on recent Ubuntu
   # images is PEP 668 externally-managed and rejects a bare `pip install`.
   VENV_DIR="${RUNNER_TEMP:-/tmp}/diatreme-psr-venv"
-  echo "Installing python-semantic-release==${PSR_VERSION} into ${VENV_DIR}"
+  echo "Installing into ${VENV_DIR}, pinned by ${REQUIREMENTS}:"
+  grep -vE '^[[:space:]]*(#|$)' "${REQUIREMENTS}" | sed 's/^/  /'
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --quiet \
-    "python-semantic-release==${PSR_VERSION}"
+    --requirement "${REQUIREMENTS}"
   PSR_BIN="${VENV_DIR}/bin/semantic-release"
 fi
 

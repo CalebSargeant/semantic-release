@@ -45,6 +45,36 @@ jobs:
       - name: Run Bats tests
         run: bats tests/bats
 
+      # The bats suite stubs the `semantic-release` CLI, so nothing else here ever
+      # installs the pinned version. Without this step a Dependabot bump of
+      # scripts/psr-requirements.txt would land green and only break in a
+      # consumer's release run — psr failures never surface on a PR otherwise.
+      # Install the pin for real and assert it still speaks the argv that
+      # scripts/run-python-semantic-release.sh builds.
+      - name: Smoke-test the pinned python-semantic-release
+        run: |
+          set -euo pipefail
+          venv="${RUNNER_TEMP}/psr-smoke"
+          python3 -m venv "${venv}"
+          "${venv}/bin/python" -m pip install --disable-pip-version-check --quiet \
+            --requirement scripts/psr-requirements.txt
+          "${venv}/bin/semantic-release" --version
+
+          help="$("${venv}/bin/semantic-release" version --help)"
+          missing=()
+          for flag in --commit --no-vcs-release --skip-build --as-prerelease \
+                      --prerelease-token --changelog --no-changelog \
+                      --prerelease --patch --minor --major; do
+            # Trailing boundary so `--prerelease` cannot be satisfied by
+            # `--prerelease-token` alone.
+            grep -qE -- "${flag}([^A-Za-z0-9-]|\$)" <<<"${help}" || missing+=("${flag}")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::pinned python-semantic-release no longer accepts: ${missing[*]}"
+            exit 1
+          fi
+          echo "pinned CLI accepts every flag run-python-semantic-release.sh passes"
+
   worker:
     name: Validate worker
     runs-on: ubuntu-latest

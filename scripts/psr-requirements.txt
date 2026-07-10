@@ -1,0 +1,14 @@
+# The python-semantic-release CLI that scripts/run-python-semantic-release.sh
+# installs into a throwaway venv.
+#
+# This lives in a requirements file, rather than a `PSR_VERSION` string in
+# action.yml, so that Dependabot can see it. While the release step was a `uses:`
+# on the upstream Docker action, the `github-actions` ecosystem tracked the
+# version; a pip version interpolated into a shell command is invisible to every
+# ecosystem, so the pin would silently rot. The `pip` entry in
+# .github/dependabot.yml points at this directory.
+#
+# Keep this an exact `==` pin with no other requirements: psr writes consumers'
+# changelogs, tags and version files, so a range would make releases
+# irreproducible. tests/bats/run-python-semantic-release.bats enforces both.
+python-semantic-release==10.6.1
