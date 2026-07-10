@@ -39,8 +39,14 @@
 #   RELEASE_PLEASE_CONFIG_FILE  release-please config path (extra tier-1 signal)
 #
 # Output:
-#   Writes `tool=<resolved>` to $GITHUB_OUTPUT when set; always prints the
-#   resolution to stdout.
+#   Writes `tool=<resolved>` and `config=<gitversion config path>` to
+#   $GITHUB_OUTPUT when set; always prints the resolution to stdout.
+#
+#   `config` is the path the Execute GitVersion step passes to gittools as
+#   configFilePath. It carries the ${WORKING_DIRECTORY} prefix, because
+#   detection is scoped to working-directory while gittools resolves the path
+#   against the workspace root. Empty for every non-gitversion tool, and for a
+#   gitversion repo with no config at all (GitVersion then uses its defaults).
 #
 # Exit codes:
 #   0 - a tool was resolved (passthrough or detected)
@@ -55,12 +61,58 @@ RELEASE_PLEASE_CONFIG_FILE="${RELEASE_PLEASE_CONFIG_FILE:-}"
 
 VALID="semantic-release-python semantic-release-npm gitversion release-please"
 
+# Join a ${WD}-relative path onto ${WD}. Detection is scoped to
+# working-directory, but gittools resolves configFilePath against the workspace
+# root, so the path we hand it has to carry the ${WD} prefix. A default WD of
+# '.' would otherwise produce './GitVersion.yml'; strip that so the emitted
+# value stays the plain 'GitVersion.yml' callers expect to see in logs.
+join_wd() {
+  local joined="${WD%/}/$1"
+  printf '%s' "${joined#./}"
+}
+
+# The GitVersion config path to hand to gittools, or empty for "no /config".
+#
+#   explicit gitversion-config  forwarded even when missing (absolute as-is,
+#                               relative joined onto ${WD}), so gittools raises
+#                               its own error on a bad path — an explicitly
+#                               configured file that does not exist is a bug in
+#                               the caller's config, not something to paper over.
+#   otherwise                   the discovered root marker under ${WD}, or empty
+#                               so GitVersion falls back to its built-in defaults.
+resolve_gitversion_config() {
+  if [ -n "${GITVERSION_CONFIG}" ]; then
+    case "${GITVERSION_CONFIG}" in
+      /*) printf '%s' "${GITVERSION_CONFIG}" ;;
+      *)  join_wd "${GITVERSION_CONFIG}" ;;
+    esac
+    return 0
+  fi
+  if [ -f "${WD}/GitVersion.yml" ]; then
+    join_wd "GitVersion.yml"
+  elif [ -f "${WD}/GitVersion.yaml" ]; then
+    join_wd "GitVersion.yaml"
+  fi
+}
+
 emit() {
   # $1 = resolved tool
+  local config=""
+  if [ "$1" = "gitversion" ]; then
+    config="$(resolve_gitversion_config)"
+  fi
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "tool=$1" >> "${GITHUB_OUTPUT}"
+    echo "config=${config}" >> "${GITHUB_OUTPUT}"
   fi
   echo "Resolved versioning-tool: $1"
+  if [ "$1" = "gitversion" ]; then
+    if [ -n "${config}" ]; then
+      echo "GitVersion config: ${config}"
+    else
+      echo "GitVersion config: none — GitVersion will use its built-in defaults."
+    fi
+  fi
 }
 
 # ── Explicit tool: validate against the known set and pass through unchanged ──

@@ -870,9 +870,20 @@ inputs:
     default: '6.x'
 
   gitversion-config:
-    description: 'Path to GitVersion.yml. Only used when versioning-tool is gitversion.'
+    description: |
+      Path to a GitVersion config file. Only used when the resolved versioning
+      tool is gitversion.
+
+      Empty (the default) means Diatreme looks for a `GitVersion.yml` or
+      `GitVersion.yaml` under `working-directory` and hands that to GitVersion,
+      or lets GitVersion run on its built-in defaults when neither exists. Set
+      this only to point at a config kept somewhere else — an explicit path
+      that does not exist is an error.
+
+      A relative path is resolved against `working-directory`, matching how
+      autodetection scopes its markers. An absolute path is used as-is.
     required: false
-    default: 'GitVersion.yml'
+    default: ''
 
   gitversion-appsettings-file:
     description: |
@@ -1647,7 +1658,19 @@ runs:
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
       uses: gittools/actions/gitversion/execute@v4
       with:
-        configFilePath: ${{ inputs.gitversion-config }}
+        # Resolved by the detect step rather than read from the raw input,
+        # because this action never sets `targetPath` — gittools therefore
+        # resolves configFilePath against the workspace root, while detection
+        # is scoped to `working-directory`. Taking the path from the detect
+        # step keeps the two in agreement for a subdirectory project.
+        #
+        # gittools only passes `/config` when this is non-empty, and hard-errors
+        # when it names a file that does not exist, so the detect step emits:
+        # an explicit `gitversion-config` verbatim (a bad path must still fail
+        # loudly), else the GitVersion.yml/.yaml it found under
+        # `working-directory`, else empty — which is what lets a repo resolved
+        # from a bare *.csproj/*.sln run on GitVersion's built-in defaults.
+        configFilePath: ${{ steps.resolve-tool.outputs.config }}
         # GitVersion accepts /overrideconfig flags; map force-bump onto its
         # `increment` knob. Empty force-bump leaves GitVersion's branch
         # rules in charge. gittools/actions@v4 takes one key=value per
