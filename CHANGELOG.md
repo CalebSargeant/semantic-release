@@ -102,7 +102,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `github-actions` coverage the `uses:` reference used to get. It is scoped to
   that directory rather than `/` so Dependabot does not treat the root
   `pyproject.toml` — python-semantic-release's own release metadata, which
-  declares no dependencies — as a manifest to update.
+  declares no dependencies — as a manifest to update. Bumps are validated: CI
+  installs the pin and asserts the CLI still accepts the flags this action
+  passes, and majors are held back for a human.
+
+  One behaviour does change with the bump. psr v10.5.0 added an upstream-collision
+  check, which runs on every `semantic-release-python` release because this action
+  commits and pushes: before pushing the version commit, psr re-checks the remote
+  branch and aborts with `Upstream branch has changed. Please pull the latest
+  changes and try again.` if something landed on it meanwhile. Previously the
+  concurrent push surfaced later, as a rejected `git push`. The failure is the same
+  release-blocking one, reported earlier and more clearly.
 - The action surface (root metadata, runtime scripts, Marketplace README,
   release metadata, validation) and the Cloudflare Worker backend (`worker/`)
   now live together in this repository and deploy independently. CI validates
