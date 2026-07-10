@@ -1398,41 +1398,57 @@ runs:
         RELEASE_PLEASE_CONFIG_FILE: ${{ inputs.release-please-config-file }}
       run: "${GITHUB_ACTION_PATH}/scripts/detect-versioning-tool.sh"
 
+    # python-semantic-release publishes only a Docker action, and its image is
+    # built from a Dockerfile in their repo rather than pulled from a registry.
+    # GitHub Actions builds the image of every Docker action a composite action
+    # references during job setup — before any step runs, and regardless of the
+    # step's `if:` — so referencing it cost ~1 minute on *every* Diatreme
+    # release run, including the majority that resolve to another versioning
+    # tool and skip the psr step. We install the CLI from PyPI instead; it
+    # writes the same $GITHUB_OUTPUT keys (version, released, tag, ...) that the
+    # action exposed as outputs, so `steps.psr.outputs.*` is unchanged.
+    #
+    # `update-environment: false` keeps this interpreter out of PATH for the
+    # rest of the job — the Set up Python (package publishing) step owns that.
+    # 3.13 matches the python:3.13-bookworm base of the action container we
+    # replaced.
+    - name: Set up Python (semantic-release-python)
+      id: psr-python
+      if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-python'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: '3.13'
+        update-environment: false
+
     - name: Run python-semantic-release
       id: psr
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-python'
-      # Pinned to v10.4.1 — the last release whose GitHub Action container is
-      # built FROM python:3.13-bookworm (Debian stable). v10.5.0+ switched the
-      # container to python:3.14-slim-trixie, whose `apt install ... cargo`
-      # build step breaks (apt exit 100) whenever Docker Hub rebuilds the
-      # mutable trixie base or Debian's package index shifts. The image is
-      # built at runtime from the action's Dockerfile, so a floating @v10 tag —
-      # or even a v10.5.x SHA pin — still pulls the broken base; the only fix in
-      # our control is to pin to a release whose Dockerfile uses a stable base.
-      # Our own Checkout already runs fetch-depth: 0, so we don't rely on the
-      # v10.5.0 auto-unshallow feature. Revisit once upstream restores a stable
-      # base image: https://github.com/python-semantic-release/python-semantic-release
-      uses: python-semantic-release/python-semantic-release@4d4cb0ab842247caea1963132c242c62aab1e4d5 # v10.4.1
-      with:
-        github_token: ${{ steps.auth.outputs.token }}
-        git_committer_name: github-actions[bot]
-        prerelease: ${{ steps.detect-env.outputs.is_prerelease }}
-        prerelease_token: ${{ steps.detect-env.outputs.prerelease_identifier }}
-        force: ${{ inputs.force-bump }}
-        build: false
-        changelog: ${{ inputs.changelog }}
-        # Force vcs_release off here. The action's `create-release` input
-        # is honoured downstream by the Publish GitHub Release step, which
-        # runs *after* image promotion so `release:published` listeners
-        # see the versioned image in the registry. Letting psr create the
-        # release inline (its default) would re-introduce the image-vs-
-        # release race for any caller using the python-semantic-release
-        # tool. The tag is still pushed here so the rest of the pipeline
-        # (image promote, version-file inject, etc.) has the tag to work
-        # with.
-        vcs_release: false
-        commit: true
-        directory: ${{ inputs.working-directory }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        # A plain reproducibility pin. It used to be load-bearing: v10.5.0+ moved
+        # the action container to python:3.14-slim-trixie, whose
+        # `apt install ... cargo` layer breaks (apt exit 100) whenever Docker Hub
+        # rebuilds the mutable trixie base, and the image was built from the
+        # action's Dockerfile so no SHA pin could dodge it. We no longer build
+        # that image, so bumping this is now a routine change. Our Checkout runs
+        # fetch-depth: 0, so we don't need the v10.5.0 auto-unshallow feature.
+        PSR_VERSION: '10.4.1'
+        PYTHON_BIN: ${{ steps.psr-python.outputs.python-path }}
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        INPUT_GIT_COMMITTER_NAME: github-actions[bot]
+        INPUT_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
+        INPUT_PRERELEASE_TOKEN: ${{ steps.detect-env.outputs.prerelease_identifier }}
+        INPUT_FORCE: ${{ inputs.force-bump }}
+        INPUT_CHANGELOG: ${{ inputs.changelog }}
+      # The script fixes --commit, --skip-build and --no-vcs-release. psr must
+      # not create the release inline (its default): the `create-release` input
+      # is honoured downstream by the Publish GitHub Release step, which runs
+      # *after* image promotion so `release:published` listeners see the
+      # versioned image in the registry. The tag is still pushed here so the
+      # rest of the pipeline (image promote, version-file inject, etc.) has the
+      # tag to work with.
+      run: "${GITHUB_ACTION_PATH}/scripts/run-python-semantic-release.sh"
 
     - name: Set up Node.js (semantic-release-npm)
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-npm'
