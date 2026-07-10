@@ -22,9 +22,12 @@ RUBY
   [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "Execute GitVersion forwards gitversion-config verbatim" {
-  # The empty default only reaches gittools if nothing coerces it on the way —
-  # e.g. a `|| 'GitVersion.yml'` fallback in the expression.
+@test "Execute GitVersion takes configFilePath from the detect step" {
+  # gittools resolves configFilePath against the workspace root (this action
+  # never sets targetPath), while detection is scoped to working-directory.
+  # Reading the raw input here would desync the two for a subdirectory project,
+  # and would also reopen the door to a `|| 'GitVersion.yml'` fallback in the
+  # expression, which is what made GitVersion.yml mandatory in the first place.
   command -v ruby >/dev/null || skip "ruby not available"
   run ruby - <<'RUBY'
 require "yaml"
@@ -34,7 +37,7 @@ step = doc.fetch("runs").fetch("steps").find { |s| s["id"] == "gitversion" }
 abort "no step with id 'gitversion'" if step.nil?
 
 actual = step.fetch("with").fetch("configFilePath")
-expected = "${{ inputs.gitversion-config }}"
+expected = "${{ steps.resolve-tool.outputs.config }}"
 abort "expected #{expected.inspect}, got #{actual.inspect}" unless actual == expected
 RUBY
   [ "$status" -eq 0 ] || { echo "$output"; false; }
