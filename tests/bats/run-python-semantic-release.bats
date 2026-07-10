@@ -141,9 +141,26 @@ psr_args() {
   export INPUT_FORCE=bogus
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::Ignoring force-bump 'bogus'"* ]]
+  [[ "$output" == *"::warning::Ignoring force-bump:"* ]]
+  [[ "$output" == *"force-bump was: bogus"* ]]
   [[ "$(psr_args)" != *"bogus"* ]]
   [[ "$(psr_args)" == *"version"* ]]
+}
+
+@test "an unrecognised force-bump cannot forge a workflow command" {
+  # A workflow_dispatch input can carry newlines. The runner only treats a line
+  # that *starts* with `::` as a command, so the guarantee to assert is that no
+  # emitted line begins with the forged one — `printf %q` escapes the newline,
+  # keeping the value on a single line.
+  export INPUT_FORCE='bogus
+::error::forged'
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  refuted=0
+  while IFS= read -r emitted; do
+    [[ "${emitted}" == "::error::forged"* ]] && refuted=1
+  done <<< "$output"
+  [ "${refuted}" -eq 0 ]
 }
 
 @test "an empty force-bump adds no flag" {
@@ -198,7 +215,8 @@ psr_args() {
 @test "action.yml no longer references the Docker-based upstream action" {
   # Guards the regression this script exists to fix: a `uses:` on a Docker
   # action makes every release run build the image during job setup, even
-  # when the step is skipped.
-  run grep -n "uses: python-semantic-release/" "${BATS_TEST_DIRNAME}/../../action.yml"
+  # when the step is skipped. Matched loosely so a re-add with different
+  # spacing can't slip past.
+  run grep -nE "uses:[[:space:]]*python-semantic-release/" "${BATS_TEST_DIRNAME}/../../action.yml"
   [ "$status" -ne 0 ]
 }
