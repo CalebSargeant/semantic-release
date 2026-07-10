@@ -27,6 +27,13 @@ resolved() {
   grep '^tool=' "${GITHUB_OUTPUT}" | cut -d= -f2
 }
 
+# The `config=` output: the GitVersion config path handed to gittools as
+# configFilePath. Empty for every non-gitversion tool. Matched with sed rather
+# than `cut -d=` so a path is never truncated at an '=' inside it.
+emitted_config() {
+  grep '^config=' "${GITHUB_OUTPUT}" | sed 's/^config=//'
+}
+
 # ── Explicit passthrough ─────────────────────────────────────────────────────
 
 @test "explicit tool is passed through unchanged" {
@@ -242,4 +249,94 @@ resolved() {
   detect_auto
   [ "$status" -eq 0 ]
   [ "$(resolved)" = "gitversion" ]
+}
+
+# ── The `config` output (configFilePath for gittools) ────────────────────────
+#
+# gittools resolves configFilePath against the workspace root, because the
+# action never sets targetPath, while detection is scoped to working-directory.
+# The emitted path therefore carries the ${WD} prefix so the two agree.
+
+@test "config: discovered GitVersion.yml is emitted with its working-directory prefix" {
+  echo 'mode: ContinuousDelivery' > "${WORK}/GitVersion.yml"
+  detect_auto
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "gitversion" ]
+  [ "$(emitted_config)" = "${WORK}/GitVersion.yml" ]
+}
+
+@test "config: the GitVersion.yaml spelling is discovered too" {
+  echo 'mode: ContinuousDelivery' > "${WORK}/GitVersion.yaml"
+  detect_auto
+  [ "$status" -eq 0 ]
+  [ "$(emitted_config)" = "${WORK}/GitVersion.yaml" ]
+}
+
+@test "config: a subdirectory GitVersion.yml keeps its working-directory prefix" {
+  # Regression: Execute GitVersion runs at the workspace root, so a bare
+  # 'GitVersion.yml' would miss a config living under working-directory and
+  # silently fall back to GitVersion's built-in defaults.
+  mkdir -p "${WORK}/service"
+  echo 'mode: ContinuousDelivery' > "${WORK}/service/GitVersion.yml"
+  cd "${WORK}"
+  run env INPUT_VERSIONING_TOOL=auto WORKING_DIRECTORY="service" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "gitversion" ]
+  [ "$(emitted_config)" = "service/GitVersion.yml" ]
+}
+
+@test "config: a gitversion repo with no config emits empty" {
+  # The *.csproj-only case: nothing to point gittools at, so GitVersion runs on
+  # its built-in defaults instead of erroring on a missing file.
+  echo '<Project/>' > "${WORK}/app.csproj"
+  detect_auto
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "gitversion" ]
+  [ -z "$(emitted_config)" ]
+}
+
+@test "config: explicit gitversion-config is emitted even when the file is missing" {
+  # A bad explicit path must reach gittools so it fails loudly, rather than
+  # being swallowed into a silent built-in-defaults run.
+  cd "${WORK}"
+  run env INPUT_VERSIONING_TOOL=gitversion WORKING_DIRECTORY="." \
+      GITVERSION_CONFIG="build/absent.yml" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(emitted_config)" = "build/absent.yml" ]
+}
+
+@test "config: a relative gitversion-config is joined onto working-directory" {
+  mkdir -p "${WORK}/service/build"
+  echo 'mode: ContinuousDelivery' > "${WORK}/service/build/gv.yml"
+  cd "${WORK}"
+  run env INPUT_VERSIONING_TOOL=gitversion WORKING_DIRECTORY="service" \
+      GITVERSION_CONFIG="build/gv.yml" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(emitted_config)" = "service/build/gv.yml" ]
+}
+
+@test "config: an absolute gitversion-config is passed through unchanged" {
+  echo 'mode: ContinuousDelivery' > "${WORK}/gv.yml"
+  run env INPUT_VERSIONING_TOOL=gitversion WORKING_DIRECTORY="${WORK}" \
+      GITVERSION_CONFIG="${WORK}/gv.yml" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(emitted_config)" = "${WORK}/gv.yml" ]
+}
+
+@test "config: working-directory '.' does not leak a './' prefix" {
+  echo 'mode: ContinuousDelivery' > "${WORK}/GitVersion.yml"
+  cd "${WORK}"
+  run env INPUT_VERSIONING_TOOL=auto WORKING_DIRECTORY="." "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(emitted_config)" = "GitVersion.yml" ]
+}
+
+@test "config: a non-gitversion tool emits an empty config" {
+  # No GITVERSION_CONFIG here: an existing one would be a second tier-1 signal
+  # and the run would fail as a conflict rather than reach the emit.
+  printf '[tool.semantic_release]\n' > "${WORK}/pyproject.toml"
+  detect_auto
+  [ "$status" -eq 0 ]
+  [ "$(resolved)" = "semantic-release-python" ]
+  [ -z "$(emitted_config)" ]
 }

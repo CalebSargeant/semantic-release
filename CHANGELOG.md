@@ -106,6 +106,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `versioning-tool: gitversion` no longer requires a `GitVersion.yml`. The
+  `gitversion-config` input defaulted to the literal path `GitVersion.yml`,
+  which Diatreme forwards to `gittools/actions/gitversion/execute` as
+  `configFilePath` — an input that upstream treats as an *optional override*
+  and hard-errors on (`GitVersion configuration file not found at
+  GitVersion.yml`) when it names a missing file. Every GitVersion repo without
+  that file failed, which under `versioning-tool: auto` meant any repo resolved
+  to `gitversion` from a bare `*.csproj`/`*.sln` — exactly the repos that carry
+  no GitVersion config. The default is now `''`, so GitVersion picks up a
+  `GitVersion.yml`/`GitVersion.yaml` when present and otherwise runs on its
+  built-in defaults. Setting `gitversion-config` explicitly still errors when
+  the path is missing.
+
+  `configFilePath` is now taken from `scripts/detect-versioning-tool.sh`
+  (new `config` output) rather than the raw input. Diatreme never sets
+  gittools' `targetPath`, so GitVersion runs at the workspace root while
+  detection is scoped to `working-directory`; the detect step emits the config
+  path with its `working-directory` prefix so the two agree. A subdirectory
+  project whose `GitVersion.yml` lives under `working-directory` is now handed
+  that file instead of silently falling back to GitVersion's defaults, and a
+  relative `gitversion-config` is resolved against `working-directory` to match
+  how autodetection scopes its markers.
 - `versioning-tool: semantic-release-python` releases no longer break when
   Docker Hub rebuilds `python:3.14-slim-trixie`. The upstream action's
   container moved to that rolling base in v10.5.0, where its `apt install
