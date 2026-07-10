@@ -36,11 +36,33 @@ setup() {
   [[ "$output" == *"follows TBD naming convention"* ]]
 }
 
-@test "accepts EXTRA_BRANCH_PREFIXES given as a comma/space list" {
+@test "accepts EXTRA_BRANCH_PREFIXES given as a comma/space/pipe list" {
   run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike, wip" "${SCRIPT}"
   [ "$status" -eq 0 ]
   run env GITHUB_HEAD_REF="spike/poc" EXTRA_BRANCH_PREFIXES="spike wip" "${SCRIPT}"
   [ "$status" -eq 0 ]
+  # `|` doubles as the internal delimiter the separators normalise to, so it is
+  # the spelling most likely to regress unnoticed.
+  run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike|wip" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+}
+
+@test "tolerates a trailing slash on an extra prefix" {
+  run env GITHUB_HEAD_REF="spike/poc" EXTRA_BRANCH_PREFIXES="spike/" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+}
+
+@test "rejects a regex metacharacter in EXTRA_BRANCH_PREFIXES" {
+  # Unvalidated, '.*' would widen the alternation until every branch passes and
+  # '(' would break the regex outright, rejecting valid branches with a bash
+  # error. Both must fail loudly instead of quietly changing what the gate means.
+  run env GITHUB_HEAD_REF="garbage/x" EXTRA_BRANCH_PREFIXES=".*" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid prefix"* ]]
+
+  run env GITHUB_HEAD_REF="feat/ok" EXTRA_BRANCH_PREFIXES="(" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid prefix"* ]]
 }
 
 @test "does not accept a prefix outside the extras list" {

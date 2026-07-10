@@ -629,6 +629,11 @@ inputs:
       Additional branch-name prefixes to accept beyond the built-in set
       (mode: ci, enforce_branch_naming: true). Comma-, space-, or
       pipe-separated. Example: 'spike wip' accepts spike/* and wip/* branches.
+
+      Each prefix must be letters, digits, '_' or '-' (a trailing '/' is
+      allowed and ignored). Anything else is rejected: the prefixes are
+      matched as a regex, where a metacharacter would silently widen or
+      break the check rather than add a prefix.
     required: false
     default: ''
 

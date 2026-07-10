@@ -18,6 +18,24 @@ extra="$(printf '%s' "${EXTRA_BRANCH_PREFIXES:-}" | tr -s ' \t\n,|' '|')"
 extra="${extra#|}"
 extra="${extra%|}"
 
+# Each token lands verbatim inside an ERE alternation, so a stray metacharacter
+# silently changes what the gate means: '.*' accepts every branch, and '(' makes
+# `[[ =~ ]]` reject even valid ones with a raw bash error. A trailing '/' is the
+# natural way to spell a prefix, so tolerate it; reject anything else loudly.
+if [[ -n "${extra}" ]]; then
+  IFS='|' read -r -a extra_tokens <<< "${extra}"
+  clean=()
+  for tok in "${extra_tokens[@]}"; do
+    tok="${tok%/}"
+    if [[ ! "${tok}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      echo "::error::extra-branch-prefixes contains an invalid prefix '${tok}'; use only letters, digits, '_' or '-'."
+      exit 1
+    fi
+    clean+=("${tok}")
+  done
+  extra="$(IFS='|'; printf '%s' "${clean[*]}")"
+fi
+
 prefixes="${default_prefixes}|${PROMOTE_PREFIX}"
 if [[ -n "${extra}" ]]; then
   prefixes="${prefixes}|${extra}"
