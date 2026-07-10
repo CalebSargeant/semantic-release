@@ -7,3 +7,10 @@ updates:
     groups:
       actions:
         patterns: ['*']
+    ignore:
+      # action.yml pins this to v10.4.1 on purpose: v10.5.0+ builds its action
+      # container FROM python:3.14-slim-trixie, whose `apt install ... cargo`
+      # step fails intermittently (apt exit 100). The break only surfaces in a
+      # release run, never on a PR, so an auto-bump would land green and rot.
+      # Drop this once upstream is back on a stable base image. See action.yml.
+      - dependency-name: python-semantic-release/python-semantic-release

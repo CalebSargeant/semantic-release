@@ -3,7 +3,7 @@
 SCRIPT="${BATS_TEST_DIRNAME}/../../scripts/check-branch-naming.sh"
 
 setup() {
-  unset GITHUB_HEAD_REF PROMOTE_BRANCH_PREFIX || true
+  unset GITHUB_HEAD_REF PROMOTE_BRANCH_PREFIX EXTRA_BRANCH_PREFIXES || true
 }
 
 @test "accepts allowed TBD type prefix" {
@@ -13,7 +13,7 @@ setup() {
 }
 
 @test "accepts every documented TBD type prefix" {
-  for prefix in feat fix chore hotfix docs refactor perf test ci style; do
+  for prefix in feat fix chore hotfix docs refactor perf test ci style build revert deploy release; do
     run env GITHUB_HEAD_REF="${prefix}/some-change" "${SCRIPT}"
     [ "$status" -eq 0 ]
   done
@@ -28,6 +28,53 @@ setup() {
 @test "accepts custom PROMOTE_BRANCH_PREFIX" {
   run env GITHUB_HEAD_REF="release/staging/1.2.3" PROMOTE_BRANCH_PREFIX="release" "${SCRIPT}"
   [ "$status" -eq 0 ]
+}
+
+@test "accepts a single EXTRA_BRANCH_PREFIXES entry" {
+  run env GITHUB_HEAD_REF="spike/poc" EXTRA_BRANCH_PREFIXES="spike" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"follows TBD naming convention"* ]]
+}
+
+@test "accepts EXTRA_BRANCH_PREFIXES given as a comma/space/pipe list" {
+  run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike, wip" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  run env GITHUB_HEAD_REF="spike/poc" EXTRA_BRANCH_PREFIXES="spike wip" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  # `|` doubles as the internal delimiter the separators normalise to, so it is
+  # the spelling most likely to regress unnoticed.
+  run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike|wip" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+}
+
+@test "tolerates a trailing slash on an extra prefix" {
+  run env GITHUB_HEAD_REF="spike/poc" EXTRA_BRANCH_PREFIXES="spike/" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+}
+
+@test "rejects a regex metacharacter in EXTRA_BRANCH_PREFIXES" {
+  # Unvalidated, '.*' would widen the alternation until every branch passes and
+  # '(' would break the regex outright, rejecting valid branches with a bash
+  # error. Both must fail loudly instead of quietly changing what the gate means.
+  run env GITHUB_HEAD_REF="garbage/x" EXTRA_BRANCH_PREFIXES=".*" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid prefix"* ]]
+
+  run env GITHUB_HEAD_REF="feat/ok" EXTRA_BRANCH_PREFIXES="(" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid prefix"* ]]
+}
+
+@test "does not accept a prefix outside the extras list" {
+  run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike" "${SCRIPT}"
+  [ "$status" -eq 1 ]
+}
+
+@test "error message lists the resolved allowed types" {
+  run env GITHUB_HEAD_REF="wip/experiment" EXTRA_BRANCH_PREFIXES="spike" "${SCRIPT}"
+  [[ "$output" == *"Allowed types: "* ]]
+  [[ "$output" == *"deploy"* ]]
+  [[ "$output" == *"spike"* ]]
 }
 
 @test "rejects disallowed prefix" {
