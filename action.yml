@@ -1453,18 +1453,12 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
-        # A plain reproducibility pin. It used to be load-bearing: v10.5.0+ moved
-        # the action container to python:3.14-slim-trixie, whose
-        # `apt install ... cargo` layer breaks (apt exit 100) whenever Docker Hub
-        # rebuilds the mutable trixie base, and the image was built from the
-        # action's Dockerfile so no SHA pin could dodge it. We no longer build
-        # that image, so bumping this is now a routine change. Our Checkout runs
-        # fetch-depth: 0, so we don't need the v10.5.0 auto-unshallow feature.
-        #
-        # Bump this by hand. It is a pip version in a shell string, so Dependabot
-        # cannot see it — the `github-actions` ecosystem only tracked it while
-        # this step was a `uses:` on the upstream Docker action.
-        PSR_VERSION: '10.4.1'
+        # The psr version is pinned in scripts/psr-requirements.txt, which the
+        # script installs with `pip install -r`. It lives in a requirements file
+        # so Dependabot's `pip` ecosystem keeps it current — a version string
+        # here would be invisible to every ecosystem, and the `github-actions`
+        # one only tracked it while this step was a `uses:` on the upstream
+        # Docker action.
         PYTHON_BIN: ${{ steps.psr-python.outputs.python-path }}
         GH_TOKEN: ${{ steps.auth.outputs.token }}
         # `PSR_BIN` is a bats-only hook: when set, the script skips the install

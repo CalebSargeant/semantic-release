@@ -7,3 +7,17 @@ updates:
     groups:
       actions:
         patterns: ['*']
+
+  # Tracks the python-semantic-release pin in scripts/psr-requirements.txt, which
+  # scripts/run-python-semantic-release.sh installs. Nothing else in this repo is
+  # a Python dependency.
+  #
+  # Scoped to /scripts, not /, on purpose: Dependabot fetches manifests relative
+  # to `directory`, and the root pyproject.toml is python-semantic-release's own
+  # release metadata ([tool.semantic_release] — version, tag_format, changelog
+  # settings). It declares no dependencies, so pointing pip at / would hand
+  # Dependabot a manifest it has no business updating.
+  - package-ecosystem: pip
+    directory: /scripts
+    schedule:
+      interval: weekly
