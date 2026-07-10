@@ -94,7 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   action container to `python:3.14-slim-trixie`, whose `apt install ... cargo`
   layer breaks whenever Docker Hub rebuilds the mutable base, and the image was
   built from the action's Dockerfile so no SHA pin could avoid it. Diatreme no
-  longer builds that image, so bumping the version is now a routine change.
+  longer builds that image, so bumping the version is now a routine change. The
+  Dependabot `ignore` rule that held the pin in place is removed with it — but so
+  is Dependabot's visibility: the version is now a pip requirement in a shell
+  string, not a `uses:` reference, so **it must be bumped by hand**.
 - The action surface (root metadata, runtime scripts, Marketplace README,
   release metadata, validation) and the Cloudflare Worker backend (`worker/`)
   now live together in this repository and deploy independently. CI validates

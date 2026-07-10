@@ -108,11 +108,15 @@ fi
 
 # An unrecognised force level is a caller typo, not a reason to abort a release:
 # warn and let the commit messages decide the bump, as upstream's entrypoint does.
+# The offending value is printed on its own line rather than interpolated into the
+# `::warning::` command — a workflow_dispatch input may contain newlines, and a
+# workflow command must not carry untrusted text.
 case "${INPUT_FORCE:-}" in
   "")                           : ;;
   prerelease|patch|minor|major) ARGS+=("--${INPUT_FORCE}") ;;
   *)
-    echo "::warning::Ignoring force-bump '${INPUT_FORCE}': expected one of prerelease, patch, minor, major"
+    echo "::warning::Ignoring force-bump: expected one of prerelease, patch, minor, major"
+    printf 'force-bump was: %q\n' "${INPUT_FORCE}"
     ;;
 esac
 

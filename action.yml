@@ -1431,7 +1431,7 @@ runs:
     - name: Set up Python (semantic-release-python)
       id: psr-python
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'semantic-release-python'
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: '3.13'
         update-environment: false
@@ -1449,9 +1449,17 @@ runs:
         # action's Dockerfile so no SHA pin could dodge it. We no longer build
         # that image, so bumping this is now a routine change. Our Checkout runs
         # fetch-depth: 0, so we don't need the v10.5.0 auto-unshallow feature.
+        #
+        # Bump this by hand. It is a pip version in a shell string, so Dependabot
+        # cannot see it — the `github-actions` ecosystem only tracked it while
+        # this step was a `uses:` on the upstream Docker action.
         PSR_VERSION: '10.4.1'
         PYTHON_BIN: ${{ steps.psr-python.outputs.python-path }}
         GH_TOKEN: ${{ steps.auth.outputs.token }}
+        # `PSR_BIN` is a bats-only hook: when set, the script skips the install
+        # and execs it. Pin it empty so a caller's workflow/job `env:` — which
+        # composite steps inherit — can never redirect what we execute.
+        PSR_BIN: ''
         INPUT_GIT_COMMITTER_NAME: github-actions[bot]
         INPUT_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
         INPUT_PRERELEASE_TOKEN: ${{ steps.detect-env.outputs.prerelease_identifier }}
