@@ -74,6 +74,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **python-semantic-release now runs from a pip install instead of the upstream
+  Docker action, cutting ~1 minute off every release run.** GitHub Actions builds
+  the image of any Docker action a composite action references during job setup —
+  before any step runs, and regardless of that step's `if:` condition. Referencing
+  `python-semantic-release/python-semantic-release` therefore made *every* Diatreme
+  release run spend ~55s on a `Build python-semantic-release/...` step, including
+  the majority of repos that resolve to `gitversion`, `release-please` or
+  `semantic-release-npm` and then skip the step entirely. Upstream publishes no
+  pre-built image, so a `docker://` reference was not an option. The new
+  `scripts/run-python-semantic-release.sh` installs the pinned CLI into a
+  throwaway venv (~5.7 MB of wheels, no compiler needed) and invokes it directly;
+  because the CLI writes its own `$GITHUB_OUTPUT` keys, `steps.psr.outputs.*` and
+  the `Normalize outputs` step are unchanged. Repos on another versioning tool now
+  pay nothing at all. Requires the runner to reach PyPI, as the
+  `semantic-release-npm` path already requires npm.
+- The `10.4.1` pin on python-semantic-release is now a plain reproducibility pin
+  rather than a workaround. It previously could not be raised: v10.5.0+ moved the
+  action container to `python:3.14-slim-trixie`, whose `apt install ... cargo`
+  layer breaks whenever Docker Hub rebuilds the mutable base, and the image was
+  built from the action's Dockerfile so no SHA pin could avoid it. Diatreme no
+  longer builds that image, so bumping the version is now a routine change. The
+  Dependabot `ignore` rule that held the pin in place is removed with it — but so
+  is Dependabot's visibility: the version is now a pip requirement in a shell
+  string, not a `uses:` reference, so **it must be bumped by hand**.
 - The action surface (root metadata, runtime scripts, Marketplace README,
   release metadata, validation) and the Cloudflare Worker backend (`worker/`)
   now live together in this repository and deploy independently. CI validates
