@@ -855,9 +855,16 @@ inputs:
     default: '6.x'
 
   gitversion-config:
-    description: 'Path to GitVersion.yml. Only used when versioning-tool is gitversion.'
+    description: |
+      Path to a GitVersion config file. Only used when the resolved versioning
+      tool is gitversion.
+
+      Empty (the default) hands the decision to GitVersion, which picks up a
+      root `GitVersion.yml`/`GitVersion.yaml` when one exists and otherwise
+      runs on its built-in defaults. Set this only to point at a config kept
+      somewhere else — an explicit path that does not exist is an error.
     required: false
-    default: 'GitVersion.yml'
+    default: ''
 
   gitversion-appsettings-file:
     description: |
@@ -1631,6 +1638,12 @@ runs:
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
       uses: gittools/actions/gitversion/execute@v4
       with:
+        # Forwarded verbatim, empty included: gittools only passes `/config`
+        # when this is non-empty, and hard-errors when it names a file that
+        # does not exist. A non-empty default would therefore make
+        # GitVersion.yml mandatory for every gitversion repo — including the
+        # `versioning-tool: auto` ones resolved from a bare *.csproj/*.sln,
+        # which by definition carry no GitVersion config.
         configFilePath: ${{ inputs.gitversion-config }}
         # GitVersion accepts /overrideconfig flags; map force-bump onto its
         # `increment` knob. Empty force-bump leaves GitVersion's branch

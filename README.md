@@ -553,6 +553,11 @@ tie so a Python service that also ships a `package.json` still resolves to
 `semantic-release-python`. If nothing matches at all, the run **errors** with
 the full marker list.
 
+A tier&#8209;2 match resolves the *tool*, not a config file: a `.csproj`-only
+repo runs GitVersion on its built-in defaults, and no `GitVersion.yml` is
+required. The same holds for the other tools — each falls back to its own
+defaults when its config file is absent.
+
 ## Inputs
 
 All inputs are optional unless noted. Defaults match `action.yml`.
@@ -634,7 +639,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `version-file-yaml-path` | `.appVersion` | YAML path for version-file injection. |
 | `aggregate-clickup-tickets` | `false` | Append ClickUp ticket links from the release range. |
 | `gitversion-spec` | `6.x` | GitVersion action version spec. |
-| `gitversion-config` | `GitVersion.yml` | GitVersion config file. |
+| `gitversion-config` | `''` | GitVersion config file. Empty lets GitVersion pick up a root `GitVersion.yml`/`GitVersion.yaml`, or run on its built-in defaults when neither exists. |
 | `gitversion-appsettings-file` | `''` | Deprecated; use `version-file`. |
 | `gitversion-appsettings-version-path` | `''` | Deprecated; use `version-file-json-path`. |
 | `release-please-release-type` | `simple` | release-please release type. |
