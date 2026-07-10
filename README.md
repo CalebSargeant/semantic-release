@@ -623,7 +623,8 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `package-name` | `''` | Image name for `package-ecosystem: container`. Defaults to `<owner>/<repo>`. |
 | `npm-provenance` | `false` | Publish to npmjs with `npm publish --provenance`. npmjs-only; needs `id-token: write`. |
 | `pypi-trusted-publishing` | `false` | Upload to public PyPI/TestPyPI via GitHub OIDC instead of `package-token`. Needs `id-token: write`. |
-| `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. |
+| `enforce_branch_naming` | `true` | Enforce TBD PR branch naming in `mode: ci`. Allowed prefixes: `feat`, `fix`, `chore`, `hotfix`, `docs`, `refactor`, `perf`, `test`, `ci`, `style`, `build`, `revert`, `deploy`, `release` (plus the promote prefix). |
+| `extra-branch-prefixes` | `''` | Extra branch prefixes to accept beyond the built-in set (comma/space/pipe-separated), e.g. `spike wip`. Letters, digits, `_` and `-` only; anything else is rejected. |
 | `aggregate-github-projects` | `false` | Append linked Projects v2 items to release docs. |
 | `move-github-projects-on-release` | `false` | Move linked Projects v2 items after release. |
 | `github-projects-target-status` | `Released` | Target Projects v2 status. |
