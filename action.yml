@@ -784,13 +784,22 @@ inputs:
 
       Honoured by:
         - semantic-release-python: passed as the upstream `force` input.
+        - semantic-release-npm: commit-message gating is skipped and the
+          next version is derived by bumping the latest stable tag at the
+          requested level. On prerelease branches this cuts the next
+          `<version>-<identifier>.N` tag; on stable branches the tag is
+          created directly and semantic-release itself is skipped, so
+          config-driven publish plugins (changelog commit, npm publish,
+          ...) do not run for that release — the GitHub Release still
+          comes from the deferred publish step. Promotion PRs ignore it
+          (their version always comes from the promoted tag).
         - gitversion: passed to gittools/actions@v4 as
           `overrideConfig: increment=Major|Minor|Patch`.
 
-      Ignored by semantic-release-npm and release-please — those tools
-      have no clean equivalent and a forced bump would conflict with the
-      tool's own logic. Wire your `workflow_dispatch` `bump` input to
-      this input from the caller workflow.
+      Ignored by release-please — it has no clean equivalent and a
+      forced bump would conflict with the tool's own logic. Wire your
+      `workflow_dispatch` `bump` input to this input from the caller
+      workflow.
     required: false
     default: ''
 
@@ -1500,6 +1509,7 @@ runs:
         DETECT_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
         INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
         INPUT_PROMOTE_PREFIX: ${{ inputs.promote-branch-prefix }}
+        INPUT_FORCE_BUMP: ${{ inputs.force-bump }}
       run: |
         set -euo pipefail
         IS_PRERELEASE="${DETECT_IS_PRERELEASE}"
@@ -1532,6 +1542,17 @@ runs:
             BRANCH_VERSION=$(echo "${HEAD_REF}" | cut -d'/' -f3)
             NEXT_VER=$(echo "${BRANCH_VERSION}" | sed 's/-[a-zA-Z][^.]*\.[0-9]*$//')
             echo "Promotion: base version ${NEXT_VER} from branch ${HEAD_REF}"
+          elif [ -n "${INPUT_FORCE_BUMP}" ]; then
+            # Forced bump (typically a workflow_dispatch run with no
+            # qualifying conventional commits): skip both the
+            # qualifying-commit pre-check and the semantic-release dry-run,
+            # and derive the next version by bumping the latest stable tag
+            # at the requested level. The result flows into the shared
+            # `-${IDENTIFIER}.N` numbering below, so an existing prerelease
+            # line for that version is continued rather than restarted.
+            NEXT_VER=$(FORCE_BUMP="${INPUT_FORCE_BUMP}" TAG_PREFIX="${PREFIX}" \
+              "${GITHUB_ACTION_PATH}/scripts/force-bump-version.sh")
+            echo "force-bump=${INPUT_FORCE_BUMP}: next version ${NEXT_VER}"
           else
             # Direct push to trunk: skip if no new qualifying commits since the
             # last prerelease tag for this identifier (prevents spurious releases
@@ -1649,6 +1670,21 @@ runs:
             # versioned images in the registry.
             echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
             echo "released=true"         >> "$GITHUB_OUTPUT"
+          elif [ -n "${INPUT_FORCE_BUMP}" ]; then
+            # Forced stable bump: semantic-release has no per-run force
+            # knob, so bump the latest stable tag ourselves and push it via
+            # the shared race-safe helper (it emits `released=true|false`
+            # to $GITHUB_OUTPUT). semantic-release itself is skipped, so
+            # config-driven publish plugins (changelog commit, npm publish,
+            # ...) do not run for a forced release; the GitHub Release is
+            # still published by the deferred publish step.
+            NEXT_VER=$(FORCE_BUMP="${INPUT_FORCE_BUMP}" TAG_PREFIX="${PREFIX}" \
+              "${GITHUB_ACTION_PATH}/scripts/force-bump-version.sh")
+            NEW_TAG="${PREFIX}${NEXT_VER}"
+            echo "force-bump=${INPUT_FORCE_BUMP}: creating stable tag ${NEW_TAG}"
+            TAG="${NEW_TAG}" MESSAGE="chore(release): ${NEW_TAG}" \
+              "${GITHUB_ACTION_PATH}/scripts/push-release-tag.sh"
+            echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
           else
             # Direct push or workflow_dispatch: run semantic-release normally.
             # Use || true so non-critical post-hook failures (e.g. PR label

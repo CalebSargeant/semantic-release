@@ -633,7 +633,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `working-directory` | `.` | Repository subdirectory where versioning runs. |
 | `create-release` | `true` | Create GitHub Release when the backend supports it. |
 | `changelog` | `true` | Let supported backends update changelogs. |
-| `force-bump` | `''` | Force semantic-release-python bump level. |
+| `force-bump` | `''` | Force the bump level (`patch`/`minor`/`major`) instead of deriving it from commits (semantic-release-python, semantic-release-npm, gitversion; ignored by release-please). |
 | `version-override` | `''` | Create this exact version instead of deriving one. |
 | `version-file` | `''` | Tracked file to update with the released version. |
 | `version-file-json-path` | `.Application.Version` | JSON path for version-file injection. |
