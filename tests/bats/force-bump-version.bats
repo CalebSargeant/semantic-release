@@ -63,6 +63,15 @@ bumped() {
   [ "$(bumped patch)" = "1.2.4" ]
 }
 
+@test "leading-zero components are junk, not a bump base" {
+  # v1.08.3 would sort above v1.2.3 and its 08 would hit bash's octal
+  # arithmetic parse — semver forbids leading zeros, so it is filtered.
+  tag v1.2.3
+  tag v1.08.3
+  tag v01.9.9
+  [ "$(bumped patch)" = "1.2.4" ]
+}
+
 @test "versions sort numerically, not lexically" {
   tag v1.9.0
   tag v1.10.0

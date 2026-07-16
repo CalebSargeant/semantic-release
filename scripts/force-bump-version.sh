@@ -42,11 +42,13 @@ case "${FORCE_BUMP}" in
 esac
 
 # Latest stable tag: match the prefix as a glob, strip it as a literal
-# string, and keep only exact X.Y.Z remainders. `sort -V` picks the
-# highest so 1.10.0 beats 1.9.0 (lexical sort would not).
+# string, and keep only exact X.Y.Z remainders. Semver-strict: a
+# leading-zero component (v1.08.3) is junk, not a bump base — bash
+# arithmetic would parse it as octal and quietly not bump. `sort -V`
+# picks the highest so 1.10.0 beats 1.9.0 (lexical sort would not).
 BASE=$(git tag -l "${PREFIX}*" | while IFS= read -r tag; do
   rest="${tag#"${PREFIX}"}"
-  if [[ "${rest}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  if [[ "${rest}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
     printf '%s\n' "${rest}"
   fi
 done | sort -V | tail -1)
