@@ -121,6 +121,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `force-bump` is no longer a silent no-op for
+  `versioning-tool: semantic-release-npm`. The input's own docs pitch it at
+  exactly the "workflow_dispatch with no qualifying commits" case, but the
+  semantic-release-npm step never read it — a caller wiring a `bump` dispatch
+  input through `force-bump` got "no release" anyway. When set
+  (patch/minor/major), commit-message gating is now skipped and the next
+  version is derived by bumping the latest stable tag at the requested level
+  (new helper: `scripts/force-bump-version.sh`): prerelease branches cut the
+  next `<version>-<identifier>.N` tag (continuing an existing prerelease
+  line), and stable branches create the tag directly through the shared
+  race-safe push helper. On a forced stable release semantic-release itself
+  is skipped, so config-driven publish plugins (changelog commit, npm
+  publish, ...) do not run — the GitHub Release still comes from the
+  deferred publish step. Promotion PRs ignore `force-bump`; release-please
+  still does too (documented).
 - `versioning-tool: gitversion` no longer requires a `GitVersion.yml`. The
   `gitversion-config` input defaulted to the literal path `GitVersion.yml`,
   which Diatreme forwards to `gittools/actions/gitversion/execute` as
