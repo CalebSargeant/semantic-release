@@ -278,6 +278,75 @@ PY
   [[ "$output" != *"# The python-semantic-release CLI"* ]]
 }
 
+# Lay out a setup-python-style interpreter under $1: <prefix>/bin/python beside a
+# <prefix>/lib dir. The stub records the LD_LIBRARY_PATH it was invoked with to
+# ${LD_PATH_FILE}, then services the `-m venv <dir>` call the script makes by
+# planting the venv's python (a no-op) and the semantic-release stub it execs.
+make_shared_python() {
+  local prefix="$1"
+  mkdir -p "${prefix}/bin" "${prefix}/lib"
+  export PYTHON_BIN="${prefix}/bin/python"
+  cat > "${PYTHON_BIN}" <<'PY'
+#!/usr/bin/env bash
+printf '%s' "${LD_LIBRARY_PATH:-<unset>}" > "${LD_PATH_FILE}"
+[ "$1" = "-m" ] && [ "$2" = "venv" ] || { echo "unexpected python argv: $*" >&2; exit 1; }
+mkdir -p "$3/bin"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$3/bin/python"
+chmod +x "$3/bin/python"
+cp "${PSR_STUB}" "$3/bin/semantic-release"
+PY
+  chmod +x "${PYTHON_BIN}"
+}
+
+@test "puts the interpreter's lib dir on LD_LIBRARY_PATH so a shared-library CPython can start" {
+  # actions/setup-python's --enable-shared CPython loads libpython from a sibling
+  # lib/ dir; update-environment:false means the action never exports that path,
+  # and some self-hosted runners ignore the build's RPATH, so a direct call dies
+  # with "error while loading shared libraries: libpython...". The export reaches
+  # the base interpreter (asserted here), and thereby the venv and CLI it spawns.
+  unset PSR_BIN LD_LIBRARY_PATH
+  export LD_PATH_FILE="${WORK}/ld-path"
+  make_shared_python "${WORK}/py"
+
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(cat "${LD_PATH_FILE}")" = "${WORK}/py/lib" ]
+}
+
+@test "prepends the lib dir to an existing LD_LIBRARY_PATH instead of replacing it" {
+  unset PSR_BIN
+  export LD_PATH_FILE="${WORK}/ld-path"
+  export LD_LIBRARY_PATH=/preexisting/lib
+  make_shared_python "${WORK}/py"
+
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(cat "${LD_PATH_FILE}")" = "${WORK}/py/lib:/preexisting/lib" ]
+}
+
+@test "leaves LD_LIBRARY_PATH untouched when the interpreter has no sibling lib dir" {
+  # A statically linked interpreter (no <prefix>/lib beside it) needs no loader
+  # help and must not be handed a path that does not exist.
+  unset PSR_BIN LD_LIBRARY_PATH
+  export LD_PATH_FILE="${WORK}/ld-path"
+  mkdir -p "${WORK}/nolib/bin"
+  export PYTHON_BIN="${WORK}/nolib/bin/python"
+  cat > "${PYTHON_BIN}" <<'PY'
+#!/usr/bin/env bash
+printf '%s' "${LD_LIBRARY_PATH:-<unset>}" > "${LD_PATH_FILE}"
+[ "$1" = "-m" ] && [ "$2" = "venv" ] || { echo "unexpected python argv: $*" >&2; exit 1; }
+mkdir -p "$3/bin"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$3/bin/python"
+chmod +x "$3/bin/python"
+cp "${PSR_STUB}" "$3/bin/semantic-release"
+PY
+  chmod +x "${PYTHON_BIN}"
+
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(cat "${LD_PATH_FILE}")" = "<unset>" ]
+}
+
 # Run a copy of the script beside a requirements file with the given content.
 # A copy, because the script resolves the file relative to its own location.
 run_with_requirements() {

@@ -72,6 +72,25 @@ bool_flag() {
 if [ -z "${PSR_BIN:-}" ]; then
   : "${PYTHON_BIN:?PYTHON_BIN is required}"
 
+  # actions/setup-python installs a dynamically linked CPython (built
+  # --enable-shared) whose interpreter loads libpython3.<minor>.so from the
+  # sibling `lib/` directory. action.yml gives that setup step
+  # `update-environment: false` to keep the interpreter off PATH for the rest of
+  # the job, which also means the action never exports a loader path for it. The
+  # build's own RPATH covers the lookup on GitHub-hosted runners, but some
+  # self-hosted runners don't honour it, so a direct `${PYTHON_BIN}` call there
+  # aborts before running anything:
+  #   error while loading shared libraries: libpython3.13.so.1.0: cannot open ...
+  # Put the interpreter's lib dir on the loader path — exported, so the base
+  # interpreter, the venv it creates (whose python re-execs the same shared
+  # library), and the semantic-release entry point below all resolve libpython.
+  # Guarded on the dir existing so a statically linked interpreter, or one laid
+  # out differently, is left untouched rather than handed a bogus path.
+  PYTHON_LIB_DIR="$(dirname "$(dirname "${PYTHON_BIN}")")/lib"
+  if [ -d "${PYTHON_LIB_DIR}" ]; then
+    export LD_LIBRARY_PATH="${PYTHON_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  fi
+
   # Resolved from this script's own location, not the cwd: action.yml runs the
   # step with `working-directory: <caller's working-directory>`.
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
