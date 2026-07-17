@@ -30,3 +30,28 @@
 @test "pull/tag/push fallback warns about losing multi-arch" {
   grep -Eq 'multi-arch' action.yml
 }
+
+# ── stale pr-<N> promotion guard ─────────────────────────────────────────────
+# A PR merged while behind the branch tip keeps a CI image built from old
+# code; promoting it ships that old code under the new release tag. The CI
+# build must stamp provenance labels and the promote step must verify them.
+
+@test "CI build stamps the OCI revision label on every bake target" {
+  grep -Fq '*.labels.org.opencontainers.image.revision=${BUILD_REVISION}' action.yml
+}
+
+@test "CI build stamps the git-tree provenance label on every bake target" {
+  grep -Fq '*.labels.com.magmamoose.diatreme.git-tree=${BUILD_TREE}' action.yml
+}
+
+@test "promote verifies pr-<N> provenance via verify-promote-source.sh" {
+  grep -Eq 'RELEASE_COMMIT=.*verify-promote-source\.sh|verify-promote-source\.sh' action.yml
+  # The gate feeds the retag decision: an unverified source must not retag.
+  grep -Eq 'SOURCE_TAG_SUFFIX.*&&.*VERIFIED' action.yml
+}
+
+@test "provenance gate applies to first-env (pr-<N>) sources only" {
+  # Later environments intentionally promote the previous environment's
+  # artifact — their trees never match the new release commit.
+  grep -Eq 'SOURCE_TAG_SUFFIX.*&&.*IS_FIRST_ENV' action.yml
+}
