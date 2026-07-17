@@ -692,4 +692,6 @@ Use immutable tags or SHAs for strict reproducibility. `@v1` is the floating maj
 
 Docker promotion prefers `docker buildx imagetools create` so multi-arch manifests are preserved. For the known GitHub Enterprise Packages referrers-index parse error, Diatreme falls back to pull/tag/push for single-arch images, then to a fresh Docker Bake build if retagging cannot work.
 
+Before promoting a `pr-<N>` image, Diatreme verifies it was actually built from the code being released. `mode: ci` stamps every image with `org.opencontainers.image.revision` (build commit) and `com.magmamoose.diatreme.git-tree` (that commit's git tree) — injected at build time, so no bake-file changes are needed. `mode: release` compares the image's tree against the release commit's tree; a PR that was merged while behind the branch tip fails the comparison (its CI image is stale) and the release rebuilds from the release checkout instead of promoting old code under the new tag. Images that cannot be verified — including ones built by pre-provenance Diatreme versions — also take the fresh-build path. Later-environment promotions (e.g. `v1.2.3-rc.1` → `v1.2.3`) are exempt: carrying the previous environment's artifact forward unchanged is their purpose.
+
 A Magma Moose product.

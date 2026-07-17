@@ -71,6 +71,10 @@ npm run check   # typecheck + tests + wrangler dry-run
 - `mode: release` resolves auth, determines the target environment, delegates
   versioning to the selected backend, normalizes outputs, optionally promotes
   Docker images, publishes GitHub Releases, and can create promotion PRs.
+  Before promoting a `pr-<N>` image it verifies the image's provenance labels
+  (stamped by `mode: ci`) against the release commit's git tree via
+  `scripts/verify-promote-source.sh`; stale or unverifiable images are rebuilt
+  from the release checkout instead of promoted.
 - `mode: enable-auto-merge` enables native GitHub auto-merge for a specific PR.
 - Auth selection is centralized in `scripts/resolve-auth-token.sh`; public-App
   token exchange is requested by `scripts/request-public-app-token.sh`, which

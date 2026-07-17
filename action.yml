@@ -1160,10 +1160,21 @@ runs:
           CACHE_ARGS+=(--set "${TARGET}.cache-to=type=gha,mode=max,scope=${SCOPE}")
         done
 
+        # Stamp build provenance on every target so `mode: release` can prove a
+        # pr-<N> image was built from the code it is about to release before
+        # promoting it (scripts/verify-promote-source.sh). The tree hash is the
+        # one that survives squash/rebase merges; the revision is the standard
+        # OCI label. `--set` overrides only these two keys in the consumer's
+        # bake file.
+        BUILD_REVISION=$(git rev-parse HEAD)
+        BUILD_TREE=$(git rev-parse 'HEAD^{tree}')
+
         docker buildx bake \
           -f "${INPUT_BAKE_FILE}" \
           "${INPUT_BAKE_TARGET}" \
           "${CACHE_ARGS[@]}" \
+          --set "*.labels.org.opencontainers.image.revision=${BUILD_REVISION}" \
+          --set "*.labels.com.magmamoose.diatreme.git-tree=${BUILD_TREE}" \
           --push
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2117,6 +2128,7 @@ runs:
 
         # Resolve source tag suffix
         SOURCE_TAG_SUFFIX=""
+        RELEASE_COMMIT=""
         if [ "${IS_FIRST_ENV}" == "true" ]; then
           # Find the PR associated with this release tag via GitHub API
           COMMIT_SHA=$(gh api "repos/${REPO_FULL}/git/ref/tags/${TAG}" \
@@ -2149,7 +2161,10 @@ runs:
 
             if [ -n "${PR_NUMBER}" ]; then
               SOURCE_TAG_SUFFIX="pr-${PR_NUMBER}"
-              echo "Source: pr-${PR_NUMBER}"
+              # The commit the PR walk stopped on is the PR's merge/squash
+              # commit — the provenance anchor the pr-<N> image must match.
+              RELEASE_COMMIT="${CURRENT_SHA}"
+              echo "Source: pr-${PR_NUMBER} (merged as ${RELEASE_COMMIT})"
             else
               echo "::warning::Could not find PR for tag ${TAG} — will fall back to fresh build"
             fi
@@ -2175,7 +2190,26 @@ runs:
           NEW_TAG="${IMAGE}:${TAG}"
 
           PROMOTED="false"
-          if [ -n "${SOURCE_TAG_SUFFIX}" ]; then
+
+          # Provenance gate for pr-<N> sources: a PR merged while behind the
+          # branch tip keeps the CI image built from its last (stale)
+          # synthetic merge, and promoting it ships old code under the new
+          # release tag (nievah shipped v1.4.0-era code as v1.6.1 this way).
+          # verify-promote-source.sh compares the git tree the image was
+          # built from — labels stamped by mode: ci — against the release
+          # commit's tree; a mismatch, or an image that cannot be verified,
+          # drops to the fresh-build fallback below. Later-environment
+          # promotions are exempt: carrying the previous environment's
+          # artifact forward unchanged is their entire point.
+          VERIFIED="true"
+          if [ -n "${SOURCE_TAG_SUFFIX}" ] && [ "${IS_FIRST_ENV}" == "true" ]; then
+            if ! SOURCE="${IMAGE}:${SOURCE_TAG_SUFFIX}" RELEASE_COMMIT="${RELEASE_COMMIT}" REPO_FULL="${REPO_FULL}" \
+                 "${GITHUB_ACTION_PATH}/scripts/verify-promote-source.sh"; then
+              VERIFIED="false"
+            fi
+          fi
+
+          if [ -n "${SOURCE_TAG_SUFFIX}" ] && [ "${VERIFIED}" == "true" ]; then
             SOURCE="${IMAGE}:${SOURCE_TAG_SUFFIX}"
 
             # Primary retag: `docker buildx imagetools create`. Preserves
