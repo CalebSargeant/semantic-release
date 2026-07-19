@@ -1118,6 +1118,16 @@ runs:
     - name: Set up Docker Buildx (CI)
       if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      with:
+        # Self-hosted docker-in-docker runners (e.g. a k3s cluster) have a reduced
+        # pod-network MTU (flannel VXLAN ~1450), but buildkit's default CNI bridge for
+        # RUN steps is 1500 — so apt/npm/curl in a Dockerfile RUN blackhole large packets
+        # (TLS handshakes, package downloads) and hang until timeout. Run buildkit and its
+        # RUN sandboxes on the runner's host network instead of the 1500 CNI bridge, so
+        # they inherit the correct MTU. No-op on GitHub-hosted runners (normal MTU); the
+        # trade-off is RUN steps share the runner's netns, fine for trusted CI image builds.
+        driver-opts: network=host
+        buildkitd-flags: --oci-worker-net=host
 
     - name: Log in to container registry (CI)
       if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
@@ -2054,6 +2064,12 @@ runs:
     - name: Set up Docker Buildx (release)
       if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      with:
+        # See the CI Buildx step: run buildkit + RUN sandboxes on the host network so
+        # docker-in-docker self-hosted runners with a reduced pod MTU (flannel VXLAN
+        # ~1450) don't blackhole large packets in RUN steps. No-op on GitHub-hosted.
+        driver-opts: network=host
+        buildkitd-flags: --oci-worker-net=host
 
     - name: Log in to container registry (release)
       if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
