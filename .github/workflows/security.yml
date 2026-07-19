@@ -1,12 +1,16 @@
 # Org Chargate security gate (MegaLinter-backed, net-new PR-diff gating), consumed
-# as the Chargate MARKETPLACE ACTION. On PRs it gates on net-new findings; on push
-# to the default branch it runs a non-gating baseline scan and ships the full SARIF.
+# as the Chargate MARKETPLACE ACTION. It gates on net-new findings on pull requests.
+#
+# pull_request only: the push-to-default baseline scan was dropped. Every merge to
+# the default branch (including the Caldrith-managed and Diatreme version-bump/tag
+# commits) otherwise kicks off a full ~15-min MegaLinter run — the single biggest
+# source of wasted CI. PR-time net-new gating is retained; the default-branch
+# baseline SARIF on the Security tab is simply no longer refreshed (it needs GHAS on
+# private repos anyway, and the code_scanning ruleset gate is CodeQL, not chargate).
 name: Security
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
