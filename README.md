@@ -589,7 +589,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `registry` | `ghcr.io` | Container registry. |
 | `registry-username` | `''` | Explicit registry login username. |
 | `registry-password` | `''` | Explicit registry login password or token. |
-| `platforms` | `linux/amd64` | Target platforms for CI builds and fallback fresh builds. |
+| `platforms` | `''` (empty) | Platforms override, e.g. `linux/amd64,linux/arm64`. Empty defers to the repo's `docker-bake.hcl` `PLATFORMS` default (does not override it). |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
 | `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires a resolved image name (explicit `image_name` or bake-detected). |
 | `image-scan-severity` | `CRITICAL,HIGH` | Trivy severity filter for findings and the gate. The SBOM still inventories all components. |
