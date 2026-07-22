@@ -371,6 +371,16 @@ inputs:
     required: false
     default: 'false'
 
+  image-sign:
+    description: |
+      Sign the released image(s) with cosign (keyless / Sigstore) and attach SLSA
+      build provenance (GitHub Artifact Attestations), by IMMUTABLE DIGEST, in
+      `mode: release` after promotion/build. Off by default. Requires
+      `id-token: write`, `attestations: write`, and `packages: write` on the job.
+      Verify with `cosign verify …` and `gh attestation verify oci://… --owner <org>`.
+    required: false
+    default: 'false'
+
   dependency-track-url:
     description: |
       Dependency-Track base URL (e.g. https://dtrack.example.com). When set,
@@ -975,6 +985,9 @@ outputs:
   image-findings:
     description: 'Count of image-scan findings at/above image-scan-severity across all scanned images.'
     value: ${{ steps.scan-image.outputs.image-findings }}
+  image-signed:
+    description: 'Number of released image(s) cosign-signed (mode: release with image-sign).'
+    value: ${{ steps.sign-image.outputs.signed_count }}
   resolved-image-name:
     description: |
       The base image name Diatreme used for image workflows — the explicit
@@ -2312,6 +2325,64 @@ runs:
               --push
           fi
         done
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # RELEASE MODE — sign the released image(s) + SLSA build provenance (opt-in)
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Signs whatever the promote step shipped — a retag of the verified pr-<N>
+    # image OR a fresh release build — by IMMUTABLE DIGEST, so it covers both
+    # paths and only ever signs real releases (never throwaway PR images). This
+    # makes a cluster's cosign `verifyImages` admission policy enforceable for
+    # these images. Opt-in via `image-sign: true`; needs `attestations: write`
+    # (plus the `id-token` / `packages: write` the release image flow already needs).
+    - name: Install cosign
+      if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true' && inputs.image-sign == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: Sign released images (cosign)
+      id: sign-image
+      if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true' && inputs.image-sign == 'true'
+      shell: bash
+      env:
+        OWNER: ${{ github.repository_owner }}
+        INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
+        NORMALIZE_VERSION: ${{ steps.normalize.outputs.version }}
+        NORMALIZE_TAG: ${{ steps.normalize.outputs.tag }}
+      run: |
+        set -euo pipefail
+
+        OWNER_LOWER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
+        export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
+        export REGISTRY="${INPUT_REGISTRY}"
+        export VERSION="${NORMALIZE_VERSION}"
+        # Empty INPUT_PLATFORMS ⇒ defer to docker-bake.hcl (see the build step).
+        if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
+
+        # Re-derive the released refs exactly like Promote images did: the repo
+        # from each bake target's canonical tag, retagged to the release tag.
+        BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
+        IMAGE_REFS=""
+        while IFS= read -r repo; do
+          [ -n "${repo}" ] && IMAGE_REFS="${IMAGE_REFS}${repo}:${NORMALIZE_TAG}"$'\n'
+        done < <(echo "${BAKE_OUTPUT}" | jq -r '.target[].tags[0] // empty | split(":")[0]' | sort -u)
+
+        echo "Released image(s) to sign:"
+        printf '%s' "${IMAGE_REFS}"
+        IMAGE_REFS="${IMAGE_REFS}" "${GITHUB_ACTION_PATH}/scripts/sign-image.sh"
+
+    - name: Attest build provenance (SLSA)
+      if: inputs.mode == 'release' && steps.normalize.outputs.released == 'true' && inputs.image-sign == 'true' && steps.sign-image.outputs.primary_digest != ''
+      uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      with:
+        subject-name: ${{ steps.sign-image.outputs.primary_subject }}
+        subject-digest: ${{ steps.sign-image.outputs.primary_digest }}
+        push-to-registry: true
 
     # ═════════════════════════════════════════════════════════════════════════
     # RELEASE MODE — Native package publishing (opt-in)
