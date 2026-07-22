@@ -308,9 +308,15 @@ inputs:
     default: ''
 
   platforms:
-    description: 'Target platforms (comma-separated) for CI builds and fallback fresh builds.'
+    description: >-
+      Target platforms (comma-separated), e.g. "linux/amd64,linux/arm64".
+      Empty (the default) DEFERS to the repo's docker-bake.hcl — its own
+      `variable "PLATFORMS"` default / target `platforms` decides. Set this
+      only to force platforms regardless of the bake file. (Previously this
+      defaulted to linux/amd64 and was exported unconditionally, silently
+      overriding a repo's multi-arch bake default → amd64-only images.)
     required: false
-    default: 'linux/amd64'
+    default: ''
 
   build-github-token:
     description: |
@@ -1143,7 +1149,7 @@ runs:
       env:
         VERSION: ${{ inputs.version-override != '' && steps.version-override.outputs.version || format('pr-{0}', github.event.pull_request.number) }}
         REGISTRY: ${{ inputs.registry }}
-        PLATFORMS: ${{ inputs.platforms }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
         BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
         OWNER: ${{ github.repository_owner }}
         REF_NAME: ${{ github.ref_name }}
@@ -1155,6 +1161,13 @@ runs:
 
         OWNER_LOWER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
         export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
+
+        # Override the bake file's platforms ONLY when the caller set `platforms`
+        # explicitly. Empty (the default) leaves $PLATFORMS unset so the repo's
+        # docker-bake.hcl `variable "PLATFORMS"` default decides. NB: don't `export
+        # PLATFORMS=""` — bake treats an empty value as set and `split(",", "")`
+        # yields [""], an invalid platform. Unset is what defers to the default.
+        if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
 
         echo "IMAGE_NAME: ${IMAGE_NAME}"
         echo "VERSION:    ${VERSION}"
@@ -1236,7 +1249,9 @@ runs:
         export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
         export REGISTRY="${INPUT_REGISTRY}"
         export VERSION="${VERSION}"
-        export PLATFORMS="${INPUT_PLATFORMS}"
+        # Empty INPUT_PLATFORMS ⇒ defer to docker-bake.hcl's own PLATFORMS default
+        # (see the pr-<N> build step). Never export an empty value — it breaks bake.
+        if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
 
         # One ref per bake target — the canonical tag (tags[0]), which carries
         # the pr-<N> version. This is the exact image that release promotes by
@@ -2116,7 +2131,9 @@ runs:
         export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
         export REGISTRY="${INPUT_REGISTRY}"
         export VERSION="${VERSION}"
-        export PLATFORMS="${INPUT_PLATFORMS}"
+        # Empty INPUT_PLATFORMS ⇒ defer to docker-bake.hcl's own PLATFORMS default
+        # (see the pr-<N> build step). Never export an empty value — it breaks bake.
+        if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
 
         # Discover all bake targets
         BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
