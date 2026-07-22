@@ -22,7 +22,7 @@ while IFS= read -r ref; do
   [ -n "${ref}" ] || continue
   repo="${ref%:*}"
   # Parse the default imagetools output for portability across buildx versions.
-  digest="$(docker buildx imagetools inspect "${ref}" 2>/dev/null | awk '/^Digest:/{print $2; exit}')"
+  digest="$(docker buildx imagetools inspect "${ref}" 2>/dev/null | awk '/^Digest:/{print $2; exit}' || true)"
   if [ -z "${digest}" ]; then
     echo "::warning::could not resolve a digest for ${ref}; skipping signing"
     continue
