@@ -1,0 +1,45 @@
+site_name: Diatreme
+site_description: >-
+  Release/deployment orchestration — a GitHub Marketplace composite action plus
+  the Cloudflare Worker GitHub App backend that supports it.
+site_url: https://magmamoose.github.io/diatreme/
+repo_url: https://github.com/MagmaMoose/diatreme
+repo_name: MagmaMoose/diatreme
+docs_dir: docs
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Setup: setup.md
+  - Using the action: action.md
+  - Worker: worker.md
+  - Contributing: contributing.md

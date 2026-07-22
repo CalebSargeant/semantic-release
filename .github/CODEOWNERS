@@ -1,0 +1,22 @@
+# Code owners for Diatreme.
+# GitHub auto-requests review from an owner when they are NOT the PR author, so on
+# a solo repo this is largely documentary today. Pair it with a branch-protection
+# rule "Require review from Code Owners" once a second maintainer exists.
+
+# Default owner for everything.
+*                       @CalebSargeant
+
+# Composite action surface.
+/action.yml             @CalebSargeant
+/scripts/               @CalebSargeant
+/tests/                 @CalebSargeant
+
+# Cloudflare Worker surface.
+/worker/                @CalebSargeant
+
+# CI / release / security automation.
+/.github/               @CalebSargeant
+
+# Security & release-critical metadata.
+/SECURITY.md            @CalebSargeant
+/pyproject.toml         @CalebSargeant
