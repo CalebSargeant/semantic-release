@@ -17,12 +17,12 @@ action. Full contributor rules live in `AGENTS.md` (read it before non-trivial e
 - `AGENTS.md` = full editing rules & local-validation commands. `README.md` =
   Marketplace user guide. `worker/README.md` = worker endpoints/config.
 - Load `.claude/decisions/` (ADRs) and `.claude/sessions/` (summaries) ONLY when
-  the task relates to them — never by default.
+  the task relates to them, never by default.
 
 ## [tooling]
 
 - Prefer targeted line-range reads over whole files; use `PROJECT_INDEX.json` to
-  find the location. `action.yml` is ~2740 lines — never read it whole.
+  find the location. `action.yml` is ~2740 lines, never read it whole.
 - grep/find/glob: return matching paths and matched lines only.
 - Commands that can flood output: pipe through `head`/`tail`/`grep` or redirect to
   `.claude/last_output.txt` and read ranges. Don't paste thousands of lines.

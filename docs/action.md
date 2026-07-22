@@ -1,7 +1,7 @@
 # Using the action
 
 This page is a task-oriented tour. The **exhaustive input/output tables** live in
-the [repository README](https://github.com/MagmaMoose/diatreme#readme) — this page
+the [repository README](https://github.com/MagmaMoose/diatreme#readme), this page
 does not duplicate them so they cannot drift.
 
 ## Modes
@@ -31,11 +31,11 @@ does not duplicate them so they cannot drift.
 under `working-directory`, so one shared release workflow can serve repos on
 different tools. Detection is two-tier:
 
-1. **A tool's own release config wins** — `pyproject.toml` `[tool.semantic_release]`,
+1. **A tool's own release config wins**: `pyproject.toml` `[tool.semantic_release]`,
    `.releaserc*` / `release.config.*`, `GitVersion.yml`,
    `release-please-config.json` / `.release-please-manifest.json`.
-2. **Falls back to ecosystem manifests** — `pyproject.toml`/`setup.py`,
-   `package.json`, `*.csproj`/`*.sln` — with a fixed precedence
+2. **Falls back to ecosystem manifests**: `pyproject.toml`/`setup.py`,
+   `package.json`, `*.csproj`/`*.sln`, with a fixed precedence
    (`semantic-release-python` → `semantic-release-npm` → `gitversion`).
 
 Conflicting tier-1 configs, or no markers at all, fail with an actionable error.
