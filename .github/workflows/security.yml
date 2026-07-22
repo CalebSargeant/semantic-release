@@ -21,7 +21,7 @@ jobs:
   chargate:
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/chargate@dca4055cf347aab7f4d703edb1482817b50171b6 # v2.7.0
+      - uses: magmamoose/chargate@eaac494291b73dd9586875ba8aaed658ca24eb6c # v2.8.0
         with:
           defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
           defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
