@@ -105,6 +105,52 @@ teardown() {
   [ "$(git -C "${CLONE}" config --get user.email)" = "github-actions[bot]@users.noreply.github.com" ]
 }
 
+@test "emits latest_tag on a successful push" {
+  cd "${CLONE}"
+  run env TAG=v7.1.0 "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "latest_tag=v7.1.0" "${GITHUB_OUTPUT}"
+  grep -Fq "released=true" "${GITHUB_OUTPUT}"
+}
+
+@test "emits latest_tag on a no-op (tag already on remote), released=false" {
+  cd "${CLONE}"
+  git -C "${CLONE}" tag v7.2.0
+  git -C "${CLONE}" push origin v7.2.0 >/dev/null
+  git -C "${CLONE}" tag -d v7.2.0
+
+  run env TAG=v7.2.0 "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "latest_tag=v7.2.0" "${GITHUB_OUTPUT}"
+  grep -Fq "released=false" "${GITHUB_OUTPUT}"
+}
+
+@test "emits release_notes only on a real release when RELEASE_NOTES is set" {
+  cd "${CLONE}"
+  run env TAG=v7.3.0 RELEASE_NOTES="Pre-release rc.1 for version 7.3.0" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "release_notes=Pre-release rc.1 for version 7.3.0" "${GITHUB_OUTPUT}"
+}
+
+@test "does NOT emit release_notes on a no-op even when RELEASE_NOTES is set" {
+  cd "${CLONE}"
+  git -C "${CLONE}" tag v7.4.0
+  git -C "${CLONE}" push origin v7.4.0 >/dev/null
+  git -C "${CLONE}" tag -d v7.4.0
+
+  run env TAG=v7.4.0 RELEASE_NOTES="should not appear" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "released=false" "${GITHUB_OUTPUT}"
+  ! grep -Fq "release_notes=" "${GITHUB_OUTPUT}"
+}
+
+@test "no RELEASE_NOTES set → success still exits 0 (no dangling release_notes)" {
+  cd "${CLONE}"
+  run env TAG=v7.5.0 "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  ! grep -Fq "release_notes=" "${GITHUB_OUTPUT}"
+}
+
 @test "stderr capture file is cleaned up under RUNNER_TEMP" {
   cd "${CLONE}"
   export RUNNER_TEMP="${WORK}/runner-tmp"

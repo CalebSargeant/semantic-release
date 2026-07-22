@@ -1,5 +1,6 @@
 name: 'Diatreme'
 description: 'Semantic release orchestration for TBD/BBD pipelines with Docker image promotion and promotion PR automation.'
+author: 'MagmaMoose'
 
 branding:
   icon: 'git-branch'
@@ -1004,7 +1005,7 @@ runs:
           inputs.app-id != '' &&
           inputs.app-private-key != ''
         )
-      uses: actions/create-github-app-token@v3
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         app-id: ${{ inputs.app-id }}
         private-key: ${{ inputs.app-private-key }}
@@ -1036,7 +1037,7 @@ runs:
 
     # ── 2. Checkout ─────────────────────────────────────────────────────────
     - name: Checkout
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0
         fetch-tags: true
@@ -1609,42 +1610,17 @@ runs:
             fi
             NEW_TAG="${PREFIX}${NEXT_VER}-${IDENTIFIER}.${PRE_NUM}"
             echo "Creating prerelease tag: ${NEW_TAG}"
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            REMOTE_URL=$(git remote get-url origin)
-            AUTHED_URL=$(echo "${REMOTE_URL}" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")
-
-            # Concurrency safety: a parallel run may have just published
-            # the same tag. Check the remote first; on push race we re-
-            # check and exit gracefully.
-            if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${NEW_TAG}" 2>/dev/null | grep -Fq "refs/tags/${NEW_TAG}"; then
-              echo "::notice::Tag ${NEW_TAG} already exists on remote (parallel run won the race). Treating as no-op release."
-              echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-              echo "released=false"        >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            git tag "${NEW_TAG}"
-            if ! git push "${AUTHED_URL}" "${NEW_TAG}" 2>/tmp/tag_push.err; then
-              if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${NEW_TAG}" 2>/dev/null | grep -Fq "refs/tags/${NEW_TAG}"; then
-                echo "::notice::Tag ${NEW_TAG} now exists on remote (parallel run beat us between check and push). Skipping."
-                git tag -d "${NEW_TAG}" 2>/dev/null || true
-                echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-                echo "released=false"        >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "::error::Failed to push tag ${NEW_TAG}: $(cat /tmp/tag_push.err 2>/dev/null | head -3)"
-              exit 1
-            fi
-            # GitHub Release is published in a later step, after image
-            # promotion, so downstream `release:published` listeners see
-            # versioned images in the registry. The custom prerelease
-            # note is threaded through outputs so the deferred publish
-            # step preserves the original message format instead of
-            # falling back to GitHub's auto-generated notes.
-            echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-            echo "released=true"         >> "$GITHUB_OUTPUT"
-            echo "release_notes=Pre-release ${IDENTIFIER}.${PRE_NUM} for version ${NEXT_VER}" >> "$GITHUB_OUTPUT"
+            # Create + push the prerelease tag via the shared race-safe helper
+            # (handles https + git@ remotes and a per-invocation stderr temp
+            # file), which emits latest_tag + released. The GitHub Release is
+            # published in a later step, after image promotion, so downstream
+            # `release:published` listeners see versioned images in the registry;
+            # the custom prerelease note is threaded through `release_notes` —
+            # emitted ONLY on a real release, so the deferred publish step keeps
+            # the original message instead of GitHub's auto-generated notes.
+            TAG="${NEW_TAG}" \
+            RELEASE_NOTES="Pre-release ${IDENTIFIER}.${PRE_NUM} for version ${NEXT_VER}" \
+              "${GITHUB_ACTION_PATH}/scripts/push-release-tag.sh"
           else
             echo "No relevant commits for prerelease — skipping"
             EXISTING_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -1660,37 +1636,12 @@ runs:
             STABLE_VER=$(echo "${BRANCH_VERSION}" | sed 's/-[a-zA-Z][^.]*\.[0-9]*$//')
             NEW_TAG="${PREFIX}${STABLE_VER}"
             echo "Stable release: ${NEW_TAG} from promotion branch ${HEAD_REF}"
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            REMOTE_URL=$(git remote get-url origin)
-            AUTHED_URL=$(echo "${REMOTE_URL}" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")
-
-            # Concurrency safety: same race protection as the prerelease
-            # path above — a parallel run may have already cut this stable.
-            if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${NEW_TAG}" 2>/dev/null | grep -Fq "refs/tags/${NEW_TAG}"; then
-              echo "::notice::Tag ${NEW_TAG} already exists on remote (parallel run won the race). Treating as no-op release."
-              echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-              echo "released=false"        >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            git tag "${NEW_TAG}"
-            if ! git push "${AUTHED_URL}" "${NEW_TAG}" 2>/tmp/tag_push.err; then
-              if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${NEW_TAG}" 2>/dev/null | grep -Fq "refs/tags/${NEW_TAG}"; then
-                echo "::notice::Tag ${NEW_TAG} now exists on remote (parallel run beat us). Skipping."
-                git tag -d "${NEW_TAG}" 2>/dev/null || true
-                echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-                echo "released=false"        >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "::error::Failed to push tag ${NEW_TAG}: $(cat /tmp/tag_push.err 2>/dev/null | head -3)"
-              exit 1
-            fi
-            # GitHub Release is published in a later step, after image
-            # promotion, so downstream `release:published` listeners see
-            # versioned images in the registry.
-            echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-            echo "released=true"         >> "$GITHUB_OUTPUT"
+            # Create + push the stable tag via the shared race-safe helper (same
+            # https + git@ + per-invocation-tmp handling as the prerelease path);
+            # it emits latest_tag + released. The GitHub Release is published in a
+            # later step, after image promotion, so downstream `release:published`
+            # listeners see versioned images in the registry.
+            TAG="${NEW_TAG}" "${GITHUB_ACTION_PATH}/scripts/push-release-tag.sh"
           elif [ -n "${INPUT_FORCE_BUMP}" ]; then
             # Forced stable bump: semantic-release has no per-run force
             # knob, so bump the latest stable tag ourselves and push it via
@@ -1705,7 +1656,6 @@ runs:
             echo "force-bump=${INPUT_FORCE_BUMP}: creating stable tag ${NEW_TAG}"
             TAG="${NEW_TAG}" MESSAGE="chore(release): ${NEW_TAG}" \
               "${GITHUB_ACTION_PATH}/scripts/push-release-tag.sh"
-            echo "latest_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
           else
             # Direct push or workflow_dispatch: run semantic-release normally.
             # Use || true so non-critical post-hook failures (e.g. PR label
@@ -1724,14 +1674,14 @@ runs:
 
     - name: Install GitVersion
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
-      uses: gittools/actions/gitversion/setup@v4
+      uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
       with:
         versionSpec: ${{ inputs.gitversion-spec }}
 
     - name: Execute GitVersion
       id: gitversion
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'gitversion'
-      uses: gittools/actions/gitversion/execute@v4
+      uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
       with:
         # Resolved by the detect step rather than read from the raw input,
         # because this action never sets `targetPath` — gittools therefore
@@ -1826,7 +1776,7 @@ runs:
     - name: Run release-please
       id: release-please
       if: inputs.mode == 'release' && inputs.version-override == '' && steps.resolve-tool.outputs.tool == 'release-please'
-      uses: googleapis/release-please-action@v5
+      uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
       with:
         token: ${{ steps.auth.outputs.token }}
         release-type: ${{ inputs.release-please-release-type }}
@@ -2284,12 +2234,15 @@ runs:
 
           if [ "${PROMOTED}" == "false" ]; then
             echo "Fresh build fallback for ${IMAGE} (${TARGET})"
-            EXTRA_TAGS=""
-            [ "${IS_PRERELEASE}" == "false" ] && EXTRA_TAGS="--set ${TARGET}.tags=${IMAGE}:latest"
+            # `docker buildx bake --set <target>.tags=` REPLACES the tag list, so
+            # a second `--set <target>.tags=:latest` would drop ${NEW_TAG} and the
+            # release version would never be pushed on this path. Pass both tags in
+            # ONE comma-joined override so the version tag is always included.
+            BAKE_TAGS="${NEW_TAG}"
+            [ "${IS_PRERELEASE}" == "false" ] && BAKE_TAGS="${NEW_TAG},${IMAGE}:latest"
             docker buildx bake \
               -f "${INPUT_BAKE_FILE}" "${TARGET}" \
-              --set "${TARGET}.tags=${NEW_TAG}" \
-              ${EXTRA_TAGS} \
+              --set "${TARGET}.tags=${BAKE_TAGS}" \
               --set "${TARGET}.cache-from=type=gha,scope=buildkit-${TARGET}" \
               --set "${TARGET}.cache-to=type=gha,mode=max,scope=buildkit-${TARGET}" \
               --push
