@@ -90,8 +90,11 @@ run_signed() {
 
 # ── signing behaviour ───────────────────────────────────────────────────────
 
-@test "IMAGE_REFS unset -> exit 1" {
-  run_signed -u IMAGE_REFS "${SCRIPT}"
+@test "IMAGE_REFS unset/empty -> exit 1" {
+  # Use an empty assignment rather than `env -u` so the env invocation
+  # `env PATH=… IMAGE_REFS='' …` is correct: env options must precede
+  # NAME=VALUE assignments, and `run_signed` injects PATH= first.
+  run_signed IMAGE_REFS='' "${SCRIPT}"
   [ "$status" -eq 1 ]
 }
 
