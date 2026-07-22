@@ -24,6 +24,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dockerfile build fallback (no `docker-bake.hcl` required).** In the image
+  path Diatreme now detects the build definition: with a Docker Bake file
+  (`docker-bake.hcl`, or `docker-bake.json` at the default) it builds via
+  `docker buildx bake` exactly as before; with **no** bake file but a
+  `dockerfile` present it builds the image directly with `docker buildx build`,
+  honouring the same knobs (`platforms`, the computed
+  `${registry}/${image_name}:${version}` tag(s) plus `:latest` on stable
+  releases, provenance labels, GitHub Actions cache, the `build-github-token`
+  build secret, and `--push`) and emitting a workflow warning nudging you toward
+  a bake file. The simplest consumer — one `Dockerfile`, no bake file — now Just
+  Works instead of failing with `open docker-bake.hcl: no such file or
+  directory`; when `image_name` is omitted on this path it falls back to the
+  repository name. Applies across `mode: ci` (build + scan), release promotion
+  (fresh-build fallback), and image signing. New input: `dockerfile` (default
+  `Dockerfile`). New helper: `scripts/build-image-dockerfile.sh`.
+
 - **Versioning-tool autodetection (`versioning-tool: auto`, now the default).**
   Diatreme resolves the versioning tool from repository markers under
   `working-directory` instead of requiring every caller to hardcode one, so a

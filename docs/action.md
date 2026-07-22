@@ -41,6 +41,35 @@ different tools. Detection is two-tier:
 Conflicting tier-1 configs, or no markers at all, fail with an actionable error.
 Passing an explicit `versioning-tool` skips detection entirely.
 
+## Docker build definition
+
+Diatreme detects **how** to build your image from what's in the repo — you don't
+choose a builder, you just have the files:
+
+1. **Docker Bake file present** (`docker-bake.hcl`, or `docker-bake.json` when
+   `bake_file` is left at its default) → builds with `docker buildx bake`. Reach
+   for this when you want multi-target builds, tag templating, multi-arch
+   defaults, or local↔CI build parity.
+2. **No bake file, but a `dockerfile` present** → Diatreme builds it directly
+   with `docker buildx build -f <dockerfile> .`, honouring the same knobs it
+   passes to bake: `platforms`, the computed `${registry}/${image_name}:${version}`
+   tag(s) (plus `:latest` on stable releases), provenance labels, GitHub Actions
+   cache, the `build-github-token` build secret, and `--push`. It also emits a
+   workflow **warning** so the fallback is visible in the run summary.
+3. **Neither** → no image is built; versioning-only runs are unaffected.
+
+So the simplest consumer — one `Dockerfile`, no bake file — Just Works, instead
+of failing with `open docker-bake.hcl: no such file or directory`. When no
+`image_name` is given on this path, the base name falls back to the repository's
+own name (lowercased).
+
+!!! note "Multi-arch on the Dockerfile path"
+    A plain Dockerfile has nowhere to declare a default platform set, so with
+    `platforms` empty the fallback builds for the builder's default (single)
+    architecture. Set `platforms: linux/amd64,linux/arm64` to produce a
+    multi-arch manifest, exactly as bake would. For anything past a single image,
+    prefer a `docker-bake.hcl`.
+
 ## Image scanning and SBOMs
 
 When `mode: ci` builds the `pr-<N>` image it can scan it (Trivy) and route the

@@ -162,6 +162,73 @@ teardown() {
   echo "$output" | grep -Fq "Could not evaluate Docker Bake file"
 }
 
+# ── build-strategy detection + Dockerfile fallback ──────────────────────────
+
+@test "emits strategy=bake and the effective bake_file when a bake file exists" {
+  run env INPUT_BAKE_FILE="${BAKE_FILE}" \
+    STUB_BAKE_JSON='{"target":{"app":{"tags":["ghcr.io/acme/app:latest"]}}}' "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "strategy=bake" "${GITHUB_OUTPUT}"
+  grep -Fq "bake_file=${BAKE_FILE}" "${GITHUB_OUTPUT}"
+}
+
+@test "Dockerfile present + no bake + no name -> repo-name fallback, strategy=dockerfile, warning" {
+  : > "${WORK}/Dockerfile"
+  run env INPUT_BAKE_FILE="${WORK}/nope.hcl" INPUT_DOCKERFILE="${WORK}/Dockerfile" \
+    INPUT_REPO_FULL="OgenrwotAaron/Gettier" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "strategy=dockerfile" "${GITHUB_OUTPUT}"
+  # Repository name, lowercased.
+  grep -Fq "image_name=gettier" "${GITHUB_OUTPUT}"
+  echo "$output" | grep -Fq "::warning title=No docker-bake.hcl::"
+  # Detection is by file check only — never shells out to docker.
+  [ ! -s "${STUB_LOG}" ]
+}
+
+@test "docker-bake.json is honoured when the default docker-bake.hcl is absent" {
+  rm -f "${BAKE_FILE}"                 # setup created a docker-bake.hcl in WORK
+  : > "${WORK}/docker-bake.json"
+  cd "${WORK}"                         # json fallback resolves relative to CWD
+  run env INPUT_BAKE_FILE="docker-bake.hcl" \
+    STUB_BAKE_JSON='{"target":{"app":{"tags":["ghcr.io/acme/backend:latest"]}}}' "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "strategy=bake" "${GITHUB_OUTPUT}"
+  grep -Fq "bake_file=docker-bake.json" "${GITHUB_OUTPUT}"
+  grep -Fq "image_name=backend" "${GITHUB_OUTPUT}"
+  # bake --print was run against the json file, not the missing hcl.
+  grep -Eq "docker buildx bake -f docker-bake.json" "${STUB_LOG}"
+}
+
+@test "no bake and no Dockerfile -> strategy=none, empty image_name, no docker" {
+  run env INPUT_BAKE_FILE="${WORK}/nope.hcl" INPUT_DOCKERFILE="${WORK}/nope.Dockerfile" \
+    INPUT_REPO_FULL="acme/repo" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "strategy=none" "${GITHUB_OUTPUT}"
+  grep -Fxq "image_name=" "${GITHUB_OUTPUT}"
+  [ ! -s "${STUB_LOG}" ]
+}
+
+@test "explicit image_name + Dockerfile -> explicit wins, strategy=dockerfile, warning, no docker" {
+  : > "${WORK}/Dockerfile"
+  run env INPUT_IMAGE_NAME="my-app" INPUT_BAKE_FILE="${WORK}/nope.hcl" \
+    INPUT_DOCKERFILE="${WORK}/Dockerfile" INPUT_REPO_FULL="acme/repo" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fq "image_name=my-app" "${GITHUB_OUTPUT}"
+  grep -Fq "strategy=dockerfile" "${GITHUB_OUTPUT}"
+  echo "$output" | grep -Fq "::warning title=No docker-bake.hcl::"
+  [ ! -s "${STUB_LOG}" ]
+}
+
+@test "detect-image-name=false with a Dockerfile stays empty and does not warn" {
+  : > "${WORK}/Dockerfile"
+  run env DETECT_IMAGE_NAME="false" INPUT_BAKE_FILE="${WORK}/nope.hcl" \
+    INPUT_DOCKERFILE="${WORK}/Dockerfile" INPUT_REPO_FULL="acme/repo" "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -Fxq "image_name=" "${GITHUB_OUTPUT}"
+  # Opt-out means no image is built, so the Dockerfile nudge must stay silent.
+  ! echo "$output" | grep -Fq "::warning title=No docker-bake.hcl::"
+}
+
 # ── action.yml wiring ───────────────────────────────────────────────────────
 
 @test "action.yml runs the resolver early for ci and release" {
@@ -189,4 +256,17 @@ teardown() {
 @test "action.yml exposes detect-image-name and wires it into the resolver" {
   grep -Eq "^  detect-image-name:" "${ACTION_YML}"
   grep -Eq "DETECT_IMAGE_NAME: \\\$\{\{ inputs.detect-image-name \}\}" "${ACTION_YML}"
+}
+
+@test "action.yml exposes a dockerfile input and wires it + repo into the resolver" {
+  grep -Eq "^  dockerfile:" "${ACTION_YML}"
+  grep -Eq "INPUT_DOCKERFILE: \\\$\{\{ inputs.dockerfile \}\}" "${ACTION_YML}"
+  grep -Eq "INPUT_REPO_FULL: \\\$\{\{ github.repository \}\}" "${ACTION_YML}"
+}
+
+@test "action.yml image steps read the resolved strategy and effective bake_file" {
+  # The build/scan/promote/sign steps must branch on the resolver's strategy and
+  # use the effective bake file it emitted (so docker-bake.json is honoured).
+  grep -Eq "STRATEGY: \\\$\{\{ steps.resolve-image.outputs.strategy \}\}" "${ACTION_YML}"
+  grep -Eq "INPUT_BAKE_FILE: \\\$\{\{ steps.resolve-image.outputs.bake_file \}\}" "${ACTION_YML}"
 }
