@@ -61,15 +61,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Diatreme can scan the assembled image with Trivy and route the results to two
   sinks: a CycloneDX **SBOM → Dependency-Track** (its own assembled-image
   project, distinct from any source-dependency SBOM for the repo) and, optionally,
-  **findings → DefectDojo** (OS CVEs, image misconfigurations, secrets in layers
-  — what SBOM matching misses). Opt-in via `image-scan: true`. New inputs:
+  **findings → DefectDojo** (OS CVEs, image misconfigurations, secrets in layers,
+  what SBOM matching misses). Opt-in via `image-scan: true`. New inputs:
   `image-scan`, `image-scan-severity`, `image-scan-scanners`, `image-scan-gate`,
   `image-scan-strict`,
   `dependency-track-url` / `-api-key` / `-project-name` / `-project-version` /
   `-auto-create`,
   `defectdojo-url` / `-api-key` / `-engagement` / `-product-name` /
   `-product-type` / `-engagement-name` / `-close-old`. New outputs:
-  `image-scanned`, `image-findings`. Reporting is visibility-first — a
+  `image-scanned`, `image-findings`. Reporting is visibility-first: a
   successful scan never blocks the PR unless `image-scan-gate` is on, and both
   sinks are failure-isolated (an outage logs a warning, never fails the build).
   A scanner that cannot run is a build error, not "0 findings". The scanned
@@ -82,7 +82,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Repository CI for action metadata parsing, actionlint, ShellCheck, and Bats tests.
 - `registry-username` and `registry-password` inputs so callers can target
   container registries that don't accept GHCR-style `github.actor` +
-  workflow-token auth — GHES `containers.<host>`, Harbor, Artifactory,
+  workflow-token auth, GHES `containers.<host>`, Harbor, Artifactory,
   Nexus, ACR, etc. Defaults to current behaviour when both are blank.
 - `submodules` input passed through to the internal `actions/checkout`
   step. When set non-false under `auth-mode: private-app` / `auto`,
@@ -94,7 +94,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **python-semantic-release now runs from a pip install instead of the upstream
   Docker action, cutting ~1 minute off every release run.** GitHub Actions builds
-  the image of any Docker action a composite action references during job setup —
+  the image of any Docker action a composite action references during job setup,
   before any step runs, and regardless of that step's `if:` condition. Referencing
   `python-semantic-release/python-semantic-release` therefore made *every* Diatreme
   release run spend ~55s on a `Build python-semantic-release/...` step, including
@@ -113,14 +113,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `python:3.14-slim-trixie`, whose `apt install ... cargo` layer breaks whenever
   Docker Hub rebuilds the mutable base, and the image was built from the action's
   Dockerfile so no SHA pin could avoid it. Diatreme no longer builds that image,
-  so the constraint is gone — the default changelog templates are byte-identical
+  so the constraint is gone, the default changelog templates are byte-identical
   across the two versions, and the `version` flags this action passes are
   unchanged. The Dependabot `ignore` rule that held the pin in place is removed
   with it, and a `pip` ecosystem entry scoped to `/scripts` replaces the
   `github-actions` coverage the `uses:` reference used to get. It is scoped to
   that directory rather than `/` so Dependabot does not treat the root
-  `pyproject.toml` — python-semantic-release's own release metadata, which
-  declares no dependencies — as a manifest to update. Bumps are validated: CI
+  `pyproject.toml`, python-semantic-release's own release metadata, which
+  declares no dependencies, as a manifest to update. Bumps are validated: CI
   installs the pin and asserts the CLI still accepts the flags this action
   passes, and majors are held back for a human.
 
@@ -142,7 +142,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `force-bump` is no longer a silent no-op for
   `versioning-tool: semantic-release-npm`. The input's own docs pitch it at
   exactly the "workflow_dispatch with no qualifying commits" case, but the
-  semantic-release-npm step never read it — a caller wiring a `bump` dispatch
+  semantic-release-npm step never read it; a caller wiring a `bump` dispatch
   input through `force-bump` got "no release" anyway. When set
   (patch/minor/major), commit-message gating is now skipped and the next
   version is derived by bumping the latest stable tag at the requested level
@@ -151,17 +151,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   line), and stable branches create the tag directly through the shared
   race-safe push helper. On a forced stable release semantic-release itself
   is skipped, so config-driven publish plugins (changelog commit, npm
-  publish, ...) do not run — the GitHub Release still comes from the
+  publish, ...) do not run; the GitHub Release still comes from the
   deferred publish step. Promotion PRs ignore `force-bump`; release-please
   still does too (documented).
 - `versioning-tool: gitversion` no longer requires a `GitVersion.yml`. The
   `gitversion-config` input defaulted to the literal path `GitVersion.yml`,
   which Diatreme forwards to `gittools/actions/gitversion/execute` as
-  `configFilePath` — an input that upstream treats as an *optional override*
+  `configFilePath`, an input that upstream treats as an *optional override*
   and hard-errors on (`GitVersion configuration file not found at
   GitVersion.yml`) when it names a missing file. Every GitVersion repo without
   that file failed, which under `versioning-tool: auto` meant any repo resolved
-  to `gitversion` from a bare `*.csproj`/`*.sln` — exactly the repos that carry
+  to `gitversion` from a bare `*.csproj`/`*.sln`, exactly the repos that carry
   no GitVersion config. The default is now `''`, so GitVersion picks up a
   `GitVersion.yml`/`GitVersion.yaml` when present and otherwise runs on its
   built-in defaults. Setting `gitversion-config` explicitly still errors when
@@ -180,8 +180,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Docker Hub rebuilds `python:3.14-slim-trixie`. The upstream action's
   container moved to that rolling base in v10.5.0, where its `apt install
   ... cargo` build step fails intermittently (apt exit 100). Diatreme no
-  longer builds that container at all — it installs the CLI from PyPI (see
-  Changed) — so the rolling base image is out of the release path entirely.
+  longer builds that container at all, it installs the CLI from PyPI (see
+  Changed), so the rolling base image is out of the release path entirely.
 - `versioning-tool: semantic-release-npm` no longer crashes with
   `Cannot find module '@semantic-release/changelog'` (or `/git`,
   `/github`) when the consumer's `.releaserc.json` configures
@@ -204,7 +204,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   referrers-index parse error (`failed to decode referrers index:
   invalid character '<' looking for beginning of value`). `imagetools
   create` remains the primary path on every registry that implements
-  the OCI referrers spec — it preserves multi-arch manifest lists,
+  the OCI referrers spec, it preserves multi-arch manifest lists,
   which `docker pull/tag/push` collapses to the runner's platform.
   The existing fresh-build fallback still runs when both retag paths
   fail.

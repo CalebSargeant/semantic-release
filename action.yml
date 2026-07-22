@@ -1,5 +1,5 @@
 name: 'Diatreme'
-description: 'Semantic release orchestration for TBD/BBD pipelines with Docker image promotion and promotion PR automation.'
+description: 'Multi-tool semantic release orchestration for GitHub.com and Enterprise: provenance-verified Docker promotion, CycloneDX SBOMs, and multi-ecosystem package publishing.'
 author: 'MagmaMoose'
 
 branding:

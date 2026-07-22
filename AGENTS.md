@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is **Diatreme** — a GitHub Marketplace composite action plus the
+This repository is **Diatreme**: a GitHub Marketplace composite action plus the
 Cloudflare Worker that backs it. It has two independent surfaces in one repo:
 
 | Surface | Path | Toolchain |
@@ -10,8 +10,8 @@ Cloudflare Worker that backs it. It has two independent surfaces in one repo:
 
 The action is published to the Marketplace from the repo root (exactly one
 `action.yml`). The worker is deployed to Cloudflare from `worker/`. They
-communicate over HTTP — the action calls the worker at
-`api.diatreme.magmamoose.com` — and neither imports the other.
+communicate over HTTP (the action calls the worker at
+`api.diatreme.magmamoose.com`), and neither imports the other.
 
 ## Repository Boundary
 
@@ -25,18 +25,18 @@ communicate over HTTP — the action calls the worker at
 ## Required Files
 
 Action surface:
-- `action.yml` — published composite action metadata and inline orchestration.
-- `scripts/*.sh` — runtime helpers called by `action.yml`.
-- `README.md` — Marketplace user guide (usage, inputs, outputs, permissions, examples).
-- `CHANGELOG.md`, `LICENSE`, `pyproject.toml` — release metadata for the action.
-- `.github/workflows/ci.yaml` — validates both surfaces.
-- `.github/workflows/release.yaml` — publishes the action and updates floating major tags.
+- `action.yml`: published composite action metadata and inline orchestration.
+- `scripts/*.sh`: runtime helpers called by `action.yml`.
+- `README.md`: Marketplace user guide (usage, inputs, outputs, permissions, examples).
+- `CHANGELOG.md`, `LICENSE`, `pyproject.toml`: release metadata for the action.
+- `.github/workflows/ci.yaml`: validates both surfaces.
+- `.github/workflows/release.yaml`: publishes the action and updates floating major tags.
 
 Worker surface:
-- `worker/src/index.ts` — the Worker entry (`default.fetch` request router).
-- `worker/README.md` — endpoint and configuration reference.
-- `worker/wrangler.jsonc` — Cloudflare deploy config.
-- `worker/test/index.test.ts` — vitest suite.
+- `worker/src/index.ts`: the Worker entry (`default.fetch` request router).
+- `worker/README.md`: endpoint and configuration reference.
+- `worker/wrangler.jsonc`: Cloudflare deploy config.
+- `worker/test/index.test.ts`: vitest suite.
 
 ## Local Validation
 

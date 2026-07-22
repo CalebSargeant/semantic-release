@@ -1,4 +1,4 @@
-# Session — YYYY-MM-DD — <slug>
+# Session YYYY-MM-DD <slug>
 
 ## What we did
 -
