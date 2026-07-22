@@ -1,6 +1,6 @@
 # Diatreme
 
-*One GitHub Action for your whole release spine — versioning, releases, signed commits, Docker promotion, and SBOMs — on GitHub.com and Enterprise.*
+*One GitHub Action for your whole release spine: versioning, releases, signed commits, Docker promotion, and SBOMs, on both GitHub.com and Enterprise.*
 
 [![CI](https://github.com/MagmaMoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/MagmaMoose/diatreme/actions/workflows/ci.yaml)
 [![Release](https://github.com/MagmaMoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/MagmaMoose/diatreme/actions/workflows/release.yaml)
@@ -10,18 +10,18 @@
 
 **Get started in 60 seconds → [Quickstart](#quickstart)** · [Install the GitHub App](https://github.com/apps/diatreme/installations/new) · [Docs](https://magmamoose.github.io/diatreme/)
 
-**Diatreme** is a **release/deployment orchestrator** that collapses the release spine of a repo into a single GitHub Action. Merge a conventional commit and it computes the semantic version, writes the tag, GitHub Release, and changelog, promotes your already-built Docker image by **provenance-verified retag** (no rebuild — no drift between what you scanned and what you ship), emits a **CycloneDX SBOM** to Dependency-Track, and can publish your language package. The same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please — on GitHub.com or GitHub Enterprise.
+**Diatreme** is a **release/deployment orchestrator** that collapses the release spine of a repo into a single GitHub Action. Merge a conventional commit and it computes the semantic version, writes the tag, GitHub Release, and changelog, promotes your already-built Docker image by **provenance-verified retag** (no rebuild, no drift between what you scanned and what you ship), emits a **CycloneDX SBOM** to Dependency-Track, and can publish your language package. The same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please, on GitHub.com or GitHub Enterprise.
 
 It supports both **trunk-based (TBD)** and **branch-based (BBD)** development, and a hosted GitHub App mints the release token and signs the commit for you, so there's nothing to register.
 
 ### What it does
 
-- **Versioning, your way** — auto-detects python-semantic-release, semantic-release (npm), GitVersion, or release-please from repo markers, so one shared workflow serves a mixed-stack org.
-- **Releases** — tag + GitHub Release + changelog + normalized outputs, with App/bot-attributed **signed** release commits.
-- **Docker, promoted — not rebuilt** — build `pr-<N>` images, then promote the *exact scanned artifact* to the release tag by digest, verifying provenance first.
-- **Supply chain built in** — scan the assembled image and route a CycloneDX SBOM to Dependency-Track (and optional findings to DefectDojo).
-- **Publish anywhere** — npm, NuGet, Maven, Gradle, RubyGems, containers, and pip, to GitHub Packages or public registries.
-- **Multi-environment promotion** — dev → staging → prod with promotion PRs and native auto-merge.
+- **Versioning, your way**: auto-detects python-semantic-release, semantic-release (npm), GitVersion, or release-please from repo markers, so one shared workflow serves a mixed-stack org.
+- **Releases**: tag + GitHub Release + changelog + normalized outputs, with App/bot-attributed **signed** release commits.
+- **Docker, promoted, not rebuilt**: build `pr-<N>` images, then promote the *exact scanned artifact* to the release tag by digest, verifying provenance first.
+- **Supply chain built in**: scan the assembled image and route a CycloneDX SBOM to Dependency-Track (and optional findings to DefectDojo).
+- **Publish anywhere**: npm, NuGet, Maven, Gradle, RubyGems, containers, and pip, to GitHub Packages or public registries.
+- **Multi-environment promotion**: dev → staging → prod with promotion PRs and native auto-merge.
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ flowchart LR
 
 ## Why Diatreme
 
-Most repos already have release automation — a `semantic-release` config here, a `release-please` job there, a hand-rolled tag script somewhere else. Diatreme isn't a replacement for any one of them; it gives an **organization one workflow** that works across all of them and carries the deploy-side pieces they leave out.
+Most repos already have release automation: a `semantic-release` config here, a `release-please` job there, a hand-rolled tag script somewhere else. Diatreme isn't a replacement for any one of them; it gives an **organization one workflow** that works across all of them and carries the deploy-side pieces they leave out.
 
 | | Diatreme | `semantic-release` / `release-please` alone |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ Most repos already have release automation — a `semantic-release` config here,
 | App/bot-attributed **signed** release commits | ✅ (hosted App) | ❌ (bring your own bot/PAT) |
 | GitHub.com **and** Enterprise (GHES / data residency) | ✅ | varies |
 
-**Most users only need the Action** — start at the [Quickstart](#quickstart). To self-host or develop the hosted GitHub App backend, see [The Diatreme Worker](#the-diatreme-worker).
+**Most users only need the Action**: start at the [Quickstart](#quickstart). To self-host or develop the hosted GitHub App backend, see [The Diatreme Worker](#the-diatreme-worker).
 
 ## Quickstart
 
@@ -88,9 +88,9 @@ jobs:
           prerelease-identifiers: '{}'
 ```
 
-Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repository or organization. Add your versioning tool's config — a `pyproject.toml` `[tool.semantic_release]` section for the example above — and merge conventional commits. Diatreme writes the tag, GitHub Release, changelog, and normalized outputs.
+Install the [Diatreme GitHub App](https://github.com/apps/diatreme/installations/new) on the repository or organization. Add your versioning tool's config, a `pyproject.toml` `[tool.semantic_release]` section for the example above, and merge conventional commits. Diatreme writes the tag, GitHub Release, changelog, and normalized outputs.
 
-By default (`versioning-tool: auto`) Diatreme picks the versioning tool from repository markers, so the same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please — no per-repo `versioning-tool` needed. See [Versioning tool detection](#versioning-tool-detection).
+By default (`versioning-tool: auto`) Diatreme picks the versioning tool from repository markers, so the same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please, no per-repo `versioning-tool` needed. See [Versioning tool detection](#versioning-tool-detection).
 
 ## Required Permissions
 
@@ -173,7 +173,7 @@ steps:
 ## Publishing language packages
 
 Set `publish-package: true` and pick a `package-ecosystem` to pack and push a
-library package using the version Diatreme just computed — instead of bolting a
+library package using the version Diatreme just computed, instead of bolting a
 separate `pack`/`push` step onto your release workflow. Publishing is opt-in,
 runs only when a new version was released (`released == true`), and inherits the
 same environment gating as versioning: dev/staging runs publish the prerelease
@@ -194,7 +194,7 @@ to point it at.
 | Enterprise Server (e.g. `github.example.com`) | `<ecosystem>.HOSTNAME` | `containers.HOSTNAME` |
 | Enterprise Cloud with data residency (`SUBDOMAIN.ghe.com`) | `<ecosystem>.SUBDOMAIN.ghe.com` | `containers.SUBDOMAIN.ghe.com` |
 
-Diatreme is host-agnostic for the language ecosystems — `package-feed-url` is an
+Diatreme is host-agnostic for the language ecosystems, `package-feed-url` is an
 input, so point it at whichever host applies. The per-ecosystem defaults below
 assume github.com. See [GitHub Enterprise](#github-enterprise) for the exact
 host forms and caveats (notably: the Container registry needs subdomain
@@ -206,10 +206,10 @@ data-residency tenants).
 - **Containers** → GitHub Packages (`ghcr.io`) works at any visibility: public
   images can be pulled anonymously with `docker pull`, so ghcr is a good default
   for both internal and public images.
-- **Internal/private language packages** — consumers are authenticated org
+- **Internal/private language packages**: consumers are authenticated org
   members → GitHub Packages (`*.pkg.github.com`) is a good default, which is why
   Diatreme defaults the GitHub Packages ecosystems there.
-- **Public language packages** — you want anonymous installs → point
+- **Public language packages**: you want anonymous installs → point
   `package-feed-url` at the canonical public registry instead (npmjs,
   nuget.org, rubygems.org, Maven Central, PyPI). **Every GitHub Packages
   registry except the Container registry requires a token to *consume*, even for
@@ -218,7 +218,7 @@ data-residency tenants).
   so a package on `*.pkg.github.com` cannot be installed anonymously.
 
 On GitHub Enterprise the two axes collapse. A private Enterprise Server or
-data-residency instance has no "public" tier in the github.com sense —
+data-residency instance has no "public" tier in the github.com sense;
 everything lives behind the enterprise's auth boundary. There, "internal" means
 the enterprise's *own* registry host, and public/upstream dependencies are
 normally proxied through the enterprise's artifact manager (Nexus, Artifactory,
@@ -234,25 +234,25 @@ for *internal* distribution. `npm` and `pip` default to the **public** registry
 distribution of the GitHub Packages ecosystems, or for any GitHub Enterprise
 host (see above):
 
-- `nuget` — `dotnet pack` + `dotnet nuget push`.
-- `npm` — `npm publish` (prereleases go to a non-`latest` dist-tag named after
+- `nuget`: `dotnet pack` + `dotnet nuget push`.
+- `npm`: `npm publish` (prereleases go to a non-`latest` dist-tag named after
   the environment's prerelease identifier).
-- `maven` — `mvn versions:set` + `mvn deploy` (credentials in a per-run
+- `maven`: `mvn versions:set` + `mvn deploy` (credentials in a per-run
   `settings.xml`, kept off the project tree).
-- `gradle` — `gradle publish` via the project's `maven-publish` block; the
+- `gradle`: `gradle publish` via the project's `maven-publish` block; the
   version and the conventional `GITHUB_ACTOR`/`GITHUB_TOKEN` credentials are
   passed through for the `GitHubPackages` repository.
-- `rubygems` — `gem build` + `gem push`.
-- `container` — `docker build` + `docker push` to
+- `rubygems`: `gem build` + `gem push`.
+- `container`: `docker build` + `docker push` to
   `ghcr.io/<owner>/<repo>:<version>` (override the registry host with
-  `package-feed-url` — e.g. an enterprise `containers.HOSTNAME` — and the image
-  name with `package-name`). Complements the existing image *promotion* — this
+  `package-feed-url`, e.g. an enterprise `containers.HOSTNAME`, and the image
+  name with `package-name`). Complements the existing image *promotion*. This
   builds and publishes the release version.
-- `pip` — `python -m build` + `twine upload` (PyPI or any index; not a GitHub
+- `pip`: `python -m build` + `twine upload` (PyPI or any index; not a GitHub
   Packages ecosystem, kept for convenience).
 
 Publish an internal shared-components library to a private GitHub Enterprise
-NuGet feed — Diatreme's originating use case — with versioning and publishing in
+NuGet feed, Diatreme's originating use case, with versioning and publishing in
 a single call:
 
 ```yaml
@@ -284,7 +284,7 @@ jobs:
 ```
 
 For the repository owner's GitHub Packages NuGet feed, omit `package-feed-url`
-and `package-token` — they default to `https://nuget.pkg.github.com/<owner>/index.json`
+and `package-token`, they default to `https://nuget.pkg.github.com/<owner>/index.json`
 and the workflow `GITHUB_TOKEN` (which needs `packages: write`).
 
 The same defaults apply to the other GitHub Packages ecosystems (Maven, Gradle,
@@ -296,14 +296,14 @@ Docker build context and `package-name` defaults to `<owner>/<repo>`.
 > tag). For `pip` and `rubygems` it comes from the project manifest
 > (`pyproject.toml` / the `.gemspec`), so persist it there before publishing.
 
-> When `package-ecosystem: npm`, let Diatreme do the publish — set
+> When `package-ecosystem: npm`, let Diatreme do the publish. Set
 > `npmPublish: false` on `@semantic-release/npm` so versioning and publishing
 > don't both push the package.
 
 > **Public npm = npmjs, not GitHub Packages.** Diatreme's npm default is
 > `https://registry.npmjs.org`, which serves public packages without auth. If
 > you instead point `package-feed-url` at `npm.pkg.github.com`, consumers need a
-> token to `npm install` the package — even when it is public — so reserve
+> token to `npm install` the package, even when it is public, so reserve
 > GitHub Packages for *internal* npm packages.
 >
 > Set `npm-provenance: true` to publish to npmjs with build
@@ -315,13 +315,13 @@ Docker build context and `package-name` defaults to `<owner>/<repo>`.
 
 ### GitHub Enterprise
 
-Publishing works the same on GitHub Enterprise — the auth model is unchanged
+Publishing works the same on GitHub Enterprise; the auth model is unchanged
 (the Actions `GITHUB_TOKEN`, or the `package-token` you pass, just authenticates
 against the enterprise instance instead of github.com). Only the **host**
 changes, so set `package-feed-url` to the matching registry host. (The NuGet
 example above already targets an enterprise host.)
 
-**Enterprise Server** (self-hosted, subdomain isolation enabled) — hosts are
+**Enterprise Server** (self-hosted, subdomain isolation enabled): hosts are
 derived from the instance hostname (`HOSTNAME`):
 
 | Ecosystem | `package-feed-url` |
@@ -333,11 +333,11 @@ derived from the instance hostname (`HOSTNAME`):
 | `container` | `containers.HOSTNAME` |
 
 The Container registry **requires subdomain isolation** to be enabled on the
-instance — without it there is no container host. (Older releases exposed a
+instance, without it there is no container host. (Older releases exposed a
 legacy Docker registry at `docker.HOSTNAME`; image refs that use it keep working
 after the instance migrates to `containers.HOSTNAME`.)
 
-**Enterprise Cloud with data residency** — a `SUBDOMAIN.ghe.com` tenant, where
+**Enterprise Cloud with data residency**: a `SUBDOMAIN.ghe.com` tenant, where
 `SUBDOMAIN` is your enterprise's unique subdomain:
 
 | Ecosystem | `package-feed-url` |
@@ -353,39 +353,39 @@ after the instance migrates to `containers.HOSTNAME`.)
 > `package-feed-url` instead.
 
 Standard Enterprise Cloud organizations (accessed at github.com, no data
-residency) use the public `*.pkg.github.com` / `ghcr.io` hosts — the same
+residency) use the public `*.pkg.github.com` / `ghcr.io` hosts, the same
 defaults as github.com.
 
 ### Maven and Gradle: not a Maven Central release
 
 The `maven` and `gradle` paths run `mvn deploy` / `gradle publish` against a
-**Maven-style repository** — GitHub Packages by default, or your enterprise
+**Maven-style repository**: GitHub Packages by default, or your enterprise
 Maven host. This is *not* a Maven Central release flow: Central requires GPG
 signing and a staging / Central Portal (formerly OSSRH) deployment that this
 action does not perform. To release to Maven Central, drive it from a tool built
-for that flow — [JReleaser](https://jreleaser.org/) or the
-[`central-publishing-maven-plugin`](https://central.sonatype.org/publish/publish-portal-maven/) —
+for that flow, [JReleaser](https://jreleaser.org/) or the
+[`central-publishing-maven-plugin`](https://central.sonatype.org/publish/publish-portal-maven/),
 rather than `publish-package`.
 
 ### Private Python indexes (pip)
 
 GitHub Packages has **no Python registry** (on github.com or Enterprise), so
-`pip` is not a GitHub Packages ecosystem — it always targets PyPI or a separate
+`pip` is not a GitHub Packages ecosystem, it always targets PyPI or a separate
 index. Two endpoints are involved, and they are independent:
 
-- **Upload** — `package-feed-url` is twine's `--repository-url`. Empty publishes
+- **Upload**: `package-feed-url` is twine's `--repository-url`. Empty publishes
   to PyPI.
-- **Install** — consumers set `pip install --index-url`; that's a separate
+- **Install**: consumers set `pip install --index-url`; that's a separate
   concern Diatreme does not configure.
 
 Options for the private upload target:
 
-- [pypiserver](https://github.com/pypiserver/pypiserver) — minimal; serves a
+- [pypiserver](https://github.com/pypiserver/pypiserver), minimal; serves a
   directory of wheels.
-- [devpi](https://www.devpi.net/) — private index with staging and a
+- [devpi](https://www.devpi.net/), private index with staging and a
   pull-through PyPI mirror.
 - [Nexus](https://www.sonatype.com/products/sonatype-nexus-repository) /
-  [Artifactory](https://jfrog.com/artifactory/) — multi-format artifact managers
+  [Artifactory](https://jfrog.com/artifactory/), multi-format artifact managers
   (the usual enterprise target).
 - Managed: AWS CodeArtifact, GCP Artifact Registry, Azure Artifacts, Cloudsmith,
   Gemfury.
@@ -394,7 +394,7 @@ In an Enterprise context the pip target is usually the org's *existing* internal
 index (Nexus / Artifactory / CodeArtifact), since GitHub Enterprise has no
 Python registry either.
 
-For the managed clouds the upload token is often short-lived — mint it in a
+For the managed clouds the upload token is often short-lived; mint it in a
 preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
 
 ```yaml
@@ -423,7 +423,7 @@ preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
 
 > **Trusted Publishing (OIDC) for public PyPI.** Set
 > `pypi-trusted-publishing: true` to upload to public PyPI / TestPyPI with **no
-> stored token** — Diatreme mints a short-lived token from the job's GitHub OIDC
+> stored token**: Diatreme mints a short-lived token from the job's GitHub OIDC
 > identity. It needs `id-token: write` (the default `auth-mode: public-app`
 > already grants it) and a
 > [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) configured for
@@ -433,7 +433,7 @@ preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
 Publishing to public PyPI via Trusted Publishing (no `package-token`):
 
 ```yaml
-    # Needs id-token: write on the job — granted by default `auth-mode:
+    # Needs id-token: write on the job, granted by default `auth-mode:
     # public-app`; add it explicitly under `auth-mode: github-token`.
     permissions:
       id-token: write
@@ -452,7 +452,7 @@ Publishing to public PyPI via Trusted Publishing (no `package-token`):
 
 `image_name` is **optional**. Just as Diatreme infers the release environment
 from your deployment model and branch-map, it infers the image name from your
-Docker Bake config when you don't pass one — so platform repos don't need a
+Docker Bake config when you don't pass one, so platform repos don't need a
 bespoke pre-step to compute it.
 
 Resolution order:
@@ -475,7 +475,7 @@ Resolution order:
    steps (CI build, image scan, release promotion) are skipped. Versioning-only
    workflows are unaffected.
 
-A bake file that exists but produces **no tags** is a hard error — Diatreme
+A bake file that exists but produces **no tags** is a hard error. Diatreme
 never silently falls back to the repository name; fix the bake target or pass
 `image_name` explicitly.
 
@@ -489,7 +489,7 @@ steps:
     with:
       deployment-model: bbd
       branch-map: '{"staging": "staging", "main": "prod"}'
-      # image_name omitted — detected from docker-bake.hcl tags.
+      # image_name omitted, detected from docker-bake.hcl tags.
 ```
 
 The value Diatreme used is exposed as the `resolved-image-name` output.
@@ -497,11 +497,11 @@ The value Diatreme used is exposed as the `resolved-image-name` output.
 **Opting out.** If a repo keeps a tagged `docker-bake.hcl` but uses Diatreme for
 **versioning only**, set `detect-image-name: false` so a bare `mode: ci` /
 `release` run does not start building or promoting images. With detection off,
-`image_name` behaves exactly as before — empty leaves image workflows off; an
+`image_name` behaves exactly as before: empty leaves image workflows off; an
 explicit `image_name` still turns them on.
 
 For multi-target bake **groups** with distinct images, detection resolves a
-single base name (the first target `bake --print` emits) — consistent with the
+single base name (the first target `bake --print` emits), consistent with the
 single-`IMAGE_NAME` model. It only gates the image steps and sets the
 `IMAGE_NAME` bake var; the scan and promote steps still enumerate every target
 from the bake tags, so multi-image builds are not collapsed to one.
@@ -510,7 +510,7 @@ from the bake tags, so multi-image builds are not collapsed to one.
 
 In `mode: ci`, after the `pr-<N>` image is built, Diatreme can scan the
 **assembled** image and route the results to two sinks. This is the image's
-view of the world — base-image packages and whatever the Dockerfile added —
+view of the world, base-image packages and whatever the Dockerfile added,
 which a source-dependency scan never sees.
 
 - **CycloneDX SBOM → Dependency-Track.** The image's component inventory is
@@ -518,13 +518,13 @@ which a source-dependency scan never sees.
   source-dependency SBOM project for the same repo). Dependency-Track derives
   component CVEs from the SBOM and re-checks them as new advisories land.
 - **Findings → DefectDojo** *(optional)*. The Trivy report is imported for what
-  SBOM matching misses — OS-level CVEs, image misconfigurations, and secrets
+  SBOM matching misses, OS-level CVEs, image misconfigurations, and secrets
   baked into layers.
 
 Reporting is **visibility-first**: a successful scan never blocks the PR unless
 you opt in with `image-scan-gate: true`. A scanner that cannot run at all is a
 build error, never reported as "no findings". Both sinks are
-**failure-isolated** — a Dependency-Track or DefectDojo outage logs a warning
+**failure-isolated**: a Dependency-Track or DefectDojo outage logs a warning
 and does not fail the build. Each sink activates only when its URL is set.
 
 The scanned `pr-<N>` image is the exact artifact that `mode: release` later
@@ -567,11 +567,11 @@ jobs:
 ## Image signing & provenance
 
 In `mode: release`, Diatreme can **sign the released image(s)** with
-[cosign](https://github.com/sigstore/cosign) (keyless / Sigstore — no keys to
+[cosign](https://github.com/sigstore/cosign) (keyless / Sigstore, no keys to
 manage) and attach **SLSA build provenance** as a
 [GitHub Artifact Attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
-It signs by **immutable digest** whatever the release actually shipped — a retag of
-the provenance-verified `pr-<N>` image *or* a fresh release build — so only real
+It signs by **immutable digest** whatever the release actually shipped, a retag of
+the provenance-verified `pr-<N>` image *or* a fresh release build, so only real
 releases are signed, never throwaway PR images.
 
 Opt in with `image-sign: true` and grant `attestations: write` (on top of the
@@ -607,11 +607,11 @@ This is what makes a cluster-side cosign admission policy (e.g. Kyverno
 
 `versioning-tool` defaults to `auto`, which detects the tool from markers in
 `working-directory`. This lets one shared release workflow serve repos on
-different versioning tools — set an explicit tool only to override detection.
+different versioning tools. Set an explicit tool only to override detection.
 
 Detection runs in two tiers:
 
-**Tier 1 — a tool's own release config** (authoritative; each marker maps to
+**Tier 1: a tool's own release config** (authoritative; each marker maps to
 exactly one tool):
 
 | Marker | Resolves to |
@@ -622,10 +622,10 @@ exactly one tool):
 | `release-please-config.json` / `.release-please-manifest.json` (or a custom `release-please-config-file`) | `release-please` |
 
 If two or more distinct tier&#8209;1 tools match, the repo has conflicting
-release configs and the run **errors** — set `versioning-tool` explicitly to
+release configs and the run **errors**: set `versioning-tool` explicitly to
 disambiguate.
 
-**Tier 2 — ecosystem manifests** (consulted only when no tier&#8209;1 config is
+**Tier 2: ecosystem manifests** (consulted only when no tier&#8209;1 config is
 found):
 
 | Marker | Resolves to |
@@ -642,7 +642,7 @@ the full marker list.
 
 A tier&#8209;2 match resolves the *tool*, not a config file: a `.csproj`-only
 repo runs GitVersion on its built-in defaults, and no `GitVersion.yml` is
-required. The same holds for the other tools — each falls back to its own
+required. The same holds for the other tools, each falls back to its own
 defaults when its config file is absent.
 
 ## Inputs
@@ -655,7 +655,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `auth-mode` | `public-app` | Token source: hosted public App, private App, workflow token, or auto. |
 | `token-broker-url` | `https://api.diatreme.magmamoose.com` | Hosted broker base URL override. |
 | `oidc-audience` | `diatreme` | OIDC audience used for public App auth. |
-| `versioning-tool` | `auto` | `auto` (detect from repo markers — see [Versioning tool detection](#versioning-tool-detection)), `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
+| `versioning-tool` | `auto` | `auto` (detect from repo markers, see [Versioning tool detection](#versioning-tool-detection)), `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
 | `deployment-model` | `tbd` | `tbd`, `bbd`, or `tbd-pr`. |
 | `branch-map` | `''` | JSON branch-to-environment map for BBD. |
 | `promote-branch-prefix` | `promote` | Branch prefix for `tbd-pr` promotion PRs. |
@@ -669,7 +669,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `app-id` | `''` | Private GitHub App ID. |
 | `app-private-key` | `''` | Private GitHub App PEM. |
 | `submodules` | `false` | Pass-through to checkout: `false`, `true`, or `recursive`. |
-| `image_name` | `''` | Base image name without registry or owner. Optional — auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted; an explicit value wins. See [Docker image name](#docker-image-name). |
+| `image_name` | `''` | Base image name without registry or owner. Optional, auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted; an explicit value wins. See [Docker image name](#docker-image-name). |
 | `bake_file` | `docker-bake.hcl` | Docker Bake file. |
 | `bake_target` | `default` | Docker Bake target or group. |
 | `detect-image-name` | `true` | Auto-detect `image_name` from the Docker Bake config when it is empty. Set `false` to opt out (versioning-only repos with a tagged bake file). Explicit `image_name` always wins. |
@@ -750,13 +750,13 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `image-scanned` | `true` when the assembled `pr-<N>` image(s) were scanned (`mode: ci` with `image-scan`). |
 | `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
 | `image-signed` | Number of released image(s) cosign-signed (`mode: release` with `image-sign`). |
-| `resolved-image-name` | The base image name used for image workflows — explicit `image_name`, or the value auto-detected from Docker Bake. Empty on versioning-only runs. |
+| `resolved-image-name` | The base image name used for image workflows, explicit `image_name`, or the value auto-detected from Docker Bake. Empty on versioning-only runs. |
 
 ## The Diatreme Worker
 
-Diatreme has **two surfaces** in this repo: the composite **Action** ([`action.yml`](action.yml) + [`scripts/`](scripts)) that you install from the Marketplace, and this **Cloudflare Worker** ([`worker/`](worker)) — the GitHub App backend behind the hosted broker at `https://api.diatreme.magmamoose.com`. They communicate over HTTP and neither imports the other.
+Diatreme has **two surfaces** in this repo: the composite **Action** ([`action.yml`](action.yml) + [`scripts/`](scripts)) that you install from the Marketplace, and this **Cloudflare Worker** ([`worker/`](worker)), the GitHub App backend behind the hosted broker at `https://api.diatreme.magmamoose.com`. They communicate over HTTP and neither imports the other.
 
-The Action's default `auth-mode: public-app` calls the Worker so you never have to register and run your own GitHub App — it mints the release token (OIDC → short-lived App installation token) and signs the release commit. You can also self-host the Worker and point the Action at your own deployment with the `token-broker-url` input.
+The Action's default `auth-mode: public-app` calls the Worker so you never have to register and run your own GitHub App, it mints the release token (OIDC → short-lived App installation token) and signs the release commit. You can also self-host the Worker and point the Action at your own deployment with the `token-broker-url` input.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -779,10 +779,10 @@ Configuration (secrets and vars) is documented in [`worker/README.md`](worker/RE
 
 ## Release Notes
 
-Use immutable tags or a SHA for strict reproducibility — pin `@<sha>` or a full tag like `@v2.4.6`. `@v2` is the floating major tag that this repository updates after each stable release. The root release workflow dogfoods `uses: ./`, then force-updates the matching major tag after semantic-release publishes a stable version. (`@v1` is the frozen, unmaintained pre-v2 major — don't pin it for new workflows.)
+Use immutable tags or a SHA for strict reproducibility, pin `@<sha>` or a full tag like `@v2.4.6`. `@v2` is the floating major tag that this repository updates after each stable release. The root release workflow dogfoods `uses: ./`, then force-updates the matching major tag after semantic-release publishes a stable version. (`@v1` is the frozen, unmaintained pre-v2 major, don't pin it for new workflows.)
 
 Docker promotion prefers `docker buildx imagetools create` so multi-arch manifests are preserved. For the known GitHub Enterprise Packages referrers-index parse error, Diatreme falls back to pull/tag/push for single-arch images, then to a fresh Docker Bake build if retagging cannot work.
 
-Before promoting a `pr-<N>` image, Diatreme verifies it was actually built from the code being released. `mode: ci` stamps every image with `org.opencontainers.image.revision` (build commit) and `com.magmamoose.diatreme.git-tree` (that commit's git tree) — injected at build time, so no bake-file changes are needed. `mode: release` compares the image's tree against the release commit's tree; a PR that was merged while behind the branch tip fails the comparison (its CI image is stale) and the release rebuilds from the release checkout instead of promoting old code under the new tag. Images that cannot be verified — including ones built by pre-provenance Diatreme versions — also take the fresh-build path. Later-environment promotions (e.g. `v1.2.3-rc.1` → `v1.2.3`) are exempt: carrying the previous environment's artifact forward unchanged is their purpose.
+Before promoting a `pr-<N>` image, Diatreme verifies it was actually built from the code being released. `mode: ci` stamps every image with `org.opencontainers.image.revision` (build commit) and `com.magmamoose.diatreme.git-tree` (that commit's git tree), injected at build time, so no bake-file changes are needed. `mode: release` compares the image's tree against the release commit's tree; a PR that was merged while behind the branch tip fails the comparison (its CI image is stale) and the release rebuilds from the release checkout instead of promoting old code under the new tag. Images that cannot be verified, including ones built by pre-provenance Diatreme versions, also take the fresh-build path. Later-environment promotions (e.g. `v1.2.3-rc.1` → `v1.2.3`) are exempt: carrying the previous environment's artifact forward unchanged is their purpose.
 
 A Magma Moose product.

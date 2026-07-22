@@ -2,15 +2,15 @@
 
 The Cloudflare Worker behind the hosted Diatreme broker at
 `https://api.diatreme.magmamoose.com`. It is the **GitHub App backend** for the
-[Diatreme composite action](../README.md)'s release flows — so callers don't have
+[Diatreme composite action](../README.md)'s release flows, so callers don't have
 to register and run their own GitHub App. Its whole job is release/deployment
 orchestration:
 
-- **Token broker** — exchange a GitHub Actions OIDC token for a short-lived App
+- **Token broker**: exchange a GitHub Actions OIDC token for a short-lived App
   **installation** token (this is what `auth-mode: public-app` uses).
-- **Commit/tag signer** — create GitHub-signed, **App/bot-attributed** release
+- **Commit/tag signer**: create GitHub-signed, **App/bot-attributed** release
   commits (version bumps, tags) via `createCommitOnBranch`.
-- **Release history** — aggregate releases for the dashboard.
+- **Release history**: aggregate releases for the dashboard.
 
 Self-contained: the only runtime dependency is [`jose`](https://github.com/panva/jose)
 (JWT signing for GitHub App auth). Entry point is `src/index.ts`
@@ -41,7 +41,7 @@ Secrets are set with `wrangler secret put <NAME>` (never committed). For local
 | `ALLOWED_REPOSITORIES` | no | Comma-separated allowlist of `owner/repo` for `/token`; empty allows any repo the App is installed on. |
 | `GHE_OIDC_ISSUER`, `GHE_API_BASE`, `GHE_GITHUB_APP_ID`, `GHE_GITHUB_APP_PRIVATE_KEY`, `GHE_GITHUB_APP_INSTALLATION_ID` | opt-in | GitHub Enterprise (ghe.com / GHES) support. |
 
-**KV binding** — `COPILOT_QUOTA_KV` (legacy name) caches the aggregated `/releases`
+**KV binding**: `COPILOT_QUOTA_KV` (legacy name) caches the aggregated `/releases`
 response. The namespace ID is not committed; CI injects it from the
 `COPILOT_QUOTA_KV_ID` Actions variable (see
 [`../.github/workflows/deploy-worker.yaml`](../.github/workflows/deploy-worker.yaml)).

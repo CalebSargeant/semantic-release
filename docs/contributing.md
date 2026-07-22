@@ -14,7 +14,7 @@ at the repo root. This page is a short orientation; `AGENTS.md` has the full rul
 ## Editing rules
 
 - **Preserve action input names, output names, defaults, and behaviour** unless a
-  breaking change is explicitly approved — every consumer pins to this contract.
+  breaking change is explicitly approved; every consumer pins to this contract.
 - Keep `README.md` examples aligned with `action.yml`.
 - Shell scripts must stay executable in Git (`git update-index --chmod=+x`).
 - Never commit secrets, `.dev.vars`, build output, or caches.
@@ -38,9 +38,9 @@ npm ci && npm run check   # typecheck + vitest + wrangler dry-run
 
 ## CI gates
 
-- `ci.yaml` — validates both surfaces (actionlint, shellcheck, bats, a
+- `ci.yaml`: validates both surfaces (actionlint, shellcheck, bats, a
   python-semantic-release pin smoke-test; worker typecheck + tests).
-- `release.yaml` — dogfoods `uses: ./` to release the action and moves the floating
+- `release.yaml`: dogfoods `uses: ./` to release the action and moves the floating
   major tag.
-- `deploy-worker.yaml` — deploys `worker/` to Cloudflare.
-- `security.yml` — the org Chargate security gate.
+- `deploy-worker.yaml`: deploys `worker/` to Cloudflare.
+- `security.yml`: the org Chargate security gate.

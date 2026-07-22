@@ -45,7 +45,7 @@ bats tests/bats
 !!! warning "macOS local bats quirk"
     Running `bats tests/bats` on macOS system Ruby (2.6) fails **only**
     `action-shell-syntax` because `YAML.safe_load_file` is unavailable there. That
-    suite passes on CI — it is not a real failure.
+    suite passes on CI, it is not a real failure.
 
 New shell scripts must be executable in Git (`core.fileMode` is off here):
 

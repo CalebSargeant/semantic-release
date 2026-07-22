@@ -11,7 +11,7 @@ take reports against it seriously.
 | Version | Supported |
 | --- | --- |
 | `v2.x` (current major) | ✅ |
-| `v1.x` and earlier | ❌ end-of-life — please upgrade to `@v2` |
+| `v1.x` and earlier | ❌ end-of-life, please upgrade to `@v2` |
 
 ## Reporting a vulnerability
 
