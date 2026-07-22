@@ -54,6 +54,7 @@ For the default `auth-mode: public-app`, the workflow needs `id-token: write` so
 | Docker PR image push or release promotion | `packages: write` |
 | Package publishing to a GitHub Packages feed (`publish-package`) | `packages: write` |
 | Public-npm provenance (`npm-provenance`) or PyPI Trusted Publishing (`pypi-trusted-publishing`) | `id-token: write` (already required by the default `auth-mode: public-app`) |
+| Image signing + SLSA provenance (`image-sign`) | `id-token: write` + `attestations: write` (plus `packages: write` for the release push) |
 | Promotion PR creation | handled by the Diatreme App token; use `pull-requests: write` only when using `auth-mode: github-token` |
 | `auth-mode: github-token` release writes | `contents: write`, plus `pull-requests: write` when creating PRs |
 
@@ -516,6 +517,45 @@ jobs:
           # image-scan-gate: 'true'
 ```
 
+## Image signing & provenance
+
+In `mode: release`, Diatreme can **sign the released image(s)** with
+[cosign](https://github.com/sigstore/cosign) (keyless / Sigstore — no keys to
+manage) and attach **SLSA build provenance** as a
+[GitHub Artifact Attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
+It signs by **immutable digest** whatever the release actually shipped — a retag of
+the provenance-verified `pr-<N>` image *or* a fresh release build — so only real
+releases are signed, never throwaway PR images.
+
+Opt in with `image-sign: true` and grant `attestations: write` (on top of the
+`id-token: write` + `packages: write` the release image flow already needs):
+
+```yaml
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+  attestations: write   # SLSA build provenance
+steps:
+  - uses: magmamoose/diatreme@v2
+    with:
+      mode: release
+      image-sign: 'true'
+```
+
+Verify a released image (`IMG=ghcr.io/<owner>/<image>`; get `DIGEST` from
+`docker buildx imagetools inspect "$IMG:<tag>"`):
+
+```sh
+cosign verify "$IMG@$DIGEST" \
+  --certificate-identity-regexp '^https://github.com/<owner>/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "oci://$IMG@$DIGEST" --owner <owner>
+```
+
+This is what makes a cluster-side cosign admission policy (e.g. Kyverno
+`verifyImages`) enforceable for Diatreme-released images.
+
 ## Versioning tool detection
 
 `versioning-tool` defaults to `auto`, which detects the tool from markers in
@@ -596,6 +636,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `image-scan-scanners` | `vuln,secret,misconfig` | Trivy scanners for the findings report. |
 | `image-scan-gate` | `false` | Fail the build when findings at/above `image-scan-severity` exist. Non-blocking by default. |
 | `image-scan-strict` | `false` | Treat a Dependency-Track / DefectDojo sink failure as fatal. Default keeps sinks failure-isolated. |
+| `image-sign` | `false` | Sign the released image(s) with cosign (keyless) + attach SLSA build provenance, by digest, in `mode: release`. Opt-in. Needs `attestations: write`. |
 | `dependency-track-url` | `''` | Dependency-Track base URL. When set, the image's CycloneDX SBOM is uploaded. Outages are non-blocking. |
 | `dependency-track-api-key` | `''` | Dependency-Track API key with BOM upload permission. |
 | `dependency-track-project-name` | `''` | DT project name. Defaults to the image repository path with an `(image)` suffix (e.g. `owner/app (image)`), distinct from a source-SBOM project for the same repo. |
@@ -661,6 +702,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `package-published` | `true` when a language package was packed and pushed to the configured feed. |
 | `image-scanned` | `true` when the assembled `pr-<N>` image(s) were scanned (`mode: ci` with `image-scan`). |
 | `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
+| `image-signed` | Number of released image(s) cosign-signed (`mode: release` with `image-sign`). |
 | `resolved-image-name` | The base image name used for image workflows — explicit `image_name`, or the value auto-detected from Docker Bake. Empty on versioning-only runs. |
 
 ## The Diatreme Worker
