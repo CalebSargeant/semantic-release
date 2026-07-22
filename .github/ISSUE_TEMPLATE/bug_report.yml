@@ -1,0 +1,68 @@
+name: 🐞 Bug report
+description: Something in the Action or Worker isn't behaving as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For **security vulnerabilities**, do not use this
+        form — follow [SECURITY.md](https://github.com/MagmaMoose/diatreme/blob/main/SECURITY.md).
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      options:
+        - Composite action (action.yml / scripts)
+        - Cloudflare Worker (worker/)
+        - Docs / CI
+    validations:
+      required: true
+  - type: input
+    id: ref
+    attributes:
+      label: Pinned version
+      description: The `uses:` ref you pinned (e.g. `MagmaMoose/diatreme@v2` or a SHA).
+      placeholder: MagmaMoose/diatreme@v2
+    validations:
+      required: true
+  - type: input
+    id: versioning-tool
+    attributes:
+      label: versioning-tool
+      description: Resolved or explicit value (auto / semantic-release-python / semantic-release-npm / gitversion / release-please).
+      placeholder: auto
+  - type: dropdown
+    id: mode
+    attributes:
+      label: mode
+      options:
+        - release
+        - ci
+        - enable-auto-merge
+        - "n/a"
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest workflow snippet + inputs that reproduces it.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: input
+    id: run-url
+    attributes:
+      label: Failing run URL (if public)
+      placeholder: https://github.com/<owner>/<repo>/actions/runs/<id>
+  - type: checkboxes
+    id: not-security
+    attributes:
+      label: Confirmation
+      options:
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

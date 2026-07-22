@@ -426,7 +426,9 @@ async function verifyOidc(
   }
 }
 
-async function verifyOidcToken(
+// Exported for direct unit testing (see test/verify-oidc.test.ts). The token-broker
+// tests inject a fake verifyOidcToken via deps; this is the real issuer-pinning path.
+export async function verifyOidcToken(
   token: string,
   audience: string | string[],
   trustedIssuers: string[] = [GITHUB_OIDC_ISSUER]
@@ -510,21 +512,6 @@ function resolveGitHubHost(env: BrokerEnv, isGhe: boolean): GitHubHost {
     graphqlUrl: GITHUB_GRAPHQL_URL,
     installationId: undefined
   };
-}
-
-// Does a PR's web host belong to the configured GHE tenant? Matched against the
-// GHE REST API host (from GHE_API_BASE), tolerating the ghe.com data-residency
-// "api." prefix (web host <tenant>.ghe.com ↔ API host api.<tenant>.ghe.com).
-function isGheHost(host: string, env: BrokerEnv): boolean {
-  if (!env.GHE_API_BASE) return false;
-  let gheApiHost: string;
-  try {
-    gheApiHost = new URL(normalizeBaseUrl(env.GHE_API_BASE)).host.toLowerCase();
-  } catch {
-    return false;
-  }
-  const candidate = host.toLowerCase();
-  return candidate === gheApiHost || `api.${candidate}` === gheApiHost;
 }
 
 async function findInstallationId(

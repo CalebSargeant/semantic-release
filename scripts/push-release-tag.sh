@@ -12,6 +12,8 @@
 # Optional env:
 #   MESSAGE       - annotated-tag message. If unset/empty, a lightweight
 #                   tag is created instead.
+#   RELEASE_NOTES - when set, emitted as the `release_notes` output ONLY on a
+#                   real release (released=true) — never on a no-op/race skip.
 #   GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL  - identity for `git config`; default
 #                   to the github-actions bot.
 #
@@ -19,9 +21,10 @@
 #   - Configures git user.name / user.email only when each is not already
 #     set in the local git config. A caller that pre-configures their own
 #     identity is preserved.
-#   - Writes `released=true|false` to $GITHUB_OUTPUT when that variable is
-#     set (always set inside an Actions step). The caller is responsible
-#     for any tool-specific outputs (version, tag, etc.).
+#   - Writes `latest_tag=${TAG}` and `released=true|false` to $GITHUB_OUTPUT
+#     when that variable is set (always set inside an Actions step), plus
+#     `release_notes=${RELEASE_NOTES}` on a real release when RELEASE_NOTES is
+#     set. The caller is responsible for any other tool-specific outputs.
 #   - Writes git push stderr to a per-invocation temp file under
 #     ${RUNNER_TEMP:-/tmp} and removes it on exit via a trap, so
 #     concurrent invocations in the same job don't read each other's
@@ -75,16 +78,17 @@ fi
 PUSH_ERR=$(mktemp "${RUNNER_TEMP:-/tmp}/tag_push.err.XXXXXX")
 trap 'rm -f "${PUSH_ERR}"' EXIT
 
-emit_released() {
+emit() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "released=$1" >> "${GITHUB_OUTPUT}"
+    echo "$1=$2" >> "${GITHUB_OUTPUT}"
   fi
 }
 
 # Pre-check: a parallel run may have already published this tag.
 if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${TAG}" 2>/dev/null | grep -Fq "refs/tags/${TAG}"; then
   echo "::notice::Tag ${TAG} already exists on remote — a parallel run published it. Treating this run as a no-op release."
-  emit_released "false"
+  emit latest_tag "${TAG}"
+  emit released "false"
   exit 0
 fi
 
@@ -101,11 +105,16 @@ if ! git push "${AUTHED_URL}" "${TAG}" 2>"${PUSH_ERR}"; then
   if git ls-remote --tags "${AUTHED_URL}" "refs/tags/${TAG}" 2>/dev/null | grep -Fq "refs/tags/${TAG}"; then
     echo "::notice::Tag ${TAG} now exists on remote (parallel run won the race between check and push). Skipping."
     git tag -d "${TAG}" 2>/dev/null || true
-    emit_released "false"
+    emit latest_tag "${TAG}"
+    emit released "false"
     exit 0
   fi
   echo "::error::Failed to push tag ${TAG}: $(head -3 "${PUSH_ERR}" 2>/dev/null)"
   exit 1
 fi
 
-emit_released "true"
+emit latest_tag "${TAG}"
+emit released "true"
+if [ -n "${RELEASE_NOTES:-}" ]; then
+  emit release_notes "${RELEASE_NOTES}"
+fi

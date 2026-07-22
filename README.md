@@ -1,20 +1,67 @@
 # Diatreme
 
-[![CI](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/ci.yaml)
-[![Release](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/magmamoose/diatreme/actions/workflows/release.yaml)
+*One GitHub Action for your whole release spine — versioning, releases, signed commits, Docker promotion, and SBOMs — on GitHub.com and Enterprise.*
+
+[![CI](https://github.com/MagmaMoose/diatreme/actions/workflows/ci.yaml/badge.svg)](https://github.com/MagmaMoose/diatreme/actions/workflows/ci.yaml)
+[![Release](https://github.com/MagmaMoose/diatreme/actions/workflows/release.yaml/badge.svg)](https://github.com/MagmaMoose/diatreme/actions/workflows/release.yaml)
+[![Latest release](https://img.shields.io/github/v/release/MagmaMoose/diatreme?sort=semver&logo=github)](https://github.com/MagmaMoose/diatreme/releases/latest)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Diatreme-purple?logo=github)](https://github.com/marketplace/actions/diatreme)
-[![License](https://img.shields.io/github/license/magmamoose/diatreme)](https://github.com/magmamoose/diatreme/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/MagmaMoose/diatreme)](https://github.com/MagmaMoose/diatreme/blob/main/LICENSE)
 
-Diatreme is a **release/deployment orchestrator**: a composite GitHub Action for semantic-release across TBD and BBD workflows. It runs release flows, builds PR Docker images, scans the assembled image and ships its SBOM to Dependency-Track (and optional findings to DefectDojo), promotes already-built GHCR images by retagging, opens promotion PRs, publishes language packages (npm/maven/gradle/rubygems/containers), and normalizes release outputs across multiple versioning tools.
+**Get started in 60 seconds → [Quickstart](#quickstart)** · [Install the GitHub App](https://github.com/apps/diatreme/installations/new) · [Docs](https://magmamoose.github.io/diatreme/)
 
-This repository holds **both surfaces** of Diatreme:
+**Diatreme** is a **release/deployment orchestrator** that collapses the release spine of a repo into a single GitHub Action. Merge a conventional commit and it computes the semantic version, writes the tag, GitHub Release, and changelog, promotes your already-built Docker image by **provenance-verified retag** (no rebuild — no drift between what you scanned and what you ship), emits a **CycloneDX SBOM** to Dependency-Track, and can publish your language package. The same workflow works whether a repo versions with python-semantic-release, semantic-release (npm), GitVersion, or release-please — on GitHub.com or GitHub Enterprise.
 
-| Surface | Path | What it is |
+It supports both **trunk-based (TBD)** and **branch-based (BBD)** development, and a hosted GitHub App mints the release token and signs the commit for you, so there's nothing to register.
+
+### What it does
+
+- **Versioning, your way** — auto-detects python-semantic-release, semantic-release (npm), GitVersion, or release-please from repo markers, so one shared workflow serves a mixed-stack org.
+- **Releases** — tag + GitHub Release + changelog + normalized outputs, with App/bot-attributed **signed** release commits.
+- **Docker, promoted — not rebuilt** — build `pr-<N>` images, then promote the *exact scanned artifact* to the release tag by digest, verifying provenance first.
+- **Supply chain built in** — scan the assembled image and route a CycloneDX SBOM to Dependency-Track (and optional findings to DefectDojo).
+- **Publish anywhere** — npm, NuGet, Maven, Gradle, RubyGems, containers, and pip, to GitHub Packages or public registries.
+- **Multi-environment promotion** — dev → staging → prod with promotion PRs and native auto-merge.
+
+```mermaid
+flowchart LR
+  C[Conventional commits] --> D{Diatreme}
+  D -->|version| R[Tag · GitHub Release · Changelog]
+  D -->|docker| I[Build pr-N → Scan → SBOM → Promote by digest]
+  D -->|packages| P[npm · NuGet · Maven · Gradle · pip · gem]
+  I --> DT[(Dependency-Track)]
+  I --> DD[(DefectDojo)]
+```
+
+## Contents
+
+- [Why Diatreme](#why-diatreme)
+- [Quickstart](#quickstart)
+- [Required Permissions](#required-permissions)
+- [Examples](#examples)
+- [Publishing language packages](#publishing-language-packages)
+- [Docker image name](#docker-image-name)
+- [Image scanning and SBOMs](#image-scanning-and-sboms)
+- [Versioning tool detection](#versioning-tool-detection)
+- [Inputs](#inputs) · [Outputs](#outputs)
+- [The Diatreme Worker](#the-diatreme-worker)
+- [Release Notes](#release-notes)
+
+## Why Diatreme
+
+Most repos already have release automation — a `semantic-release` config here, a `release-please` job there, a hand-rolled tag script somewhere else. Diatreme isn't a replacement for any one of them; it gives an **organization one workflow** that works across all of them and carries the deploy-side pieces they leave out.
+
+| | Diatreme | `semantic-release` / `release-please` alone |
 | --- | --- | --- |
-| **Composite Action** | [`action.yml`](action.yml) + [`scripts/`](scripts) | The GitHub Marketplace action your workflows call as `uses: magmamoose/diatreme@v1`. |
-| **Cloudflare Worker** | [`worker/`](worker) | The hosted GitHub App backend the action calls at `api.diatreme.magmamoose.com` — the OIDC **token broker** and the **commit/tag signer** that makes App/bot-attributed release commits. |
+| Compute the semantic version | ✅ (delegates to your tool) | ✅ |
+| **One workflow across a mixed-stack org** (Py / JS / .NET) | ✅ auto-detected | ❌ per-repo config, per tool |
+| Multi-environment promotion (dev → staging → prod) + promotion PRs | ✅ | ❌ |
+| Build → scan → **SBOM** → promote image **by digest** | ✅ provenance-verified | ❌ |
+| Publish across 7 package ecosystems | ✅ | partial / per-tool |
+| App/bot-attributed **signed** release commits | ✅ (hosted App) | ❌ (bring your own bot/PAT) |
+| GitHub.com **and** Enterprise (GHES / data residency) | ✅ | varies |
 
-The Action is what you install from the Marketplace; the Worker is the GitHub App backend that lets `auth-mode: public-app` mint release tokens and sign release commits without you registering your own App. **Most users only need the Action** — start at [Quickstart](#quickstart). To self-host or develop the backend, see [The Diatreme Worker](#the-diatreme-worker).
+**Most users only need the Action** — start at the [Quickstart](#quickstart). To self-host or develop the hosted GitHub App backend, see [The Diatreme Worker](#the-diatreme-worker).
 
 ## Quickstart
 
@@ -34,7 +81,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           environment: prod
           environments: '["prod"]'
@@ -76,7 +123,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           mode: ci
           image_name: my-app
@@ -102,7 +149,7 @@ jobs:
       id-token: write
       packages: write
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           mode: release
           deployment-model: tbd-pr
@@ -117,7 +164,7 @@ Branch-based development:
 
 ```yaml
 steps:
-  - uses: magmamoose/diatreme@v1
+  - uses: MagmaMoose/diatreme@v2
     with:
       deployment-model: bbd
       branch-map: '{"develop": "dev", "release/*": "staging", "main": "prod"}'
@@ -223,7 +270,7 @@ jobs:
       id-token: write
       packages: write
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           versioning-tool: gitversion
           environment: prod
@@ -356,7 +403,7 @@ preceding step and pass it as `package-token`. AWS CodeArtifact, for example:
         run: |
           echo "token=$(aws codeartifact get-authorization-token \
             --domain my-domain --query authorizationToken --output text)" >> "$GITHUB_OUTPUT"
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           # …versioning inputs…
           publish-package: 'true'
@@ -391,7 +438,7 @@ Publishing to public PyPI via Trusted Publishing (no `package-token`):
     permissions:
       id-token: write
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           # …versioning inputs…
           publish-package: 'true'
@@ -438,7 +485,7 @@ ci` image builds and BBD release image promotion work without passing
 
 ```yaml
 steps:
-  - uses: magmamoose/diatreme@v1
+  - uses: MagmaMoose/diatreme@v2
     with:
       deployment-model: bbd
       branch-map: '{"staging": "staging", "main": "prod"}'
@@ -502,7 +549,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: MagmaMoose/diatreme@v2
         with:
           mode: ci
           image_name: my-app
@@ -707,7 +754,9 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 
 ## The Diatreme Worker
 
-The [`worker/`](worker) directory is the Cloudflare Worker — the GitHub App backend — behind the hosted broker at `https://api.diatreme.magmamoose.com`. The Action's default `auth-mode: public-app` calls it so you never have to register and run your own GitHub App. You can also self-host it and point the Action at your own deployment with the `token-broker-url` input.
+Diatreme has **two surfaces** in this repo: the composite **Action** ([`action.yml`](action.yml) + [`scripts/`](scripts)) that you install from the Marketplace, and this **Cloudflare Worker** ([`worker/`](worker)) — the GitHub App backend behind the hosted broker at `https://api.diatreme.magmamoose.com`. They communicate over HTTP and neither imports the other.
+
+The Action's default `auth-mode: public-app` calls the Worker so you never have to register and run your own GitHub App — it mints the release token (OIDC → short-lived App installation token) and signs the release commit. You can also self-host the Worker and point the Action at your own deployment with the `token-broker-url` input.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -730,7 +779,7 @@ Configuration (secrets and vars) is documented in [`worker/README.md`](worker/RE
 
 ## Release Notes
 
-Use immutable tags or SHAs for strict reproducibility. `@v1` is the floating major tag that this repository updates after each stable release. The root release workflow dogfoods `uses: ./`, then force-updates the matching major tag after semantic-release publishes a stable version.
+Use immutable tags or a SHA for strict reproducibility — pin `@<sha>` or a full tag like `@v2.4.6`. `@v2` is the floating major tag that this repository updates after each stable release. The root release workflow dogfoods `uses: ./`, then force-updates the matching major tag after semantic-release publishes a stable version. (`@v1` is the frozen, unmaintained pre-v2 major — don't pin it for new workflows.)
 
 Docker promotion prefers `docker buildx imagetools create` so multi-arch manifests are preserved. For the known GitHub Enterprise Packages referrers-index parse error, Diatreme falls back to pull/tag/push for single-arch images, then to a fresh Docker Bake build if retagging cannot work.
 

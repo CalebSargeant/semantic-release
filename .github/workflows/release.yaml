@@ -21,6 +21,13 @@ on:
       - 'CHANGELOG.md'
       - 'LICENSE'
 
+# Serialize releases: never let two pushes to main cut a release concurrently
+# (the release mints tags and moves the floating major tag). Do NOT cancel an
+# in-flight release — a second push queues behind it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   diatreme:
     runs-on: ubuntu-latest

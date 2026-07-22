@@ -4,7 +4,9 @@ build_command = ""
 major_on_zero = false
 tag_format = "v{version}"
 
-# Current version (maintained by semantic-release — do not edit manually)
+# NOTE: the released version is derived from git tags (tag_format "v{version}");
+# the latest tag is the source of truth, not this literal. This field is not kept
+# in sync by the release flow and may lag — do not rely on it.
 version = "1.0.0"
 
 [tool.semantic_release.branches.main]

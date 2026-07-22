@@ -22,8 +22,8 @@ Self-contained: the only runtime dependency is [`jose`](https://github.com/panva
 | --- | --- | --- |
 | `POST /token` | Exchange a GitHub Actions OIDC token for a short-lived App installation token. | OIDC (`id-token: write`) |
 | `POST /sign` | Create a GitHub-signed, **App/bot-attributed** commit (release version bumps / tags) via `createCommitOnBranch`. | `Bearer PROCESS_TRIGGER_SECRET` |
-| `GET /releases` | Aggregated release history (for the dashboard). | — |
-| Webhook `push` | Keep protected branches fast-forwarded (release auto-update). | HMAC (`GITHUB_WEBHOOK_SECRET`) |
+| `GET /releases` | Aggregated release history (for the dashboard). | `Bearer PROCESS_TRIGGER_SECRET` |
+| Webhook `push` | Fast-forward open PRs targeting the pushed branch (opt-in via `AUTO_UPDATE_BRANCHES`). | HMAC (`GITHUB_WEBHOOK_SECRET`) |
 
 ## Configuration
 
@@ -35,8 +35,10 @@ Secrets are set with `wrangler secret put <NAME>` (never committed). For local
 | --- | --- | --- |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | yes | The github.com App that `/token` and `/sign` act as. |
 | `OIDC_AUDIENCE` | no (default `diatreme`) | Expected OIDC audience for `/token`. |
-| `PROCESS_TRIGGER_SECRET` | for `/sign` | Bearer that gates the signer. |
+| `PROCESS_TRIGGER_SECRET` | for `/sign`, `/releases` | Bearer that gates the signer and the release aggregate. |
 | `GITHUB_WEBHOOK_SECRET` | for push auto-update | HMAC secret for the webhook receiver. |
+| `AUTO_UPDATE_BRANCHES` | no | Opt-in flag; when truthy, a `push` webhook fast-forwards open PRs targeting the pushed branch. |
+| `ALLOWED_REPOSITORIES` | no | Comma-separated allowlist of `owner/repo` for `/token`; empty allows any repo the App is installed on. |
 | `GHE_OIDC_ISSUER`, `GHE_API_BASE`, `GHE_GITHUB_APP_ID`, `GHE_GITHUB_APP_PRIVATE_KEY`, `GHE_GITHUB_APP_INSTALLATION_ID` | opt-in | GitHub Enterprise (ghe.com / GHES) support. |
 
 **KV binding** — `COPILOT_QUOTA_KV` (legacy name) caches the aggregated `/releases`

@@ -8,6 +8,18 @@ updates:
       actions:
         patterns: ['*']
 
+  # The Cloudflare Worker's npm dependencies (worker/package.json). Only the
+  # runtime dep `jose` ships; the rest (wrangler/vitest/typescript/@types) are
+  # dev-only. Grouped so a weekly bump lands as one PR, and CI's `worker` job
+  # (typecheck + tests) gates it.
+  - package-ecosystem: npm
+    directory: /worker
+    schedule:
+      interval: weekly
+    groups:
+      worker:
+        patterns: ['*']
+
   # Tracks the python-semantic-release pin in scripts/psr-requirements.txt, which
   # scripts/run-python-semantic-release.sh installs. Nothing else in this repo is
   # a Python dependency.

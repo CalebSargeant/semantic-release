@@ -1,0 +1,2 @@
+# Build/serve dependency for this MkDocs site: `pip install -r docs/requirements.txt`
+mkdocs-material>=9.5
