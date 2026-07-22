@@ -37,6 +37,10 @@ while IFS= read -r ref; do
 done <<< "${IMAGE_REFS}"
 
 echo "cosign: signed ${signed} image(s)"
+if [ "${signed}" -eq 0 ]; then
+  echo "::error::no images were signed — all digest lookups failed. Check registry auth and that the released tags are reachable."
+  exit 1
+fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     echo "primary_subject=${primary_subject}"
