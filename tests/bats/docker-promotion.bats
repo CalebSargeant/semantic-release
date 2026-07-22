@@ -55,3 +55,31 @@
   # artifact — their trees never match the new release commit.
   grep -Eq 'SOURCE_TAG_SUFFIX.*&&.*IS_FIRST_ENV' action.yml
 }
+
+# ── no-bake Dockerfile fallback ──────────────────────────────────────────────
+# When there is no bake file but a Dockerfile, the build/scan/promote/sign steps
+# branch on the resolver's strategy and build directly with `docker buildx build`
+# (via scripts/build-image-dockerfile.sh) instead of `docker buildx bake`.
+
+@test "CI build branches to the Dockerfile builder when strategy=dockerfile" {
+  grep -Eq 'STRATEGY.*=.*"dockerfile"' action.yml
+  grep -Fq 'scripts/build-image-dockerfile.sh' action.yml
+}
+
+@test "Dockerfile CI build stamps the same provenance labels bake stamps" {
+  # verify-promote-source.sh compares these labels, so the fallback must set them
+  # too or every Dockerfile-built pr-<N> image would fail promotion verification.
+  grep -Fq 'org.opencontainers.image.revision=%s' action.yml
+  grep -Fq 'com.magmamoose.diatreme.git-tree=%s' action.yml
+}
+
+@test "promote fresh-build falls back to the Dockerfile builder, not bake" {
+  # Inside the fresh-build branch, the dockerfile path rebuilds at the release
+  # tag via the build script; the version tag + :latest are passed together.
+  grep -Fq 'CACHE_SCOPE="buildkit-dockerfile"' action.yml
+  grep -Eq 'FRESH_TAGS=.*NEW_TAG' action.yml
+}
+
+@test "the Dockerfile builder script exists and is referenced" {
+  [ -x scripts/build-image-dockerfile.sh ]
+}

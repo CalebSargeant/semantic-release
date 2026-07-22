@@ -243,7 +243,12 @@ inputs:
     default: ''
 
   bake_file:
-    description: 'Path to docker-bake.hcl'
+    description: |
+      Path to the Docker Bake file. When it (or `docker-bake.json`, when this is
+      left at the default) exists, Diatreme builds with `docker buildx bake`.
+      When NO bake file is present but a `dockerfile` exists, Diatreme falls back
+      to building it directly with `docker buildx build` (and emits a warning
+      nudging you toward a bake file). See the `dockerfile` input.
     required: false
     default: 'docker-bake.hcl'
 
@@ -253,6 +258,21 @@ inputs:
       Groups are expanded — all sub-targets are built/promoted automatically.
     required: false
     default: 'default'
+
+  dockerfile:
+    description: |
+      Path to the Dockerfile used by the no-bake fallback. When no Docker Bake
+      file is present (see `bake_file`) but this file exists, Diatreme builds the
+      image directly with `docker buildx build -f <dockerfile> .` — honouring the
+      same `platforms`, tags, provenance labels, GHA cache, `build-github-token`
+      secret, and `--push` semantics as the bake path.
+
+      This makes the simplest consumer (one Dockerfile, no bake file) Just Work.
+      Prefer a `docker-bake.hcl` when you need multi-target builds, tag
+      templating, multi-arch defaults, or local↔CI build parity — Diatreme emits
+      a warning on the fallback path to point you there.
+    required: false
+    default: 'Dockerfile'
 
   detect-image-name:
     description: |
@@ -992,8 +1012,9 @@ outputs:
   resolved-image-name:
     description: |
       The base image name Diatreme used for image workflows — the explicit
-      `image_name` input when set, otherwise the value auto-detected from the
-      Docker Bake config. Empty when neither applies (versioning-only runs).
+      `image_name` input when set, the value auto-detected from the Docker Bake
+      config, or the repository name on the no-bake Dockerfile path. Empty when
+      none applies (versioning-only runs).
     value: ${{ steps.resolve-image.outputs.image_name }}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1080,6 +1101,8 @@ runs:
         DETECT_IMAGE_NAME: ${{ inputs.detect-image-name }}
         INPUT_BAKE_FILE: ${{ inputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
+        INPUT_REPO_FULL: ${{ github.repository }}
         # Inherited by `bake --print` so the printed target set matches the
         # build/promote steps (only matters if the bake file gates targets on
         # this secret).
@@ -1168,13 +1191,45 @@ runs:
         OWNER: ${{ github.repository_owner }}
         REF_NAME: ${{ github.ref_name }}
         INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
-        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        STRATEGY: ${{ steps.resolve-image.outputs.strategy }}
+        INPUT_BAKE_FILE: ${{ steps.resolve-image.outputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
       run: |
         set -euo pipefail
 
         OWNER_LOWER=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
         export IMAGE_NAME="${OWNER_LOWER}/${INPUT_IMAGE_NAME}"
+
+        echo "IMAGE_NAME: ${IMAGE_NAME}"
+        echo "VERSION:    ${VERSION}"
+
+        # Stamp build provenance so `mode: release` can prove a pr-<N> image was
+        # built from the code it is about to release before promoting it
+        # (scripts/verify-promote-source.sh). The tree hash survives squash/rebase
+        # merges; the revision is the standard OCI label.
+        BUILD_REVISION=$(git rev-parse HEAD)
+        BUILD_TREE=$(git rev-parse 'HEAD^{tree}')
+
+        if [ "${STRATEGY}" = "dockerfile" ]; then
+          # No bake file — build the Dockerfile directly. Same knobs as the bake
+          # path: platforms, the pr-<N> tag, provenance labels, GHA cache, the
+          # github_token secret, --push.
+          export BUILD_GITHUB_TOKEN="${BAKE_GITHUB_TOKEN}"
+          export TAGS="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+          export DOCKERFILE="${INPUT_DOCKERFILE}"
+          export PLATFORMS="${INPUT_PLATFORMS}"
+          export CACHE_SCOPE="bk-dockerfile-${REF_NAME}"
+          LABELS="$(printf 'org.opencontainers.image.revision=%s\ncom.magmamoose.diatreme.git-tree=%s' "${BUILD_REVISION}" "${BUILD_TREE}")"
+          export LABELS
+          "${GITHUB_ACTION_PATH}/scripts/build-image-dockerfile.sh"
+          exit 0
+        fi
+
+        if [ "${STRATEGY}" != "bake" ]; then
+          echo "::error::image_name is set ('${IMAGE_NAME}') but no Docker Bake file ('${INPUT_BAKE_FILE}') and no Dockerfile ('${INPUT_DOCKERFILE}') were found — nothing to build. Add a docker-bake.hcl or a Dockerfile, or leave image_name empty for a versioning-only run."
+          exit 1
+        fi
 
         # Override the bake file's platforms ONLY when the caller set `platforms`
         # explicitly. Empty (the default) leaves $PLATFORMS unset so the repo's
@@ -1182,9 +1237,6 @@ runs:
         # PLATFORMS=""` — bake treats an empty value as set and `split(",", "")`
         # yields [""], an invalid platform. Unset is what defers to the default.
         if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
-
-        echo "IMAGE_NAME: ${IMAGE_NAME}"
-        echo "VERSION:    ${VERSION}"
 
         TARGETS=$(docker buildx bake \
           -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" \
@@ -1197,15 +1249,8 @@ runs:
           CACHE_ARGS+=(--set "${TARGET}.cache-to=type=gha,mode=max,scope=${SCOPE}")
         done
 
-        # Stamp build provenance on every target so `mode: release` can prove a
-        # pr-<N> image was built from the code it is about to release before
-        # promoting it (scripts/verify-promote-source.sh). The tree hash is the
-        # one that survives squash/rebase merges; the revision is the standard
-        # OCI label. `--set` overrides only these two keys in the consumer's
+        # `--set` overrides only these two provenance keys in the consumer's
         # bake file.
-        BUILD_REVISION=$(git rev-parse HEAD)
-        BUILD_TREE=$(git rev-parse 'HEAD^{tree}')
-
         docker buildx bake \
           -f "${INPUT_BAKE_FILE}" \
           "${INPUT_BAKE_TARGET}" \
@@ -1231,9 +1276,10 @@ runs:
         VERSION: ${{ inputs.version-override != '' && steps.version-override.outputs.version || format('pr-{0}', github.event.pull_request.number) }}
         OWNER: ${{ github.repository_owner }}
         INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
+        STRATEGY: ${{ steps.resolve-image.outputs.strategy }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
-        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_FILE: ${{ steps.resolve-image.outputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
         # Same build secret the build step passed, so `bake --print` renders the
         # identical tag set here (matters only if a bake file gates targets on it).
@@ -1269,9 +1315,14 @@ runs:
 
         # One ref per bake target — the canonical tag (tags[0]), which carries
         # the pr-<N> version. This is the exact image that release promotes by
-        # digest, so what we scan here is what ships.
-        IMAGE_REFS=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null \
-          | jq -r '.target[].tags[0] // empty' | sort -u)
+        # digest, so what we scan here is what ships. The no-bake Dockerfile path
+        # pushed exactly one ref (${REGISTRY}/${IMAGE_NAME}:${VERSION}).
+        if [ "${STRATEGY}" = "dockerfile" ]; then
+          IMAGE_REFS="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+        else
+          IMAGE_REFS=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null \
+            | jq -r '.target[].tags[0] // empty' | sort -u)
+        fi
         echo "Image refs to scan:"
         echo "${IMAGE_REFS}"
 
@@ -2073,10 +2124,12 @@ runs:
         INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
         OWNER: ${{ github.repository_owner }}
         INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
+        STRATEGY: ${{ steps.resolve-image.outputs.strategy }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
-        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_FILE: ${{ steps.resolve-image.outputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
+        INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
         REPO_FULL: ${{ github.repository }}
       run: |
         set -euo pipefail
@@ -2098,9 +2151,15 @@ runs:
         # (see the pr-<N> build step). Never export an empty value — it breaks bake.
         if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
 
-        # Discover all bake targets
-        BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
-        IMAGES=$(echo "${BAKE_OUTPUT}" | jq -c '.target | to_entries | map({target: .key, image: (.value.tags[0] // "" | split(":")[0])})')
+        # Discover the image(s) to promote. Bake enumerates every target; the
+        # no-bake Dockerfile path has a single image, ${REGISTRY}/${IMAGE_NAME}
+        # (the same repo the CI Dockerfile build pushed pr-<N> to).
+        if [ "${STRATEGY}" = "dockerfile" ]; then
+          IMAGES=$(jq -cn --arg image "${REGISTRY}/${IMAGE_NAME}" '[{target: "dockerfile", image: $image}]')
+        else
+          BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
+          IMAGES=$(echo "${BAKE_OUTPUT}" | jq -c '.target | to_entries | map({target: .key, image: (.value.tags[0] // "" | split(":")[0])})')
+        fi
         echo "Images to promote: ${IMAGES}"
 
         # Determine promotion strategy
@@ -2264,18 +2323,31 @@ runs:
 
           if [ "${PROMOTED}" == "false" ]; then
             echo "Fresh build fallback for ${IMAGE} (${TARGET})"
-            # `docker buildx bake --set <target>.tags=` REPLACES the tag list, so
-            # a second `--set <target>.tags=:latest` would drop ${NEW_TAG} and the
-            # release version would never be pushed on this path. Pass both tags in
-            # ONE comma-joined override so the version tag is always included.
-            BAKE_TAGS="${NEW_TAG}"
-            [ "${IS_PRERELEASE}" == "false" ] && BAKE_TAGS="${NEW_TAG},${IMAGE}:latest"
-            docker buildx bake \
-              -f "${INPUT_BAKE_FILE}" "${TARGET}" \
-              --set "${TARGET}.tags=${BAKE_TAGS}" \
-              --set "${TARGET}.cache-from=type=gha,scope=buildkit-${TARGET}" \
-              --set "${TARGET}.cache-to=type=gha,mode=max,scope=buildkit-${TARGET}" \
-              --push
+            if [ "${STRATEGY}" = "dockerfile" ]; then
+              # No bake file — rebuild the Dockerfile directly at the release tag
+              # (+ :latest for a stable release). One newline-separated --tag per ref.
+              FRESH_TAGS="${NEW_TAG}"
+              [ "${IS_PRERELEASE}" == "false" ] && FRESH_TAGS="$(printf '%s\n%s' "${NEW_TAG}" "${IMAGE}:latest")"
+              export BUILD_GITHUB_TOKEN="${BAKE_GITHUB_TOKEN}"
+              TAGS="${FRESH_TAGS}" \
+              DOCKERFILE="${INPUT_DOCKERFILE}" \
+              PLATFORMS="${INPUT_PLATFORMS}" \
+              CACHE_SCOPE="buildkit-dockerfile" \
+                "${GITHUB_ACTION_PATH}/scripts/build-image-dockerfile.sh"
+            else
+              # `docker buildx bake --set <target>.tags=` REPLACES the tag list, so
+              # a second `--set <target>.tags=:latest` would drop ${NEW_TAG} and the
+              # release version would never be pushed on this path. Pass both tags in
+              # ONE comma-joined override so the version tag is always included.
+              BAKE_TAGS="${NEW_TAG}"
+              [ "${IS_PRERELEASE}" == "false" ] && BAKE_TAGS="${NEW_TAG},${IMAGE}:latest"
+              docker buildx bake \
+                -f "${INPUT_BAKE_FILE}" "${TARGET}" \
+                --set "${TARGET}.tags=${BAKE_TAGS}" \
+                --set "${TARGET}.cache-from=type=gha,scope=buildkit-${TARGET}" \
+                --set "${TARGET}.cache-to=type=gha,mode=max,scope=buildkit-${TARGET}" \
+                --push
+            fi
           fi
         done
 
@@ -2300,9 +2372,10 @@ runs:
       env:
         OWNER: ${{ github.repository_owner }}
         INPUT_IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
+        STRATEGY: ${{ steps.resolve-image.outputs.strategy }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_PLATFORMS: ${{ inputs.platforms }}
-        INPUT_BAKE_FILE: ${{ inputs.bake_file }}
+        INPUT_BAKE_FILE: ${{ steps.resolve-image.outputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
         BAKE_GITHUB_TOKEN: ${{ inputs.build-github-token }}
         NORMALIZE_VERSION: ${{ steps.normalize.outputs.version }}
@@ -2318,12 +2391,17 @@ runs:
         if [ -n "${INPUT_PLATFORMS}" ]; then export PLATFORMS="${INPUT_PLATFORMS}"; fi
 
         # Re-derive the released refs exactly like Promote images did: the repo
-        # from each bake target's canonical tag, retagged to the release tag.
-        BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
-        IMAGE_REFS=""
-        while IFS= read -r repo; do
-          [ -n "${repo}" ] && IMAGE_REFS="${IMAGE_REFS}${repo}:${NORMALIZE_TAG}"$'\n'
-        done < <(echo "${BAKE_OUTPUT}" | jq -r '.target[].tags[0] // empty | split(":")[0]' | sort -u)
+        # from each bake target's canonical tag, retagged to the release tag. The
+        # no-bake Dockerfile path signed a single repo, ${REGISTRY}/${IMAGE_NAME}.
+        if [ "${STRATEGY}" = "dockerfile" ]; then
+          IMAGE_REFS="${REGISTRY}/${IMAGE_NAME}:${NORMALIZE_TAG}"$'\n'
+        else
+          BAKE_OUTPUT=$(docker buildx bake -f "${INPUT_BAKE_FILE}" "${INPUT_BAKE_TARGET}" --print 2>/dev/null)
+          IMAGE_REFS=""
+          while IFS= read -r repo; do
+            [ -n "${repo}" ] && IMAGE_REFS="${IMAGE_REFS}${repo}:${NORMALIZE_TAG}"$'\n'
+          done < <(echo "${BAKE_OUTPUT}" | jq -r '.target[].tags[0] // empty | split(":")[0]' | sort -u)
+        fi
 
         echo "Released image(s) to sign:"
         printf '%s' "${IMAGE_REFS}"

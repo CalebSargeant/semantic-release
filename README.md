@@ -448,6 +448,30 @@ Publishing to public PyPI via Trusted Publishing (no `package-token`):
           # https://test.pypi.org/legacy/
 ```
 
+## Docker build definition
+
+Diatreme detects **how** to build your image from what's in the repo:
+
+1. **Docker Bake file present** (`docker-bake.hcl`, or `docker-bake.json` when
+   `bake_file` is left at its default) → builds with `docker buildx bake`
+   (unchanged). This is the way to get multi-target builds, tag templating,
+   multi-arch defaults, and local↔CI build parity.
+2. **No bake file, but a `dockerfile` present** → Diatreme builds it directly
+   with `docker buildx build -f <dockerfile> .`, honouring the same knobs it
+   passes to bake — `platforms`, the computed `${registry}/${image_name}:${version}`
+   tag(s) (plus `:latest` on stable releases), provenance labels, GitHub Actions
+   cache, the `build-github-token` build secret, and `--push`. A **warning** is
+   emitted on this path nudging you to add a bake file. This is the zero-config
+   path so the simplest consumer — one `Dockerfile`, no bake file — Just Works
+   instead of failing with `open docker-bake.hcl: no such file or directory`.
+3. **Neither** → no image is built (versioning-only runs are unaffected).
+
+> **Multi-arch on the Dockerfile path.** A plain Dockerfile has nowhere to
+> declare a default platform set, so with `platforms` empty the fallback builds
+> for the builder's default (single) architecture. Set
+> `platforms: linux/amd64,linux/arm64` to produce a multi-arch manifest, exactly
+> as bake would. For anything beyond a single image, prefer a `docker-bake.hcl`.
+
 ## Docker image name
 
 `image_name` is **optional**. Just as Diatreme infers the release environment
@@ -471,13 +495,18 @@ Resolution order:
    | `ghcr.io/platform1-systems/camera-probe-propagator:v1` | `camera-probe-propagator` |
    | `platform1-systems/admin-frontend:latest` | `admin-frontend` |
 
-3. **No `image_name` and no bake file** → the name stays empty and the image
-   steps (CI build, image scan, release promotion) are skipped. Versioning-only
-   workflows are unaffected.
+3. **No `image_name`, no bake file, but a `dockerfile` is present** → the base
+   name falls back to the **repository's own name** (lowercased), e.g. repo
+   `OgenrwotAaron/gettier` → `ghcr.io/ogenrwotaaron/gettier`. This is the
+   zero-config Dockerfile path (see [Docker build definition](#docker-build-definition)).
+4. **No `image_name`, no bake file, no Dockerfile** → the name stays empty and
+   the image steps (CI build, image scan, release promotion) are skipped.
+   Versioning-only workflows are unaffected.
 
 A bake file that exists but produces **no tags** is a hard error — Diatreme
-never silently falls back to the repository name; fix the bake target or pass
-`image_name` explicitly.
+never silently falls back to the repository name for the *bake* path; fix the
+bake target or pass `image_name` explicitly. (The repository-name fallback above
+applies only when there is genuinely no bake file and a Dockerfile is present.)
 
 Detection feeds every image path identically to an explicit value, so **`mode:
 ci` image builds and BBD release image promotion work without passing
@@ -669,14 +698,15 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `app-id` | `''` | Private GitHub App ID. |
 | `app-private-key` | `''` | Private GitHub App PEM. |
 | `submodules` | `false` | Pass-through to checkout: `false`, `true`, or `recursive`. |
-| `image_name` | `''` | Base image name without registry or owner. Optional — auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted; an explicit value wins. See [Docker image name](#docker-image-name). |
-| `bake_file` | `docker-bake.hcl` | Docker Bake file. |
+| `image_name` | `''` | Base image name without registry or owner. Optional — auto-detected from the Docker Bake config (`bake_file`/`bake_target`) when omitted, or falls back to the repository name on the no-bake Dockerfile path; an explicit value wins. See [Docker image name](#docker-image-name). |
+| `bake_file` | `docker-bake.hcl` | Docker Bake file. When present (or `docker-bake.json` at the default), builds run via `docker buildx bake`. When absent but a `dockerfile` exists, Diatreme falls back to `docker buildx build`. See [Docker build definition](#docker-build-definition). |
 | `bake_target` | `default` | Docker Bake target or group. |
+| `dockerfile` | `Dockerfile` | Dockerfile used by the no-bake fallback (`docker buildx build`). Only used when no bake file is present. See [Docker build definition](#docker-build-definition). |
 | `detect-image-name` | `true` | Auto-detect `image_name` from the Docker Bake config when it is empty. Set `false` to opt out (versioning-only repos with a tagged bake file). Explicit `image_name` always wins. |
 | `registry` | `ghcr.io` | Container registry. |
 | `registry-username` | `''` | Explicit registry login username. |
 | `registry-password` | `''` | Explicit registry login password or token. |
-| `platforms` | `''` (empty) | Platforms override, e.g. `linux/amd64,linux/arm64`. Empty defers to the repo's `docker-bake.hcl` `PLATFORMS` default (does not override it). |
+| `platforms` | `''` (empty) | Platforms override, e.g. `linux/amd64,linux/arm64`. Empty defers to the repo's `docker-bake.hcl` `PLATFORMS` default (does not override it). On the no-bake Dockerfile path, empty builds single-arch (builder default); set this to produce a multi-arch manifest. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
 | `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires a resolved image name (explicit `image_name` or bake-detected). |
 | `image-scan-severity` | `CRITICAL,HIGH` | Trivy severity filter for findings and the gate. The SBOM still inventories all components. |
@@ -750,7 +780,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `image-scanned` | `true` when the assembled `pr-<N>` image(s) were scanned (`mode: ci` with `image-scan`). |
 | `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
 | `image-signed` | Number of released image(s) cosign-signed (`mode: release` with `image-sign`). |
-| `resolved-image-name` | The base image name used for image workflows — explicit `image_name`, or the value auto-detected from Docker Bake. Empty on versioning-only runs. |
+| `resolved-image-name` | The base image name used for image workflows — explicit `image_name`, the value auto-detected from Docker Bake, or the repository name on the no-bake Dockerfile path. Empty on versioning-only runs. |
 
 ## The Diatreme Worker
 
