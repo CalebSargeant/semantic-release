@@ -10,6 +10,13 @@
 #   TAG                  the tag of the release we just published
 #   PRERELEASE_IDENTIFIER  (optional) prerelease identifier, used to find
 #                          the previous tag of the same series
+#   TAG_PREFIX           (optional) tag prefix to scope the previous-tag
+#                        lookup to one package's tag series. Empty means
+#                        "every tag in the repo", which is right for a
+#                        single-package repo and wrong for a repo that
+#                        releases several — there the previous tag would be
+#                        whichever package released last, and the commit
+#                        range would span someone else's work.
 #
 # Behaviour:
 #   - Resolves the previous release tag (same prerelease series, or the
@@ -30,21 +37,24 @@ set -euo pipefail
 : "${REPO:?REPO is required}"
 : "${TAG:?TAG is required}"
 PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER:-}"
+TAG_PREFIX="${TAG_PREFIX:-}"
 
 log() { echo "::notice::[github-projects] $*"; }
 warn() { echo "::warning::[github-projects] $*"; }
 
 # ─── 1. Find the previous tag in the same series ──────────────────────────
+# Note "${TAG_PREFIX}*" and not "${TAG_PREFIX}": an empty prefix must widen
+# the glob to every tag, not narrow it to none.
 PREV_TAG=""
 if [ -n "${PRERELEASE_IDENTIFIER}" ]; then
   # Same prerelease series, e.g. previous v1.2.3-rc.* before v1.2.3-rc.5
-  PREV_TAG=$(git tag -l --sort=-v:refname \
+  PREV_TAG=$(git tag -l "${TAG_PREFIX}*" --sort=-v:refname \
     | grep -E "\\-${PRERELEASE_IDENTIFIER}\\.[0-9]+$" \
     | grep -v "^${TAG}$" \
     | head -1 || true)
 fi
 if [ -z "${PREV_TAG}" ]; then
-  PREV_TAG=$(git tag -l --sort=-v:refname \
+  PREV_TAG=$(git tag -l "${TAG_PREFIX}*" --sort=-v:refname \
     | grep -vE -- "-[a-zA-Z][^.]*\\.[0-9]+$" \
     | grep -v "^${TAG}$" \
     | head -1 || true)

@@ -79,6 +79,47 @@ JSON
   echo "$output" | grep -qw -- "semantic-release-slack-bot"
 }
 
+@test "a shareable config in \"extends\" is installed (semantic-release-monorepo)" {
+  # semantic-release-monorepo — the standard way to scope an npm release to one
+  # package of a repo — is consumed via "extends" and never appears under
+  # "plugins". Missing it means MODULE_NOT_FOUND at config load, before any
+  # release logic runs.
+  cd "${WORK}"
+  cat > .releaserc.json <<'JSON'
+{
+  "extends": "semantic-release-monorepo",
+  "plugins": ["@semantic-release/commit-analyzer"]
+}
+JSON
+  run "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qw -- "semantic-release-monorepo"
+}
+
+@test "\"extends\" also accepts an array, and local paths are still skipped" {
+  cd "${WORK}"
+  cat > .releaserc.json <<'JSON'
+{ "extends": ["semantic-release-monorepo", "./local-config.js"] }
+JSON
+  run "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qw -- "semantic-release-monorepo"
+  ! echo "$output" | grep -q -- "./local-config.js"
+}
+
+@test "\"extends\" in a package.json release key is included" {
+  cd "${WORK}"
+  cat > package.json <<'JSON'
+{
+  "name": "consumer",
+  "release": { "extends": "semantic-release-monorepo" }
+}
+JSON
+  run "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qw -- "semantic-release-monorepo"
+}
+
 @test "no duplicate packages in the output" {
   cd "${WORK}"
   cat > .releaserc.json <<'JSON'

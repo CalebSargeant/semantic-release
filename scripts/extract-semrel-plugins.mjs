@@ -26,6 +26,22 @@ function pluginsFrom(config) {
     .filter((name) => typeof name === 'string');
 }
 
+/**
+ * Pull shareable-config names out of `extends` (a string or an array).
+ *
+ * `extends` needs installing for exactly the same reason `plugins` does, and
+ * missing it has one specific consequence: `semantic-release-monorepo` — the
+ * standard way to scope an npm release to one package of a repo — is consumed
+ * as `"extends": "semantic-release-monorepo"` and never appears under
+ * `plugins`. Without this it is never installed, and the run dies with
+ * MODULE_NOT_FOUND at config load, before any release logic executes.
+ */
+function extendsFrom(config) {
+  if (!config || !config.extends) return [];
+  const raw = Array.isArray(config.extends) ? config.extends : [config.extends];
+  return raw.filter((name) => typeof name === 'string');
+}
+
 function parseJsonFile(path) {
   try {
     if (!existsSync(path)) return null;
@@ -41,12 +57,12 @@ const names = new Set();
 
 // package.json "release" key.
 const pkg = parseJsonFile(resolve(cwd, 'package.json'));
-if (pkg) for (const name of pluginsFrom(pkg.release)) names.add(name);
+if (pkg) for (const name of [...pluginsFrom(pkg.release), ...extendsFrom(pkg.release)]) names.add(name);
 
 // Dedicated config files, in cosmiconfig precedence order.
 for (const file of ['.releaserc', '.releaserc.json']) {
   const cfg = parseJsonFile(resolve(cwd, file));
-  if (cfg) for (const name of pluginsFrom(cfg)) names.add(name);
+  if (cfg) for (const name of [...pluginsFrom(cfg), ...extendsFrom(cfg)]) names.add(name);
 }
 
 for (const name of names) {

@@ -28,20 +28,23 @@ set -euo pipefail
 : "${TAG:?TAG is required}"
 : "${TARGET_STATUS:?TARGET_STATUS is required}"
 PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER:-}"
+TAG_PREFIX="${TAG_PREFIX:-}"
 
 log() { echo "::notice::[projects-move] $*"; }
 warn() { echo "::warning::[projects-move] $*"; }
 
 # ─── 1. Resolve commit range — same logic as append-github-projects.sh ───
+# "${TAG_PREFIX}*" scopes the lookup to one package's tag series; an empty
+# prefix widens the glob to every tag rather than matching none.
 PREV_TAG=""
 if [ -n "${PRERELEASE_IDENTIFIER}" ]; then
-  PREV_TAG=$(git tag -l --sort=-v:refname \
+  PREV_TAG=$(git tag -l "${TAG_PREFIX}*" --sort=-v:refname \
     | grep -E "\\-${PRERELEASE_IDENTIFIER}\\.[0-9]+$" \
     | grep -v "^${TAG}$" \
     | head -1 || true)
 fi
 if [ -z "${PREV_TAG}" ]; then
-  PREV_TAG=$(git tag -l --sort=-v:refname \
+  PREV_TAG=$(git tag -l "${TAG_PREFIX}*" --sort=-v:refname \
     | grep -vE -- "-[a-zA-Z][^.]*\\.[0-9]+$" \
     | grep -v "^${TAG}$" \
     | head -1 || true)

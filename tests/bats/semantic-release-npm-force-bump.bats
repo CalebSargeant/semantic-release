@@ -51,6 +51,7 @@ setup() {
   mkdir -p "${ACTION_PATH}/scripts"
   cp "${REPO_ROOT}/scripts/force-bump-version.sh" \
      "${REPO_ROOT}/scripts/push-release-tag.sh" \
+     "${REPO_ROOT}/scripts/latest-tag.sh" \
      "${ACTION_PATH}/scripts/"
   printf '#!/usr/bin/env bash\necho "semantic-release"\n' \
     > "${ACTION_PATH}/scripts/semantic-release-deps.sh"
