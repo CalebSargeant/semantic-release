@@ -1702,7 +1702,7 @@ runs:
               "${GITHUB_ACTION_PATH}/scripts/push-release-tag.sh"
           else
             echo "No relevant commits for prerelease — skipping"
-            EXISTING_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            EXISTING_TAG=$(PREFIX="${PREFIX}" "${GITHUB_ACTION_PATH}/scripts/latest-tag.sh")
             echo "latest_tag=${EXISTING_TAG}" >> "$GITHUB_OUTPUT"
             echo "released=false"             >> "$GITHUB_OUTPUT"
           fi
@@ -1739,9 +1739,9 @@ runs:
             # Direct push or workflow_dispatch: run semantic-release normally.
             # Use || true so non-critical post-hook failures (e.g. PR label
             # permissions) don't abort the step after the release is published.
-            PRE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            PRE_TAG=$(PREFIX="${PREFIX}" "${GITHUB_ACTION_PATH}/scripts/latest-tag.sh")
             "${SEMREL_BIN}" || echo "::warning::semantic-release exited non-zero (release may still have been created)"
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            LATEST_TAG=$(PREFIX="${PREFIX}" "${GITHUB_ACTION_PATH}/scripts/latest-tag.sh")
             echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
             if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "${PRE_TAG}" ]; then
               echo "released=true"  >> "$GITHUB_OUTPUT"
@@ -1933,7 +1933,12 @@ runs:
           esac
         fi
         if [ -z "${VERSION}" ]; then
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          # Scoped to PREFIX. This fallback feeds the `version` output that the
+          # image tag, the published package and the GitHub Release all derive
+          # from, so in a repo releasing more than one package an unscoped
+          # lookup here republishes package A under package B's version — with
+          # every step green.
+          LATEST=$(PREFIX="${PREFIX}" "${GITHUB_ACTION_PATH}/scripts/latest-tag.sh")
           if [ -n "${LATEST}" ]; then
             VERSION="${LATEST#${PREFIX}}"
             TAG="${LATEST}"
@@ -2643,6 +2648,7 @@ runs:
         INPUT_ENVIRONMENTS: ${{ inputs.environments }}
         INPUT_PROMOTE_BRANCH_PREFIX: ${{ inputs.promote-branch-prefix }}
         INPUT_PROMOTE_TARGET_BRANCH: ${{ inputs.promote-target-branch }}
+        INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
       run: |
         set -euo pipefail
 
@@ -2677,6 +2683,7 @@ runs:
               ENV="${ENV}" NEXT_ENV="${NEXT_ENV}" \
               PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER}" \
               PROMOTE_BRANCH_PREFIX="${PREFIX}" \
+              TAG_PREFIX="${INPUT_TAG_PREFIX}" \
               "${GITHUB_ACTION_PATH}/scripts/build-promotion-pr-body.sh" > "${out}" 2>/dev/null \
               && [ -s "${out}" ]; then
             echo "Using enriched PR body ($(wc -l < "${out}") lines)."
@@ -2771,6 +2778,7 @@ runs:
         REPO: ${{ github.event.repository.name }}
         TAG: ${{ steps.normalize.outputs.tag }}
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
       run: "${GITHUB_ACTION_PATH}/scripts/append-github-projects.sh"
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -2839,6 +2847,7 @@ runs:
         TAG: ${{ steps.normalize.outputs.tag }}
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
         TARGET_STATUS: ${{ inputs.github-projects-target-status }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
       run: "${GITHUB_ACTION_PATH}/scripts/move-github-projects.sh"
 
     # ═════════════════════════════════════════════════════════════════════════
