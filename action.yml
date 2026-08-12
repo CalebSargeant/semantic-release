@@ -2340,15 +2340,26 @@ runs:
               CACHE_SCOPE="buildkit-dockerfile" \
                 "${GITHUB_ACTION_PATH}/scripts/build-image-dockerfile.sh"
             else
-              # `docker buildx bake --set <target>.tags=` REPLACES the tag list, so
-              # a second `--set <target>.tags=:latest` would drop ${NEW_TAG} and the
-              # release version would never be pushed on this path. Pass both tags in
-              # ONE comma-joined override so the version tag is always included.
-              BAKE_TAGS="${NEW_TAG}"
-              [ "${IS_PRERELEASE}" == "false" ] && BAKE_TAGS="${NEW_TAG},${IMAGE}:latest"
+              # REPEATED `--set <target>.tags=` APPENDS; it does not replace. Verified on
+              # buildx v0.34.0:
+              #
+              #   --set default.tags=x:v1 --set default.tags=x:latest
+              #     -> ["x:v1", "x:latest"]           correct
+              #   --set default.tags=x:v1,x:latest
+              #     -> ["x:v1,x:latest"]              ONE tag containing a comma
+              #
+              # The comma form produced `ERROR: invalid tag "...:v1,...:latest": invalid
+              # reference format` and failed the whole release, so a version bump landed on
+              # main with no image and no GitHub Release behind it. Only this path was
+              # affected (fresh-build fallback + non-prerelease), which is why it survived
+              # every ordinary promote.
+              BAKE_TAG_ARGS=(--set "${TARGET}.tags=${NEW_TAG}")
+              if [ "${IS_PRERELEASE}" == "false" ]; then
+                BAKE_TAG_ARGS+=(--set "${TARGET}.tags=${IMAGE}:latest")
+              fi
               docker buildx bake \
                 -f "${INPUT_BAKE_FILE}" "${TARGET}" \
-                --set "${TARGET}.tags=${BAKE_TAGS}" \
+                "${BAKE_TAG_ARGS[@]}" \
                 --set "${TARGET}.cache-from=type=gha,scope=buildkit-${TARGET}" \
                 --set "${TARGET}.cache-to=type=gha,mode=max,scope=buildkit-${TARGET}" \
                 --push
