@@ -44,13 +44,16 @@ set -euo pipefail
 : "${NEXT_ENV:?NEXT_ENV is required}"
 PRERELEASE_IDENTIFIER="${PRERELEASE_IDENTIFIER:-}"
 PROMOTE_BRANCH_PREFIX="${PROMOTE_BRANCH_PREFIX:-promote}"
+TAG_PREFIX="${TAG_PREFIX:-}"
 
 REPO_URL="https://github.com/${OWNER}/${REPO}"
 
 # ─── 1. Find previous prerelease tag of same identifier ───────────────────
+# "${TAG_PREFIX}*" scopes the lookup to one package's tag series; an empty
+# prefix widens the glob to every tag rather than matching none.
 PREV_TAG=""
 if [ -n "${PRERELEASE_IDENTIFIER}" ]; then
-  PREV_TAG=$(git tag -l --sort=-v:refname \
+  PREV_TAG=$(git tag -l "${TAG_PREFIX}*" --sort=-v:refname \
     | grep -E "\\-${PRERELEASE_IDENTIFIER}\\.[0-9]+$" \
     | grep -v "^${TAG}$" \
     | head -1 || true)
