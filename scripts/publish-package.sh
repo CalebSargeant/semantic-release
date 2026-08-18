@@ -461,8 +461,15 @@ XML
     S3_BUCKET="${DEST%%/*}"
     S3_PREFIX=""
     [ "${DEST}" != "${S3_BUCKET}" ] && S3_PREFIX="${DEST#*/}/"
-    # Keep the artifact's extension, so `edge/1.2.3.zip` rather than `edge/1.2.3`.
-    S3_KEY="${S3_PREFIX}${VERSION}.${ARTIFACT##*.}"
+    # Derive the extension from the basename only: a path like `build.out/myapp` would
+    # otherwise strip to `out/myapp`, embedding a slash in the key. Omit the extension
+    # entirely for extensionless artifacts (binaries, firmware images).
+    BASENAME="${ARTIFACT##*/}"
+    if [ "${BASENAME}" = "${BASENAME%.*}" ]; then
+      S3_KEY="${S3_PREFIX}${VERSION}"
+    else
+      S3_KEY="${S3_PREFIX}${VERSION}.${BASENAME##*.}"
+    fi
 
     echo "aws sts assume-role-with-web-identity → ${AWS_ROLE_TO_ASSUME}"
     # `aws-actions/configure-aws-credentials` in the caller's workflow is the supported path
