@@ -357,7 +357,14 @@ case "${1:-}" in
     ;;
   s3api)
     case "${2:-}" in
-      head-object) [ -n "${STUB_OBJECT_EXISTS:-}" ] && exit 0 || exit 254 ;;
+      head-object)
+        [ -n "${STUB_OBJECT_EXISTS:-}" ] && exit 0
+        if [ -n "${STUB_ACCESS_DENIED:-}" ]; then
+          echo "An error occurred (AccessDenied) when calling the HeadObject operation" >&2
+          exit 254
+        fi
+        exit 254
+        ;;
       put-object)  echo '{"ETag":"\"abc\""}' ;;
     esac
     ;;
@@ -432,4 +439,27 @@ EOF
 @test "action.yml threads the role through to the publish step" {
   grep -q "aws-role-to-assume:" "${ACTION_YML}"
   grep -q "AWS_ROLE_TO_ASSUME: " "${ACTION_YML}"
+}
+
+@test "s3: extensionless artifact produces a key with no dot suffix" {
+  s3_stub
+  printf 'binary bytes' > "${WORK}/myapp"
+  run env PATH="${BIN}:${PATH}" ECOSYSTEM=s3 VERSION=2.0.0 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}/myapp" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -qE "\-\-key edge/2\.0\.0( |$)" "${STUB_LOG}"
+}
+
+@test "s3: AccessDenied on head-object blocks the write and names the required permission" {
+  s3_stub
+  printf 'zip bytes' > "${WORK}/edge.zip"
+  run env PATH="${BIN}:${PATH}" STUB_ACCESS_DENIED=1 ECOSYSTEM=s3 VERSION=1.2.3 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}/edge.zip" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"s3:GetObject"* ]] || [[ "$output" == *"s3:ListBucket"* ]]
+  ! grep -q "put-object" "${STUB_LOG}"
 }

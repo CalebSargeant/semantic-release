@@ -482,10 +482,16 @@ XML
       exit 1
     fi
 
-    if aws s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" >/dev/null 2>&1; then
+    if HEAD_ERR=$(aws s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" 2>&1); then
       echo "s3://${S3_BUCKET}/${S3_KEY} already published — nothing to do."
       emit_published "false"
       exit 0
+    elif echo "${HEAD_ERR}" | grep -qiE "403|AccessDenied|Forbidden"; then
+      echo "::error::s3: AccessDenied on s3:head-object for ${S3_KEY}."
+      echo "::error::  The role must include s3:GetObject (or s3:ListBucket) alongside"
+      echo "::error::  s3:PutObject so immutability can be verified before writing."
+      echo "::error::  See the IAM permissions section in README."
+      exit 1
     fi
 
     echo "aws s3api put-object → s3://${S3_BUCKET}/${S3_KEY}"

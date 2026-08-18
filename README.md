@@ -251,7 +251,9 @@ host (see above):
   action with the same role you pass as `aws-role-to-assume`, and give the job
   `id-token: write`. No AWS key is stored anywhere; the role's trust policy is
   what decides who may publish, so bind it to one repository and to its default
-  branch plus tags.
+  branch plus tags. The role needs `s3:PutObject` to write and `s3:GetObject`
+  (or `s3:ListBucket`) to verify immutability before writing — a role that holds
+  only `s3:PutObject` will be blocked when the immutability check runs.
 
   **An existing key is a no-op, not an overwrite** — stricter than the other
   ecosystems on purpose. `nuget` skips duplicates and `container` overwrites a
