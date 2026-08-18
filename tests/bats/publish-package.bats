@@ -339,3 +339,97 @@ teardown() {
   grep -Fq "actions/setup-java@" "${ACTION_YML}"
   grep -Fq "ruby/setup-ruby@" "${ACTION_YML}"
 }
+
+# ── s3 ─────────────────────────────────────────────────────────────────────
+#
+# The aws CLI is stubbed the same way dotnet/python/npm are above: it logs every
+# invocation and answers head-object from a marker file, so the publish/skip
+# decision is asserted without a bucket.
+
+s3_stub() {
+  cat > "${BIN}/aws" <<'EOF'
+#!/usr/bin/env bash
+echo "aws $*" >> "${STUB_LOG}"
+case "${1:-}" in
+  sts)
+    [ -n "${STUB_NO_SESSION:-}" ] && exit 255
+    echo '{"Account":"000000000000"}'
+    ;;
+  s3api)
+    case "${2:-}" in
+      head-object) [ -n "${STUB_OBJECT_EXISTS:-}" ] && exit 0 || exit 254 ;;
+      put-object)  echo '{"ETag":"\"abc\""}' ;;
+    esac
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "${BIN}/aws"
+}
+
+@test "s3: uploads the artifact under a version-scoped key" {
+  s3_stub
+  printf 'zip bytes' > "${WORK}/edge.zip"
+  run env PATH="${BIN}:${PATH}" ECOSYSTEM=s3 VERSION=1.2.3 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}/edge.zip" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -q -- "--key edge/1.2.3.zip" "${STUB_LOG}"
+  grep -q -- "--bucket my-bucket" "${STUB_LOG}"
+  # A checksum so a consumer can verify without downloading.
+  grep -q -- "--checksum-algorithm SHA256" "${STUB_LOG}"
+}
+
+@test "s3: an existing key is a no-op, never an overwrite" {
+  # STRICTER THAN THE OTHER ECOSYSTEMS ON PURPOSE. nuget skips duplicates and docker
+  # overwrites a mutable tag; here the key is what a downstream Terraform pins, so
+  # replacing its bytes would swap the code under a version someone already reviewed.
+  s3_stub
+  printf 'zip bytes' > "${WORK}/edge.zip"
+  run env PATH="${BIN}:${PATH}" STUB_OBJECT_EXISTS=1 ECOSYSTEM=s3 VERSION=1.2.3 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}/edge.zip" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  ! grep -q "put-object" "${STUB_LOG}"
+  grep -q "published=false" "${GITHUB_OUTPUT}"
+}
+
+@test "s3: a missing OIDC session fails with an actionable message, not a 403" {
+  s3_stub
+  printf 'zip bytes' > "${WORK}/edge.zip"
+  run env PATH="${BIN}:${PATH}" STUB_NO_SESSION=1 ECOSYSTEM=s3 VERSION=1.2.3 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}/edge.zip" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"configure-aws-credentials"* ]]
+  [[ "$output" == *"id-token: write"* ]]
+}
+
+@test "s3: package-path must be a file, not a directory" {
+  s3_stub
+  run env PATH="${BIN}:${PATH}" ECOSYSTEM=s3 VERSION=1.2.3 \
+    FEED_URL="s3://my-bucket/edge" PACKAGE_PATH="${WORK}" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"must be the built artifact FILE"* ]]
+}
+
+@test "s3: a bucket with no prefix works" {
+  s3_stub
+  printf 'zip bytes' > "${WORK}/edge.zip"
+  run env PATH="${BIN}:${PATH}" ECOSYSTEM=s3 VERSION=9.9.9 \
+    FEED_URL="s3://flat-bucket" PACKAGE_PATH="${WORK}/edge.zip" \
+    AWS_ROLE_TO_ASSUME="arn:aws:iam::000000000000:role/publisher" \
+    bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  grep -q -- "--key 9.9.9.zip" "${STUB_LOG}"
+}
+
+@test "action.yml threads the role through to the publish step" {
+  grep -q "aws-role-to-assume:" "${ACTION_YML}"
+  grep -q "AWS_ROLE_TO_ASSUME: " "${ACTION_YML}"
+}
