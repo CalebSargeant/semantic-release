@@ -86,7 +86,7 @@ scanner that cannot run is a **build error**, not a silent pass.
 
 `publish-package` can push to GitHub Packages or public registries, on github.com
 and GitHub Enterprise, for these ecosystems: `nuget`, `npm`, `maven`, `gradle`,
-`rubygems`, `container`, `pip`. See the README's "Publishing language packages"
+`rubygems`, `container`, `pip`, `s3`. See the README's "Publishing language packages"
 section for per-ecosystem inputs (feed URLs, trusted publishing, provenance).
 
 ## Outputs

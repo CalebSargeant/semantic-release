@@ -519,6 +519,25 @@ inputs:
     required: false
     default: ''
 
+  # ── S3 artifact publishing ────────────────────────────────────────────────
+  # `package-ecosystem: s3` publishes an ALREADY-BUILT artifact to an object store under a
+  # version-scoped, immutable key — a Lambda zip, a signed binary, a firmware image. There is
+  # no pack step, because inventing one per artifact type is how this stops being reusable.
+  #
+  # Auth is OIDC only. Add `aws-actions/configure-aws-credentials` before this action with the
+  # same role, and give the job `id-token: write`; no AWS key is stored anywhere.
+  aws-role-to-assume:
+    description: >
+      IAM role ARN the caller's OIDC step assumed, for `package-ecosystem: s3`. Required for
+      that ecosystem. Only VERIFIED here (via `sts get-caller-identity`), so a workflow that
+      forgot the credentials step fails with an actionable message rather than a 403 on upload.
+
+      The role's trust policy is what decides who may publish — bind it to one repository and
+      to its default branch plus tags, or every GitHub Actions workflow on github.com can
+      assume it.
+    required: false
+    default: ''
+
   package-path:
     description: |
       Project or path to pack/build/publish. Defaults to `working-directory`.
@@ -2528,6 +2547,7 @@ runs:
         PRERELEASE_IDENTIFIER: ${{ steps.detect-env.outputs.prerelease_identifier }}
         NPM_PROVENANCE: ${{ inputs.npm-provenance }}
         PYPI_TRUSTED_PUBLISHING: ${{ inputs.pypi-trusted-publishing }}
+        AWS_ROLE_TO_ASSUME: ${{ inputs.aws-role-to-assume }}
       run: "${GITHUB_ACTION_PATH}/scripts/publish-package.sh"
 
     # ═════════════════════════════════════════════════════════════════════════

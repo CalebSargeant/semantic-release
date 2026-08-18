@@ -226,7 +226,7 @@ normally proxied through the enterprise's artifact manager (Nexus, Artifactory,
 canonical public registry" advice above is a github.com / Enterprise Cloud
 concept.
 
-Supported ecosystems. `nuget`, `maven`, `gradle`, `rubygems`, and `container`
+Supported ecosystems. `nuget`, `maven`, `gradle`, `rubygems`, `s3`, and `container`
 default to **this repo's own GitHub Packages feed** (`*.pkg.github.com` /
 `ghcr.io` on github.com), so `package-feed-url` / `package-token` can be omitted
 for *internal* distribution. `npm` and `pip` default to the **public** registry
@@ -243,6 +243,40 @@ host (see above):
   version and the conventional `GITHUB_ACTOR`/`GITHUB_TOKEN` credentials are
   passed through for the `GitHubPackages` repository.
 - `rubygems`: `gem build` + `gem push`.
+- `s3`: uploads an **already-built** artifact to an object store under a
+  version-scoped key. No pack step — `package-path` is the file, and
+  `package-feed-url` is `s3://bucket[/prefix]`, producing `prefix/VERSION.ext`.
+
+  Auth is **OIDC only**: run `aws-actions/configure-aws-credentials` before this
+  action with the same role you pass as `aws-role-to-assume`, and give the job
+  `id-token: write`. No AWS key is stored anywhere; the role's trust policy is
+  what decides who may publish, so bind it to one repository and to its default
+  branch plus tags. The role needs `s3:PutObject` to write and `s3:GetObject`
+  (or `s3:ListBucket`) to verify immutability before writing — a role that holds
+  only `s3:PutObject` will be blocked when the immutability check runs.
+
+  **An existing key is a no-op, not an overwrite** — stricter than the other
+  ecosystems on purpose. `nuget` skips duplicates and `container` overwrites a
+  mutable tag, but an S3 key here is what a downstream deploy pins, so replacing
+  its bytes would swap the code under a version somebody already reviewed. A
+  re-run reports success and sets `published=false`.
+
+  ```yaml
+  permissions:
+    id-token: write
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v5
+      with:
+        role-to-assume: arn:aws:iam::123456789012:role/artifact-publisher
+        aws-region: eu-west-1
+    - uses: MagmaMoose/diatreme@v3
+      with:
+        publish-package: true
+        package-ecosystem: s3
+        package-feed-url: s3://my-artifacts/edge
+        package-path: dist/my-thing.zip
+        aws-role-to-assume: arn:aws:iam::123456789012:role/artifact-publisher
+  ```
 - `container`: `docker build` + `docker push` to
   `ghcr.io/<owner>/<repo>:<version>` (override the registry host with
   `package-feed-url`, e.g. an enterprise `containers.HOSTNAME`, and the image
