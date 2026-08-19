@@ -241,3 +241,128 @@ describe("JWKS key rotation", () => {
     );
   });
 });
+
+// ─── Last-known-good JWKS snapshot (KV) ──────────────────────────────────────
+// When an issuer's JWKS endpoint is unreachable, the broker falls back to the
+// last key set it successfully fetched rather than rejecting every genuine token.
+// These tests pin the boundaries of that fallback, which is where the security
+// lives: it may only rescue a RETRIEVAL fault, and the snapshot supplies keys and
+// nothing else — signature, issuer, audience and expiry are still enforced.
+
+function fakeKv(seed: Record<string, string> = {}) {
+  const store = new Map<string, string>(Object.entries(seed));
+  return {
+    store,
+    kv: {
+      get: async (key: string, type?: string) => {
+        const raw = store.get(key);
+        if (raw === undefined) return null;
+        return type === "json" ? JSON.parse(raw) : raw;
+      },
+      put: async (key: string, value: string) => {
+        store.set(key, value);
+      }
+    } as unknown as KVNamespace
+  };
+}
+
+const SNAPSHOT_KEY = "jwks:https://token.actions.githubusercontent.com";
+
+describe("last-known-good JWKS snapshot", () => {
+  it("snapshots the key set to KV after a successful verification", async () => {
+    const a = await signer("kid-a");
+    const h = await freshModule([a.jwk]);
+    const { store, kv } = fakeKv();
+
+    await h.verifyOidcToken(await mint(a), AUDIENCE, undefined, kv);
+
+    const snap = JSON.parse(store.get(SNAPSHOT_KEY) as string);
+    expect(snap.jwks.keys).toHaveLength(1);
+    expect(snap.jwks.keys[0].kid).toBe("kid-a");
+    expect(typeof snap.uat).toBe("number");
+  });
+
+  it("verifies from the snapshot when the JWKS endpoint is unreachable", async () => {
+    const a = await signer("kid-a");
+    const { kv } = fakeKv({
+      [SNAPSHOT_KEY]: JSON.stringify({ jwks: { keys: [a.jwk] }, uat: Date.now() })
+    });
+    const h = await freshModule([a.jwk]);
+    h.failWith(525); // the production failure: Cloudflare could not reach GitHub
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const payload = await h.verifyOidcToken(await mint(a), AUDIENCE, undefined, kv);
+    const logged = JSON.stringify(warn.mock.calls);
+    warn.mockRestore();
+
+    expect(payload.repository).toBe("octo-org/octo-repo");
+    // Degraded mode must never pass unnoticed.
+    expect(logged).toContain("oidc_verified_from_stale_jwks");
+  });
+
+  it("does NOT fall back when the key is simply not published (kid_not_found)", async () => {
+    const a = await signer("kid-a");
+    const unknown = await signer("kid-nope");
+    const { kv } = fakeKv({
+      [SNAPSHOT_KEY]: JSON.stringify({ jwks: { keys: [a.jwk] }, uat: Date.now() })
+    });
+    const h = await freshModule([a.jwk]);
+
+    // The fetch works and the key genuinely is not there — a stale set is strictly
+    // worse than an honest failure, so this must still reject.
+    await expect(
+      h.verifyOidcToken(await mint(unknown), AUDIENCE, undefined, kv)
+    ).rejects.toSatisfy((e: unknown) => codeOf(e) === "ERR_JWKS_NO_MATCHING_KEY");
+  });
+
+  it("refuses a snapshot older than the age ceiling", async () => {
+    const a = await signer("kid-a");
+    const { kv } = fakeKv({
+      [SNAPSHOT_KEY]: JSON.stringify({
+        jwks: { keys: [a.jwk] },
+        uat: Date.now() - 25 * 60 * 60 * 1000 // 25h, past the 24h ceiling
+      })
+    });
+    const h = await freshModule([a.jwk]);
+    h.failWith(525);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      h.verifyOidcToken(await mint(a), AUDIENCE, undefined, kv)
+    ).rejects.toSatisfy((e: unknown) => codeOf(e) === "ERR_JWKS_FETCH_FAILED");
+    expect(JSON.stringify(warn.mock.calls)).toContain("jwks_snapshot_too_old");
+    warn.mockRestore();
+  });
+
+  it("still enforces audience and issuer against the snapshot", async () => {
+    const a = await signer("kid-a");
+    const { kv } = fakeKv({
+      [SNAPSHOT_KEY]: JSON.stringify({ jwks: { keys: [a.jwk] }, uat: Date.now() })
+    });
+    const h = await freshModule([a.jwk]);
+    h.failWith(525);
+
+    // Wrong audience: the snapshot supplies the key, it does not relax the claims.
+    await expect(
+      h.verifyOidcToken(await mint(a, { aud: "someone-else" }), AUDIENCE, undefined, kv)
+    ).rejects.toSatisfy((e: unknown) => codeOf(e) === "ERR_JWKS_FETCH_FAILED");
+
+    // Forged issuer: pinned to github.com, so it can never select a foreign key.
+    await expect(
+      h.verifyOidcToken(
+        await mint(a, { iss: "https://evil.example.com" }),
+        AUDIENCE,
+        undefined,
+        kv
+      )
+    ).rejects.toSatisfy((e: unknown) => codeOf(e) === "ERR_JWKS_FETCH_FAILED");
+  });
+
+  it("degrades gracefully with no KV binding (self-hosters)", async () => {
+    const a = await signer("kid-a");
+    const h = await freshModule([a.jwk]);
+    expect((await h.verifyOidcToken(await mint(a), AUDIENCE)).repository).toBe(
+      "octo-org/octo-repo"
+    );
+  });
+});
