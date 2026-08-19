@@ -152,18 +152,17 @@ describe("JWKS key rotation", () => {
     expect(h.inits).toHaveLength(2);
   });
 
-  it("rides a short colo cache for jose's own fetches but bypasses it to recover", async () => {
+  it("bypasses the colo cache on every JWKS fetch", async () => {
     const a = await signer("kid-a");
     const b = await signer("kid-b");
     const h = await freshModule([a.jwk]);
     await h.verifyOidcToken(await mint(a), AUDIENCE);
 
-    // jose's own reloads are unthrottled and are NOT deduped on Workers, so they
-    // must stay collapsible by the colo cache — otherwise a burst of junk tokens
-    // is an amplifier pointed at GitHub.
+    // Every JWKS fetch bypasses the colo cache: a cached bad response is what
+    // turned a transient GitHub fault into an hour of failures on one colo.
     const [joseFetch] = h.inits;
-    expect(joseFetch.cache).toBeUndefined();
-    expect(joseFetch.cf).toEqual({ cacheTtl: 30, cacheEverything: true });
+    expect(joseFetch.cache).toBe("no-store");
+    expect(joseFetch.cf).toBeUndefined();
     // ...and jose's own semantics must survive the spread.
     expect(joseFetch.method).toBe("GET");
     expect(joseFetch.redirect).toBe("manual");
@@ -179,6 +178,20 @@ describe("JWKS key rotation", () => {
     expect(forced.cf).toBeUndefined();
   });
 
+  it("names the upstream status when the JWKS endpoint returns non-200", async () => {
+    const a = await signer("kid-a");
+    const h = await freshModule([a.jwk]);
+    // The production failure in #147: jose collapses any non-200 into a bare
+    // JOSEError with fixed text, discarding the status that explains it.
+    h.failWith(403);
+
+    await expect(h.verifyOidcToken(await mint(a), AUDIENCE)).rejects.toSatisfy(
+      (error: unknown) =>
+        codeOf(error) === "ERR_JWKS_FETCH_FAILED" &&
+        (error as { jwksStatus?: unknown }).jwksStatus === 403
+    );
+  });
+
   it("reports a rejected JWKS subrequest as a retrieval fault, not a bad token", async () => {
     const a = await signer("kid-a");
     const h = await freshModule([a.jwk]);
@@ -192,13 +205,15 @@ describe("JWKS key rotation", () => {
     );
   });
 
-  it("reports a JWKS retrieval fault as a jose fetch error, not a bad signature", async () => {
+  it("reports a JWKS retrieval fault as a retrieval fault, not a bad signature", async () => {
     const a = await signer("kid-a");
     const h = await freshModule([a.jwk]);
     h.failWith(500);
 
     await expect(h.verifyOidcToken(await mint(a), AUDIENCE)).rejects.toSatisfy(
-      (error: unknown) => codeOf(error) === "ERR_JOSE_GENERIC"
+      (error: unknown) =>
+        codeOf(error) === "ERR_JWKS_FETCH_FAILED" &&
+        (error as { jwksStatus?: unknown }).jwksStatus === 500
     );
   });
 
