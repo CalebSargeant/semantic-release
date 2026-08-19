@@ -11,6 +11,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Token broker: name the upstream status when GitHub's JWKS endpoint misbehaves,
+  and keep the Cloudflare cache out of that path.** Production logs for
+  [#147](https://github.com/MagmaMoose/diatreme/issues/147) showed
+  `reason: jwks_unavailable` with `errCode: ERR_JOSE_GENERIC` — jose collapses any
+  non-200 JWKS response (and any unparseable body) into a bare `JOSEError` whose
+  fixed text discards the status that explains it. `jwksFetch` now intercepts a
+  non-200 itself and carries `jwksStatus`, `jwksContentType`, `jwksLocation` and
+  `jwksCfRay` into the `oidc_verify_failed` log line. Every JWKS fetch now bypasses
+  the colo cache unconditionally: GitHub serves that endpoint
+  `public, max-age=3600, must-revalidate`, so a colo that cached a bad response
+  kept serving it for an hour while other colos stayed healthy — precisely the
+  "one repo fails, another succeeds, persists across fresh tokens" report. This
+  gives up the cache's collapsing of concurrent identical subrequests; that
+  amplification vector is tracked separately.
+
 - **Token broker: a GitHub signing-key rotation no longer produces permanent
   `401 invalid_oidc_token`s** ([#147](https://github.com/MagmaMoose/diatreme/issues/147)).
   `createRemoteJWKSet` refetches on a `kid` miss only once its cooldown has lapsed

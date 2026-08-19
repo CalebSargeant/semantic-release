@@ -53,31 +53,42 @@ function normalizeBaseUrl(value: string): string {
 //     request's I/O. So N concurrent junk tokens mean N subrequests unless the
 //     colo cache collapses them. Give them a short TTL: it bounds an
 //     unauthenticated caller's amplification against GitHub.
-//   - the explicit rotation-recovery reload in verifyOidcToken, which is throttled
-//     to one per issuer per FORCED_RELOAD_MIN_INTERVAL_MS. That one can safely
-//     bypass the cache, which is what makes a rotation visible immediately.
+//   - the explicit rotation-recovery reload in verifyOidcToken.
 //
-// `bypassJwksCacheCount` is module-scope and read across an await. A counter
-// rather than a boolean keeps the no-store policy live across concurrent
-// multi-issuer forced reloads: if request A increments and suspends, then
-// request B's finally decrements, a boolean would flip back to false before
-// A's subrequest runs. The count stays positive until all in-flight forced
-// reloads complete. cf.cacheTtl and cache are mutually exclusive; only ever set one.
-const JWKS_COLO_CACHE_TTL_SECONDS = 30;
-let bypassJwksCacheCount = 0;
-
+// Both now bypass the cache unconditionally. Production evidence (#147): the
+// Worker was getting a non-200 from GitHub's JWKS endpoint, which is served
+// `public, max-age=3600, must-revalidate` — so any colo that cached a bad response
+// kept serving it for an hour while other colos stayed healthy, matching exactly
+// the "one repo fails, another succeeds, persists across fresh tokens" report.
+// Keeping the cache out of this path removes that failure mode entirely.
+//
+// The cost is that the colo cache no longer collapses concurrent identical
+// subrequests: jose's reloads are unthrottled and it disables in-flight dedupe on
+// Workers, so a burst of unknown-`kid` tokens spaced beyond its 30s cooldown can
+// still amplify. Real but modest, and tracked separately — correctness during a
+// live outage beats a theoretical amplification vector.
 const jwksFetch: FetchImplementation = (url, options) =>
-  fetch(url, {
-    ...options,
-    ...(bypassJwksCacheCount > 0
-      ? { cache: "no-store" as const }
-      : {
-          cf: {
-            cacheTtl: JWKS_COLO_CACHE_TTL_SECONDS,
-            cacheEverything: true
-          }
-        })
-  }).catch((cause: unknown) => {
+  fetch(url, { ...options, cache: "no-store" })
+    .then((response) => {
+      if (response.status !== 200) {
+        // jose's own non-200 error is a bare JOSEError carrying fixed text, so the
+        // status never reaches the logs — exactly what left #147 undiagnosable for
+        // hours. Carry the status and the headers that explain it.
+        throw Object.assign(new Error("jwks fetch returned non-200"), {
+          code: JWKS_FETCH_FAILED_CODE,
+          jwksStatus: response.status,
+          jwksContentType: response.headers.get("content-type") ?? undefined,
+          jwksLocation: response.headers.get("location") ?? undefined,
+          jwksCfRay: response.headers.get("cf-ray") ?? undefined
+        });
+      }
+      return response;
+    })
+    .catch((cause: unknown) => {
+    // Our own tagged errors (including the non-200 above) pass straight through.
+    if ((cause as { code?: unknown } | null)?.code === JWKS_FETCH_FAILED_CODE) {
+      throw cause;
+    }
     // Let jose map its own AbortSignal.timeout rejection to JWKSTimeout.
     if ((cause as Error | null)?.name === "TimeoutError") throw cause;
     // workerd rejects a failed subrequest with a plain Error ("Network connection
@@ -637,6 +648,13 @@ function logOidcFailure(
     reason,
     errName: logField((error as Error | null)?.name),
     errCode: logField((error as { code?: unknown } | null)?.code),
+    // Present only for a JWKS retrieval fault; names the actual upstream status.
+    jwksStatus: logField((error as { jwksStatus?: unknown } | null)?.jwksStatus),
+    jwksContentType: logField(
+      (error as { jwksContentType?: unknown } | null)?.jwksContentType
+    ),
+    jwksLocation: logField((error as { jwksLocation?: unknown } | null)?.jwksLocation),
+    jwksCfRay: logField((error as { jwksCfRay?: unknown } | null)?.jwksCfRay),
     expectedAudience: Array.isArray(audience) ? audience.join(",") : audience,
     trustedIssuers: (trustedIssuers ?? [GITHUB_OIDC_ISSUER]).join(","),
     nowEpoch: Math.floor(Date.now() / 1000),
@@ -683,12 +701,7 @@ export async function verifyOidcToken(
     ) {
       throw error;
     }
-    bypassJwksCacheCount++;
-    try {
-      await jwks.reload();
-    } finally {
-      bypassJwksCacheCount--;
-    }
+    await jwks.reload();
     const { payload } = await jwtVerify(token, jwks, { issuer, audience });
     return payload;
   }
