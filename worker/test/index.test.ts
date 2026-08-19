@@ -1,5 +1,6 @@
-import { handleRequest, type BrokerEnv } from "../src/index";
+import { handleRequest, parseAudience, type BrokerEnv } from "../src/index";
 import { generateKeyPairSync } from "node:crypto";
+import { SignJWT, generateKeyPair } from "jose";
 
 const env: BrokerEnv = {
   GITHUB_APP_ID: "12345",
@@ -73,7 +74,12 @@ describe("token broker", () => {
     );
 
     expect(response.status).toBe(401);
-    expect(await readJson(response)).toEqual({ error: "invalid_oidc_token" });
+    // The fake dep throws a plain Error with no jose `code`, so the reason is
+    // "unknown" — the `error` string itself is unchanged for existing callers.
+    expect(await readJson(response)).toEqual({
+      error: "invalid_oidc_token",
+      reason: "unknown"
+    });
   });
 
   it("rejects repo claim mismatch with 403", async () => {
@@ -781,5 +787,184 @@ describe("POST /sign", () => {
     const r = await handleRequest(signReq(), signEnv, injected);
     expect(r.status).toBe(404);
     expect(await readJson(r)).toEqual({ error: "app_not_installed" });
+  });
+});
+
+// ─── OIDC failure diagnosability (issue #147) ────────────────────────────────
+// Before this, every verification failure — a forged token, a wrong audience, an
+// expired token, and GitHub's JWKS being unreachable — collapsed into one opaque
+// `401 invalid_oidc_token` with nothing logged, so an incident could not be told
+// apart from a bad token. Each failure now carries a coarse `reason` and emits one
+// structured log line.
+
+function throwingVerify(code: string, extra: Record<string, unknown> = {}) {
+  return {
+    verifyOidcToken: async () => {
+      throw Object.assign(new Error("boom"), { code, ...extra });
+    }
+  };
+}
+
+// A distinctive signature segment so the "never logs the token" assertion is real
+// rather than vacuous.
+function oidcRequest(): Request {
+  return tokenRequest({
+    oidcToken: "header.payload.signature-do-not-log",
+    owner: "octo-org",
+    repo: "octo-repo"
+  });
+}
+
+describe("OIDC failure classification", () => {
+  it.each([
+    ["ERR_JWKS_NO_MATCHING_KEY", {}, "kid_not_found"],
+    ["ERR_JWKS_MULTIPLE_MATCHING_KEYS", {}, "key_ambiguous"],
+    ["ERR_JWS_SIGNATURE_VERIFICATION_FAILED", {}, "signature_invalid"],
+    ["ERR_JWT_EXPIRED", {}, "token_expired"],
+    ["ERR_JWT_CLAIM_VALIDATION_FAILED", { claim: "aud" }, "audience_mismatch"],
+    ["ERR_JWT_CLAIM_VALIDATION_FAILED", { claim: "iss" }, "issuer_mismatch"],
+    ["ERR_JWT_CLAIM_VALIDATION_FAILED", { claim: "nbf" }, "token_not_yet_valid"],
+    ["ERR_JWT_CLAIM_VALIDATION_FAILED", { claim: "sub" }, "claim_invalid"],
+    ["ERR_JWT_INVALID", {}, "malformed_token"]
+  ])("maps %s to a 401 with reason %s", async (code, extra, reason) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = await handleRequest(
+      oidcRequest(),
+      env,
+      throwingVerify(code as string, extra as Record<string, unknown>)
+    );
+    warn.mockRestore();
+
+    expect(response.status).toBe(401);
+    expect(await readJson(response)).toEqual({
+      error: "invalid_oidc_token",
+      reason
+    });
+  });
+
+  it.each(["ERR_JWKS_TIMEOUT", "ERR_JWKS_INVALID", "ERR_JOSE_GENERIC"])(
+    "reports %s as 503 — our key retrieval failed, the caller's token did not",
+    async (code) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const response = await handleRequest(oidcRequest(), env, throwingVerify(code));
+      warn.mockRestore();
+
+      expect(response.status).toBe(503);
+      expect(await readJson(response)).toEqual({
+        error: "oidc_key_fetch_failed",
+        reason: "jwks_unavailable"
+      });
+    }
+  );
+
+  it("treats a bare TypeError from the JWKS subrequest as unavailability", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = await handleRequest(oidcRequest(), env, {
+      verifyOidcToken: async () => {
+        throw new TypeError("network error");
+      }
+    });
+    warn.mockRestore();
+
+    expect(response.status).toBe(503);
+  });
+
+  it("logs one structured line per failure and never logs the token", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await handleRequest(oidcRequest(), env, throwingVerify("ERR_JWT_EXPIRED"));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = warn.mock.calls[0][0] as Record<string, unknown>;
+    expect(line.event).toBe("oidc_verify_failed");
+    expect(line.reason).toBe("token_expired");
+    expect(line.errCode).toBe("ERR_JWT_EXPIRED");
+    expect(line.expectedAudience).toBe("diatreme");
+    expect(line.trustedIssuers).toBe("https://token.actions.githubusercontent.com");
+    // The fixture token is not a real JWT, so the claim block is absent — but the
+    // line is still emitted, which is the point.
+    expect(line.decodable).toBe("false");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("signature-do-not-log");
+    warn.mockRestore();
+  });
+
+  it("logs the decoded claims of a real token without logging the token", async () => {
+    // The case above uses a token that is not a decodable JWT, so it never reaches
+    // logOidcFailure's claim block — which is exactly the part that handles
+    // attacker-controlled data. Mint a real one so the redaction guarantee is
+    // actually exercised.
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    const token = await new SignJWT({ repository: "octo-org/octo-repo" })
+      .setProtectedHeader({ alg: "RS256", kid: "test-kid-abc123" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience("diatreme")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(pair.privateKey);
+    const signature = token.slice(token.lastIndexOf(".") + 1);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await handleRequest(
+      tokenRequest({ oidcToken: token, owner: "octo-org", repo: "octo-repo" }),
+      env,
+      throwingVerify("ERR_JWT_EXPIRED")
+    );
+    const line = warn.mock.calls[0][0] as Record<string, unknown>;
+    const logged = JSON.stringify(warn.mock.calls);
+    warn.mockRestore();
+
+    expect(line.decodable).toBe("true");
+    expect(line.headerKid).toBe("test-kid-abc123");
+    expect(line.headerAlg).toBe("RS256");
+    expect(line.claimIss).toBe("https://token.actions.githubusercontent.com");
+    expect(line.claimAud).toBe("diatreme");
+    expect(line.claimRepository).toBe("octo-org/octo-repo");
+    expect(line.claimExp).toBeDefined();
+    // The whole point: enough to diagnose, never the credential itself.
+    expect(logged).not.toContain(token);
+    expect(logged).not.toContain(signature);
+  });
+
+  it("truncates attacker-controlled claim values so a hostile token cannot flood the log", async () => {
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    const token = await new SignJWT({ repository: "x".repeat(5000) })
+      .setProtectedHeader({ alg: "RS256", kid: "k".repeat(5000) })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience("diatreme")
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(pair.privateKey);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await handleRequest(
+      tokenRequest({ oidcToken: token, owner: "octo-org", repo: "octo-repo" }),
+      env,
+      throwingVerify("ERR_JWT_EXPIRED")
+    );
+    const line = warn.mock.calls[0][0] as Record<string, unknown>;
+    warn.mockRestore();
+
+    expect((line.headerKid as string).length).toBe(128);
+    expect((line.claimRepository as string).length).toBe(128);
+  });
+});
+
+describe("parseAudience", () => {
+  it.each([undefined, "", "   ", ",  ,"])(
+    "falls back to the defaults for %o instead of an unmatchable audience",
+    (configured) => {
+      expect(parseAudience(configured)).toEqual(["diatreme", "release-runner"]);
+    }
+  );
+
+  it("trims a configured audience", () => {
+    expect(parseAudience("diatreme\n")).toEqual(["diatreme"]);
+    expect(parseAudience(" diatreme ")).toEqual(["diatreme"]);
+  });
+
+  it("accepts a comma-separated list", () => {
+    expect(parseAudience("diatreme, release-runner")).toEqual([
+      "diatreme",
+      "release-runner"
+    ]);
   });
 });

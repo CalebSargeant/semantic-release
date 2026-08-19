@@ -65,7 +65,15 @@ status="$(
 
 if [[ "${status}" != "200" ]]; then
   error_code="$(jq -r '.error // "token_broker_error"' "${body_file}" 2>/dev/null || echo "token_broker_error")"
-  echo "::error::Token broker request failed with HTTP ${status}: ${error_code}"
+  # The broker returns a coarse `reason` alongside `error` (e.g. kid_not_found,
+  # audience_mismatch, token_expired, jwks_unavailable). Surface it so a failure
+  # is diagnosable from the run log alone.
+  reason="$(jq -r '.reason // ""' "${body_file}" 2>/dev/null || echo "")"
+  if [[ -n "${reason}" ]]; then
+    echo "::error::Token broker request failed with HTTP ${status}: ${error_code} (${reason})"
+  else
+    echo "::error::Token broker request failed with HTTP ${status}: ${error_code}"
+  fi
   exit 1
 fi
 
