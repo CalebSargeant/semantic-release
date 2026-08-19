@@ -799,6 +799,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `mode` | `release` | `ci`, `release`, or `enable-auto-merge`. |
 | `auth-mode` | `public-app` | Token source: hosted public App, private App, workflow token, or auto. |
 | `token-broker-url` | `https://api.diatreme.magmamoose.com` | Hosted broker base URL override. |
+| `token-broker-fallback-url` | `https://broker-diatreme.magmamoose.com` | Secondary broker, tried only when the primary is unreachable or returns 5xx. Never on 4xx. Empty string disables. |
 | `oidc-audience` | `diatreme` | OIDC audience used for public App auth. |
 | `versioning-tool` | `auto` | `auto` (detect from repo markers, see [Versioning tool detection](#versioning-tool-detection)), `semantic-release-python`, `semantic-release-npm`, `gitversion`, or `release-please`. |
 | `deployment-model` | `tbd` | `tbd`, `bbd`, or `tbd-pr`. |

@@ -11,6 +11,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Broker fallback URL (`token-broker-fallback-url`).** A broker hostname losing
+  egress blocks releases in every repository pinned to every published version, and
+  no change we ship can redirect those pins — so the fallback has to travel with the
+  action. `scripts/request-public-app-token.sh` now retries against a secondary
+  broker when the primary is unreachable or answers 5xx. Deliberately **not** on
+  4xx: a rejected token is an answer, not an outage, and must not be re-asked of a
+  second broker. Defaults to `https://broker-diatreme.magmamoose.com`; set to an
+  empty string to disable. The failure message now also names which broker was used.
+
+### Security
+
+- **Closed two public front doors on the Worker.** `workers_dev` and `preview_urls`
+  were both `true`, each exposing a live token minter — inheriting production
+  secrets — on a hostname outside any rules bound to the custom domain. Both are now
+  `false`; the custom domain is the only intended door.
+- **Purged secrets for removed features.** `DISPATCH_AGENT_CF_ACCESS_CLIENT_ID`,
+  `DISPATCH_AGENT_CF_ACCESS_SECRET`, `DISPATCH_AGENT_TOKEN`, `DISPATCH_AGENT_URL`,
+  `TRIAGE_LLM_API_KEY`, `TRIAGE_LLM_MODEL` and `TRIAGE_LLM_PROVIDER` were still set
+  on the production Worker long after the Copilot/triage code was removed — live
+  credentials for code that no longer exists. Deleted.
+
 - **Last-known-good JWKS fallback for `/token`.** When an issuer's JWKS endpoint is
   unreachable, the broker now verifies against the last key set it successfully
   fetched (stored per issuer in the `DIATREME_JWKS_CACHE` KV namespace) instead of

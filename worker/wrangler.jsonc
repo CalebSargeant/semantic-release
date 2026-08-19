@@ -6,8 +6,11 @@
   "compatibility_flags": [
     "nodejs_compat_v2"
   ],
-  "workers_dev": true,
-  "preview_urls": true,
+  // Both OFF deliberately. Each is a publicly reachable front door to a live token
+  // minter, inheriting production secrets, and sitting outside whatever rules are
+  // bound to the custom domain. The custom domain is the only intended door.
+  "workers_dev": false,
+  "preview_urls": false,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

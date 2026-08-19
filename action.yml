@@ -39,6 +39,16 @@ inputs:
     required: false
     default: 'https://api.diatreme.magmamoose.com'
 
+  token-broker-fallback-url:
+    description: |
+      Secondary broker tried only when the primary is unreachable or returns 5xx.
+      A broker hostname losing egress blocks releases in every repository pinned to
+      every published version, and no shipped change can redirect those pins - so
+      the fallback has to travel with the action itself. Set to an empty string to
+      disable. Never used for 4xx: a rejected token is an answer, not an outage.
+    required: false
+    default: 'https://broker-diatreme.magmamoose.com'
+
   oidc-audience:
     description: 'Advanced override for public-app authentication. Most repositories should not set this.'
     required: false
@@ -1080,6 +1090,7 @@ runs:
       shell: bash
       env:
         TOKEN_BROKER_URL: ${{ inputs.token-broker-url }}
+        TOKEN_BROKER_FALLBACK_URL: ${{ inputs.token-broker-fallback-url }}
         OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
       run: "${GITHUB_ACTION_PATH}/scripts/request-public-app-token.sh"
 
