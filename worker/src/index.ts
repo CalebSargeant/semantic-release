@@ -1,5 +1,6 @@
 import {
   SignJWT,
+  createLocalJWKSet,
   createRemoteJWKSet,
   customFetch,
   decodeJwt,
@@ -171,6 +172,9 @@ export type BrokerEnv = Env & {
   GHE_GITHUB_APP_INSTALLATION_ID?: string; // set to skip the per-repo lookup
   // KV namespace used to cache the /releases aggregate.
   COPILOT_QUOTA_KV?: KVNamespace;
+  // Last-known-good JWKS snapshots, so a Worker that cannot reach an issuer's
+  // JWKS endpoint can still verify tokens instead of failing every release.
+  DIATREME_JWKS_CACHE?: KVNamespace;
   // /webhook push → auto-update open PRs targeting the pushed branch (HMAC-
   // verified against this secret).
   GITHUB_WEBHOOK_SECRET?: string;
@@ -198,7 +202,8 @@ interface Dependencies {
   verifyOidcToken: (
     token: string,
     audience: string | string[],
-    trustedIssuers?: string[]
+    trustedIssuers?: string[],
+    jwksCache?: KVNamespace
   ) => Promise<VerifiedOidcPayload>;
   createGitHubAppJwt: (
     appId: string,
@@ -360,7 +365,8 @@ async function handleTokenRequest(
     body.oidcToken,
     audience,
     dependencies,
-    trustedIssuers
+    trustedIssuers,
+    env.DIATREME_JWKS_CACHE
   );
   if (oidcPayload.repository !== repository) {
     return jsonError(403, "repo_mismatch");
@@ -596,10 +602,11 @@ async function verifyOidc(
   token: string,
   audience: string | string[],
   deps: Dependencies,
-  trustedIssuers?: string[]
+  trustedIssuers?: string[],
+  jwksCache?: KVNamespace
 ): Promise<VerifiedOidcPayload> {
   try {
-    return await deps.verifyOidcToken(token, audience, trustedIssuers);
+    return await deps.verifyOidcToken(token, audience, trustedIssuers, jwksCache);
   } catch (error) {
     const reason = classifyOidcError(error);
     logOidcFailure(token, reason, error, audience, trustedIssuers);
@@ -662,12 +669,112 @@ function logOidcFailure(
   });
 }
 
+// ─── Last-known-good JWKS ────────────────────────────────────────────────────
+// A Worker that cannot reach an issuer's JWKS endpoint would otherwise fail every
+// token it is asked to verify — which is exactly how #147 blocked releases for
+// hours. Every successful verification snapshots the key set to KV; a retrieval
+// fault then falls back to that snapshot rather than rejecting genuine tokens.
+//
+// The security position: the snapshot only ever supplies KEYS. The retried
+// jwtVerify still checks the signature, the pinned issuer, the audience and the
+// expiry, so a stale set cannot admit a token that a fresh set would reject —
+// it can only admit one signed by a key that has since been retired. Bounded by
+// JWKS_SNAPSHOT_MAX_AGE_MS, and every stale verification logs loudly.
+const JWKS_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const JWKS_SNAPSHOT_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+interface JwksSnapshot {
+  jwks: { keys: unknown[] };
+  uat: number;
+}
+
+function jwksSnapshotKey(issuer: string): string {
+  return `jwks:${issuer}`;
+}
+
+// Best-effort: a KV write must never fail a verification that already succeeded.
+async function snapshotJwks(
+  jwksCache: KVNamespace | undefined,
+  issuer: string,
+  jwks: RemoteJWKSet
+): Promise<void> {
+  if (!jwksCache) return;
+  try {
+    const current = jwks.jwks();
+    if (!current || !Array.isArray(current.keys) || current.keys.length === 0) return;
+    await jwksCache.put(
+      jwksSnapshotKey(issuer),
+      JSON.stringify({ jwks: current, uat: Date.now() } satisfies JwksSnapshot),
+      { expirationTtl: JWKS_SNAPSHOT_TTL_SECONDS }
+    );
+  } catch (error) {
+    console.warn({
+      event: "jwks_snapshot_write_failed",
+      issuer,
+      errName: (error as Error | null)?.name
+    });
+  }
+}
+
+// Returns the verified payload when the snapshot rescues this token, or undefined
+// when there is no usable snapshot — in which case the caller rethrows the
+// original retrieval error. A token that fails against the snapshot for any OTHER
+// reason (bad signature, wrong audience) is also returned as undefined, so the
+// caller surfaces the retrieval fault rather than a misleading claim error.
+async function verifyFromSnapshot(
+  jwksCache: KVNamespace | undefined,
+  issuer: string,
+  token: string,
+  audience: string | string[],
+  cause: unknown
+): Promise<VerifiedOidcPayload | undefined> {
+  if (!jwksCache) return undefined;
+  let snapshot: JwksSnapshot | null = null;
+  try {
+    snapshot = await jwksCache.get<JwksSnapshot>(jwksSnapshotKey(issuer), "json");
+  } catch {
+    return undefined;
+  }
+  if (!snapshot || !Array.isArray(snapshot.jwks?.keys) || typeof snapshot.uat !== "number") {
+    return undefined;
+  }
+
+  const ageMs = Date.now() - snapshot.uat;
+  if (ageMs < 0 || ageMs > JWKS_SNAPSHOT_MAX_AGE_MS) {
+    console.warn({
+      event: "jwks_snapshot_too_old",
+      issuer,
+      ageSeconds: Math.floor(ageMs / 1000),
+      maxAgeSeconds: Math.floor(JWKS_SNAPSHOT_MAX_AGE_MS / 1000)
+    });
+    return undefined;
+  }
+
+  try {
+    const local = createLocalJWKSet(snapshot.jwks as { keys: Record<string, unknown>[] });
+    const { payload } = await jwtVerify(token, local, { issuer, audience });
+    // Loud on purpose: this is a degraded mode, and it must never pass unnoticed.
+    console.warn({
+      event: "oidc_verified_from_stale_jwks",
+      issuer,
+      snapshotAgeSeconds: Math.floor(ageMs / 1000),
+      retrievalErrCode: (cause as { code?: unknown } | null)?.code,
+      retrievalJwksStatus: (cause as { jwksStatus?: unknown } | null)?.jwksStatus,
+      repository: (payload as VerifiedOidcPayload).repository
+    });
+    return payload;
+  } catch {
+    return undefined;
+  }
+}
+
 // Exported for direct unit testing (see test/verify-oidc.test.ts). The token-broker
 // tests inject a fake verifyOidcToken via deps; this is the real issuer-pinning path.
 export async function verifyOidcToken(
   token: string,
   audience: string | string[],
-  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER]
+  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER],
+  jwksCache?: KVNamespace
 ): Promise<VerifiedOidcPayload> {
   // github.com and each GHE tenant sign with different keys, so pick the JWKS by
   // the token's (still-unverified) issuer — but only when it's on the trust list,
@@ -680,8 +787,25 @@ export async function verifyOidcToken(
   const jwks = jwksForIssuer(issuer);
   try {
     const { payload } = await jwtVerify(token, jwks, { issuer, audience });
+    await snapshotJwks(jwksCache, issuer, jwks);
     return payload;
   } catch (error) {
+    // A JWKS RETRIEVAL fault is the one failure a last-known-good snapshot can
+    // legitimately cover: the keys we would have fetched are almost certainly the
+    // keys we already hold, and the alternative is failing every release. Never
+    // fall back on kid_not_found — there the fetch worked and the key genuinely is
+    // not published, so a stale set is strictly worse than an honest failure.
+    if (classifyOidcError(error) === "jwks_unavailable") {
+      const recovered = await verifyFromSnapshot(
+        jwksCache,
+        issuer,
+        token,
+        audience,
+        error
+      );
+      if (recovered) return recovered;
+      throw error;
+    }
     // jose refetches the key set on a `kid` miss only once its cooldown has lapsed
     // (30s), and its own freshness refetch arms that cooldown in the same call — so
     // a miss inside that window is terminal for this request. Force one reload and

@@ -9,6 +9,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **Last-known-good JWKS fallback for `/token`.** When an issuer's JWKS endpoint is
+  unreachable, the broker now verifies against the last key set it successfully
+  fetched (stored per issuer in the `DIATREME_JWKS_CACHE` KV namespace) instead of
+  rejecting every genuine runner token — the failure mode that blocked releases for
+  hours in [#147](https://github.com/MagmaMoose/diatreme/issues/147). The snapshot
+  supplies **keys only**: the retried verification still enforces the signature, the
+  pinned issuer, the audience and expiry, so a stale set cannot admit a token a fresh
+  set would reject. It is used **only** for a retrieval fault (`jwks_unavailable`),
+  never for `kid_not_found` — where the fetch worked and the key genuinely is not
+  published, a stale set would be strictly worse than an honest failure. Snapshots
+  older than 24h are refused, and every degraded verification logs
+  `oidc_verified_from_stale_jwks`. With no KV binding the broker behaves exactly as
+  before.
+
 ### Fixed
 
 - **Token broker: name the upstream status when GitHub's JWKS endpoint misbehaves,
