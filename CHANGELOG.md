@@ -9,6 +9,37 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- **Token broker: a GitHub signing-key rotation no longer produces permanent
+  `401 invalid_oidc_token`s** ([#147](https://github.com/MagmaMoose/diatreme/issues/147)).
+  `createRemoteJWKSet` refetches on a `kid` miss only once its cooldown has lapsed
+  (30s), and its own freshness refetch arms that cooldown in the same call — so a
+  rotation failed genuine runner tokens for up to that window. Worse, jose issues
+  the JWKS subrequest with no cache directives and GitHub serves its key set with a
+  long `max-age`, so on Workers those refetches could keep coming back from the
+  colo cache — turning that window into a persistent failure while callers routed
+  elsewhere succeeded. `/token` now forces one JWKS reload on a `kid` miss,
+  throttled per issuer and bypassing the cache, and re-runs the *full*
+  verification on retry: signature, pinned issuer, audience and expiry are all
+  re-checked. jose's own (unthrottled, and un-deduplicated on Workers) reloads
+  instead ride a short 30s colo TTL, so a burst of unknown-`kid` tokens cannot be
+  amplified into one GitHub subrequest each.
+- **OIDC failures are now diagnosable.** Verification failures used to be
+  swallowed by a bare `catch` and collapsed into one opaque 401 with nothing
+  logged. Each failure now carries a coarse `reason` in the response body
+  (`kid_not_found`, `audience_mismatch`, `token_expired`, `signature_invalid`, …)
+  and emits one structured `oidc_verify_failed` log line — never including the
+  token or jose's message. `scripts/request-public-app-token.sh` prints the
+  reason alongside the existing error string.
+- **A JWKS retrieval fault is reported as `503 oidc_key_fetch_failed`**, not as an
+  invalid token. Reporting broker/upstream unavailability as "your token is bad"
+  is what made this class of incident unfalsifiable from the caller's side.
+- **`OIDC_AUDIENCE` is trimmed and comma-split.** A whitespace-only value was
+  truthy and silently replaced the accepted-audience list with one nothing could
+  ever match — a global, permanent 401. Blank values now fall back to the
+  defaults (`diatreme`, legacy `release-runner`).
+
 ### Removed
 
 - **Scoped Diatreme to release/deployment orchestration only.** Removed the
