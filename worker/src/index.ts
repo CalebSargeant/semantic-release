@@ -85,21 +85,21 @@ const jwksFetch: FetchImplementation = (url, options) =>
       return response;
     })
     .catch((cause: unknown) => {
-    // Our own tagged errors (including the non-200 above) pass straight through.
-    if ((cause as { code?: unknown } | null)?.code === JWKS_FETCH_FAILED_CODE) {
-      throw cause;
-    }
-    // Let jose map its own AbortSignal.timeout rejection to JWKSTimeout.
-    if ((cause as Error | null)?.name === "TimeoutError") throw cause;
-    // workerd rejects a failed subrequest with a plain Error ("Network connection
-    // lost.") carrying no code — never a TypeError — so the fault has to be tagged
-    // here rather than sniffed from the error class downstream. Build a fresh
-    // Error: assigning onto the original can throw (DOMException.code is a getter).
-    throw Object.assign(new Error("jwks fetch failed"), {
-      code: JWKS_FETCH_FAILED_CODE,
-      cause
+      // Our own tagged errors (including the non-200 above) pass straight through.
+      if ((cause as { code?: unknown } | null)?.code === JWKS_FETCH_FAILED_CODE) {
+        throw cause;
+      }
+      // Let jose map its own AbortSignal.timeout rejection to JWKSTimeout.
+      if ((cause as Error | null)?.name === "TimeoutError") throw cause;
+      // workerd rejects a failed subrequest with a plain Error ("Network connection
+      // lost.") carrying no code — never a TypeError — so the fault has to be tagged
+      // here rather than sniffed from the error class downstream. Build a fresh
+      // Error: assigning onto the original can throw (DOMException.code is a getter).
+      throw Object.assign(new Error("jwks fetch failed"), {
+        code: JWKS_FETCH_FAILED_CODE,
+        cause
+      });
     });
-  });
 
 const JWKS_OPTIONS = {
   [customFetch]: jwksFetch,
