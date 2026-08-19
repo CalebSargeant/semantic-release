@@ -57,16 +57,19 @@ function normalizeBaseUrl(value: string): string {
 //     to one per issuer per FORCED_RELOAD_MIN_INTERVAL_MS. That one can safely
 //     bypass the cache, which is what makes a rotation visible immediately.
 //
-// `bypassJwksCache` is module-scope and read across an await, so a jose-internal
-// reload racing a forced one may also bypass — harmless, and bounded by the same
-// throttle. cf.cacheTtl and cache are mutually exclusive; only ever set one.
+// `bypassJwksCacheCount` is module-scope and read across an await. A counter
+// rather than a boolean keeps the no-store policy live across concurrent
+// multi-issuer forced reloads: if request A increments and suspends, then
+// request B's finally decrements, a boolean would flip back to false before
+// A's subrequest runs. The count stays positive until all in-flight forced
+// reloads complete. cf.cacheTtl and cache are mutually exclusive; only ever set one.
 const JWKS_COLO_CACHE_TTL_SECONDS = 30;
-let bypassJwksCache = false;
+let bypassJwksCacheCount = 0;
 
 const jwksFetch: FetchImplementation = (url, options) =>
   fetch(url, {
     ...options,
-    ...(bypassJwksCache
+    ...(bypassJwksCacheCount > 0
       ? { cache: "no-store" as const }
       : {
           cf: {
@@ -263,7 +266,7 @@ function classifyOidcError(error: unknown): OidcFailureReason {
     case JWKS_FETCH_FAILED_CODE:
     case "ERR_JWKS_TIMEOUT":
     case "ERR_JWKS_INVALID":
-    case "ERR_JOSE_GENERIC":
+    case "ERR_JOSE_GENERIC": // jose's base class — any untyped JOSEError lands here, not exclusively the fetch path
       return "jwks_unavailable";
     default:
       // A raw TypeError from the JWKS subrequest (DNS/TLS/connection reset) has
@@ -680,11 +683,11 @@ export async function verifyOidcToken(
     ) {
       throw error;
     }
-    bypassJwksCache = true;
+    bypassJwksCacheCount++;
     try {
       await jwks.reload();
     } finally {
-      bypassJwksCache = false;
+      bypassJwksCacheCount--;
     }
     const { payload } = await jwtVerify(token, jwks, { issuer, audience });
     return payload;
