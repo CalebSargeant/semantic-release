@@ -17,13 +17,13 @@ from tests.conftest import AUDIENCE, GHE_ISSUER, GITHUB_ISSUER, Signer
 async def test_good_token_verifies_with_a_single_fetch(signer, jwks):
     claims = await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER])
 
-    assert claims["repository"] == "octo-org/octo-repo"
-    assert jwks.calls == 1
+    assert claims["repository"] == "octo-org/octo-repo"  # nosec B101
+    assert jwks.calls == 1  # nosec B101
 
 
 async def test_recovers_from_rotation_with_exactly_one_extra_fetch(signer, jwks):
     await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert jwks.calls == 1
+    assert jwks.calls == 1  # nosec B101
 
     # GitHub rotates. The cached set is still inside its TTL and inside the cooldown,
     # so without the forced reload this token is unverifiable here — which is exactly
@@ -32,8 +32,8 @@ async def test_recovers_from_rotation_with_exactly_one_extra_fetch(signer, jwks)
     jwks.serve([rotated.jwk])
 
     claims = await oidc.verify_token(rotated.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert claims["repository"] == "octo-org/octo-repo"
-    assert jwks.calls == 2, "expected exactly one forced reload, not a loop"
+    assert claims["repository"] == "octo-org/octo-repo"  # nosec B101
+    assert jwks.calls == 2, "expected exactly one forced reload, not a loop"  # nosec B101
 
 
 async def test_throttles_the_forced_reload(signer, jwks):
@@ -43,13 +43,13 @@ async def test_throttles_the_forced_reload(signer, jwks):
     # First unknown kid: one forced reload, still no match.
     with pytest.raises(oidc.KidNotFound):
         await oidc.verify_token(unknown.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert jwks.calls == 2
+    assert jwks.calls == 2  # nosec B101
 
     # Second inside the throttle window: rejected without touching the issuer. This
     # is what stops unauthenticated junk tokens becoming an amplification vector.
     with pytest.raises(oidc.KidNotFound):
         await oidc.verify_token(unknown.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert jwks.calls == 2
+    assert jwks.calls == 2  # nosec B101
 
 
 async def test_non_200_carries_the_upstream_status(signer, jwks):
@@ -58,9 +58,9 @@ async def test_non_200_carries_the_upstream_status(signer, jwks):
     with pytest.raises(oidc.JwksUnavailable) as caught:
         await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER])
 
-    assert caught.value.reason == "jwks_unavailable"
-    assert caught.value.status == 525
-    assert caught.value.content_type == "text/plain"
+    assert caught.value.reason == "jwks_unavailable"  # nosec B101
+    assert caught.value.status == 525  # nosec B101
+    assert caught.value.content_type == "text/plain"  # nosec B101
 
 
 async def test_transport_failure_is_a_retrieval_fault_not_a_bad_token(monkeypatch, signer):
@@ -78,9 +78,9 @@ async def test_transport_failure_is_a_retrieval_fault_not_a_bad_token(monkeypatc
 
     with pytest.raises(oidc.JwksUnavailable) as caught:
         await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert caught.value.reason == "jwks_unavailable"
+    assert caught.value.reason == "jwks_unavailable"  # nosec B101
     # No status: nothing answered, so there is nothing to report but the class.
-    assert caught.value.status is None
+    assert caught.value.status is None  # nosec B101
 
 
 async def test_real_fetch_translates_a_non_200(monkeypatch, signer):
@@ -93,8 +93,8 @@ async def test_real_fetch_translates_a_non_200(monkeypatch, signer):
 
     with pytest.raises(oidc.JwksUnavailable) as caught:
         await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER])
-    assert caught.value.status == 525
-    assert caught.value.content_type == "text/plain"
+    assert caught.value.status == 525  # nosec B101
+    assert caught.value.content_type == "text/plain"  # nosec B101
 
 
 async def test_real_fetch_rejects_a_body_that_is_not_a_key_set(monkeypatch, signer):
@@ -120,7 +120,7 @@ async def test_ghe_issuer_accepted_only_when_trusted(signer, jwks):
     token = signer.mint(iss=GHE_ISSUER)
 
     claims = await oidc.verify_token(token, AUDIENCE, [GITHUB_ISSUER, GHE_ISSUER])
-    assert claims["iss"] == GHE_ISSUER
+    assert claims["iss"] == GHE_ISSUER  # nosec B101
 
     with pytest.raises(jwt.InvalidIssuerError):
         await oidc.verify_token(signer.mint(iss=GHE_ISSUER), AUDIENCE, [GITHUB_ISSUER])
@@ -137,7 +137,7 @@ async def test_legacy_audience_still_accepted_alongside_the_current_one(signer, 
     claims = await oidc.verify_token(
         signer.mint(aud="release-runner"), ["diatreme", "release-runner"], [GITHUB_ISSUER]
     )
-    assert claims["aud"] == "release-runner"
+    assert claims["aud"] == "release-runner"  # nosec B101
 
 
 async def test_expired_token_is_rejected(signer, jwks):
@@ -150,8 +150,8 @@ async def test_snapshot_key_set_still_enforces_every_claim(signer, jwks):
     key_set = {"keys": [signer.jwk]}
 
     ok = await oidc.verify_token(signer.mint(), AUDIENCE, [GITHUB_ISSUER], key_set=key_set)
-    assert ok["repository"] == "octo-org/octo-repo"
-    assert jwks.calls == 0, "the snapshot path must not touch the network"
+    assert ok["repository"] == "octo-org/octo-repo"  # nosec B101
+    assert jwks.calls == 0, "the snapshot path must not touch the network"  # nosec B101
 
     with pytest.raises(jwt.InvalidAudienceError):
         await oidc.verify_token(

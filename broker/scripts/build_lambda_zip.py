@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Package the broker Lambda. The ONE definition of what ships to AWS.
 
-Used by `.github/workflows/ci.yml` (so a dependency bump that breaks the import or
-blows the size budget fails on the pull request) and by `release.yml` (which publishes
+Used by `.github/workflows/ci.yaml` (so a dependency bump that breaks the import or
+blows the size budget fails on the pull request) and by `release.yaml` (which publishes
 the artifact). A local build and a released artifact produced by different means is a
 difference nobody discovers until production behaves unlike the test.
 

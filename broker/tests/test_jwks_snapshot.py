@@ -65,7 +65,7 @@ async def test_successful_verification_snapshots_the_key_set(env, jwks, dynamo, 
     await broker._verify_with_snapshot_rescue(signer.mint(), load_config(), None)
 
     stored = json.loads(dynamo.items[SNAPSHOT_KEY]["jwks"]["S"])
-    assert [k["kid"] for k in stored["keys"]] == ["kid-a"]
+    assert [k["kid"] for k in stored["keys"]] == ["kid-a"]  # nosec B101
 
 
 async def test_rescues_a_genuine_token_when_retrieval_fails(env, jwks, dynamo, signer, caplog):
@@ -74,9 +74,9 @@ async def test_rescues_a_genuine_token_when_retrieval_fails(env, jwks, dynamo, s
 
     claims = await broker._verify_with_snapshot_rescue(signer.mint(), load_config(), None)
 
-    assert claims["repository"] == "octo-org/octo-repo"
+    assert claims["repository"] == "octo-org/octo-repo"  # nosec B101
     # Degraded mode must never pass unnoticed.
-    assert "oidc_verified_from_stale_jwks" in caplog.text
+    assert "oidc_verified_from_stale_jwks" in caplog.text  # nosec B101
 
 
 async def test_does_not_rescue_kid_not_found(env, jwks, dynamo, signer):
@@ -95,7 +95,7 @@ async def test_refuses_a_snapshot_past_the_age_ceiling(env, jwks, dynamo, signer
 
     with pytest.raises(oidc.JwksUnavailable):
         await broker._verify_with_snapshot_rescue(signer.mint(), load_config(), None)
-    assert "jwks_snapshot_too_old" in caplog.text
+    assert "jwks_snapshot_too_old" in caplog.text  # nosec B101
 
 
 async def test_snapshot_still_enforces_audience_and_issuer(env, jwks, dynamo, signer):
@@ -137,7 +137,7 @@ async def test_writes_are_throttled_per_execution_environment(env, jwks, dynamo,
         oidc.reset_cache()
         await broker._verify_with_snapshot_rescue(signer.mint(), config, None)
 
-    assert dynamo.puts == 1
+    assert dynamo.puts == 1  # nosec B101
 
 
 async def test_a_write_failure_never_fails_a_successful_verification(env, jwks, dynamo, signer):
@@ -147,4 +147,4 @@ async def test_a_write_failure_never_fails_a_successful_verification(env, jwks, 
     dynamo.put_item = explode
 
     claims = await broker._verify_with_snapshot_rescue(signer.mint(), load_config(), None)
-    assert claims["repository"] == "octo-org/octo-repo"
+    assert claims["repository"] == "octo-org/octo-repo"  # nosec B101

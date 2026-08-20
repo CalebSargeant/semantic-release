@@ -97,7 +97,6 @@ def save(table: str, issuer: str, jwks: dict[str, Any]) -> None:
     now = time.monotonic()
     if now - _last_write.get(issuer, 0.0) < WRITE_MIN_INTERVAL_S:
         return
-    _last_write[issuer] = now
 
     try:
         client("dynamodb").put_item(
@@ -109,6 +108,7 @@ def save(table: str, issuer: str, jwks: dict[str, Any]) -> None:
                 "expires_at": {"N": str(int(time.time()) + SNAPSHOT_TTL_S)},
             },
         )
+        _last_write[issuer] = time.monotonic()
     except Exception as exc:
         _log.warning({"event": "jwks_snapshot_write_failed", "err_name": type(exc).__name__})
 

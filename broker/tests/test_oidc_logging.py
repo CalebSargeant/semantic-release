@@ -18,7 +18,7 @@ from tests.conftest import GITHUB_ISSUER, Signer
 
 def _line(caplog) -> dict:
     records = [r for r in caplog.records if isinstance(r.msg, dict)]
-    assert records, "expected exactly one structured line"
+    assert records, "expected exactly one structured line"  # nosec B101
     return records[0].msg
 
 
@@ -32,14 +32,14 @@ def test_logs_decoded_claims_but_never_the_token(caplog, signer: Signer):
     )
 
     line = _line(caplog)
-    assert line["event"] == "oidc_verify_failed"
-    assert line["reason"] == "token_expired"
-    assert line["decodable"] == "true"
-    assert line["header_kid"] == "kid-a"
-    assert line["claim_repository"] == "octo-org/octo-repo"
+    assert line["event"] == "oidc_verify_failed"  # nosec B101
+    assert line["reason"] == "token_expired"  # nosec B101
+    assert line["decodable"] == "true"  # nosec B101
+    assert line["header_kid"] == "kid-a"  # nosec B101
+    assert line["claim_repository"] == "octo-org/octo-repo"  # nosec B101
     # The whole point: enough to diagnose, never the credential itself.
-    assert token not in caplog.text
-    assert signature not in caplog.text
+    assert token not in caplog.text  # nosec B101
+    assert signature not in caplog.text  # nosec B101
 
 
 def test_an_undecodable_token_still_produces_a_line(caplog):
@@ -54,8 +54,8 @@ def test_an_undecodable_token_still_produces_a_line(caplog):
     )
 
     line = _line(caplog)
-    assert line["decodable"] == "false"
-    assert "signature-do-not-log" not in caplog.text
+    assert line["decodable"] == "false"  # nosec B101
+    assert "signature-do-not-log" not in caplog.text  # nosec B101
 
 
 def test_hostile_claim_values_are_truncated(caplog):
@@ -69,8 +69,8 @@ def test_hostile_claim_values_are_truncated(caplog):
     )
 
     line = _line(caplog)
-    assert len(line["header_kid"]) == oidc.LOG_FIELD_MAX
-    assert len(line["claim_repository"]) == oidc.LOG_FIELD_MAX
+    assert len(line["header_kid"]) == oidc.LOG_FIELD_MAX  # nosec B101
+    assert len(line["claim_repository"]) == oidc.LOG_FIELD_MAX  # nosec B101
 
 
 def test_retrieval_faults_carry_the_upstream_status(caplog):
@@ -80,8 +80,8 @@ def test_retrieval_faults_carry_the_upstream_status(caplog):
     oidc.log_verify_failure("not.a.jwt", error.reason, error, ["diatreme"], [GITHUB_ISSUER])
 
     line = _line(caplog)
-    assert line["jwks_status"] == 525
-    assert line["jwks_content_type"] == "text/plain"
+    assert line["jwks_status"] == 525  # nosec B101
+    assert line["jwks_content_type"] == "text/plain"  # nosec B101
 
 
 @pytest.mark.parametrize(
@@ -104,4 +104,4 @@ def test_classification_table(error, expected):
     """InvalidSignatureError subclasses DecodeError in PyJWT, so ordering matters:
     a naive ladder reports a forged token as malformed and loses the one distinction
     an operator actually needs."""
-    assert oidc.classify_error(error) == expected
+    assert oidc.classify_error(error) == expected  # nosec B101

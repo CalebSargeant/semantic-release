@@ -46,9 +46,9 @@ class FakeGitHub:
             return httpx.Response(200, json={"id": 42})
         if self.installation_status == 200 and "access_tokens" in request.url.path:
             if self.token_status >= 400:
-                return httpx.Response(self.token_status, json={"token": "do-not-leak"})
+                return httpx.Response(self.token_status, json={"token": "do-not-leak"})  # nosec B105
             return httpx.Response(
-                201, json={"token": "ghs_minted", "expires_at": "2026-01-01T00:00:00Z"}
+                201, json={"token": "ghs_minted", "expires_at": "2026-01-01T00:00:00Z"}  # nosec B105
             )
         return httpx.Response(404, json={})
 
@@ -67,21 +67,21 @@ def gh(monkeypatch) -> FakeGitHub:
 
 
 async def test_missing_fields_are_rejected_before_anything_else(env):
-    assert await broker.handle_token({"owner": "octo-org"}) == (
+    assert await broker.handle_token({"owner": "octo-org"}) == (  # nosec B101
         400,
         {"error": "missing_required_fields"},
     )
 
 
 async def test_non_object_body_is_rejected(env):
-    assert await broker.handle_token("nope") == (400, {"error": "invalid_request"})
+    assert await broker.handle_token("nope") == (400, {"error": "invalid_request"})  # nosec B101
 
 
 async def test_path_traversal_in_repo_parts_is_rejected(env):
     status, body = await broker.handle_token(
         {"oidcToken": "x", "owner": "octo-org", "repo": "../../etc"}
     )
-    assert (status, body) == (400, {"error": "invalid_request"})
+    assert (status, body) == (400, {"error": "invalid_request"})  # nosec B101
 
 
 async def test_happy_path_mints_a_repo_scoped_token(env, jwks, gh, signer):
@@ -89,7 +89,7 @@ async def test_happy_path_mints_a_repo_scoped_token(env, jwks, gh, signer):
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
 
-    assert status == 200
+    assert status == 200  # nosec B101
     assert body == {
         "token": "ghs_minted",
         "expires_at": "2026-01-01T00:00:00Z",
@@ -98,8 +98,8 @@ async def test_happy_path_mints_a_repo_scoped_token(env, jwks, gh, signer):
     # Scoped to the one repository the caller proved control of, not the whole
     # installation.
     mint = next(r for r in gh.requests if "access_tokens" in r[1])
-    assert mint[2]["repositories"] == ["octo-repo"]
-    assert mint[2]["permissions"] == {"contents": "write", "pull_requests": "write"}
+    assert mint[2]["repositories"] == ["octo-repo"]  # nosec B101
+    assert mint[2]["permissions"] == {"contents": "write", "pull_requests": "write"}  # nosec B101
 
 
 async def test_repo_claim_mismatch_is_403(env, jwks, gh, signer):
@@ -107,7 +107,7 @@ async def test_repo_claim_mismatch_is_403(env, jwks, gh, signer):
     status, body = await broker.handle_token(
         {"oidcToken": token, "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert (status, body) == (403, {"error": "repo_mismatch"})
+    assert (status, body) == (403, {"error": "repo_mismatch"})  # nosec B101
 
 
 async def test_allowlist_is_enforced(env, jwks, gh, signer, monkeypatch):
@@ -115,7 +115,7 @@ async def test_allowlist_is_enforced(env, jwks, gh, signer, monkeypatch):
     status, body = await broker.handle_token(
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert (status, body) == (403, {"error": "repo_not_allowed"})
+    assert (status, body) == (403, {"error": "repo_not_allowed"})  # nosec B101
 
 
 async def test_app_not_installed_is_404(env, jwks, gh, signer):
@@ -123,7 +123,7 @@ async def test_app_not_installed_is_404(env, jwks, gh, signer):
     status, body = await broker.handle_token(
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert (status, body) == (404, {"error": "app_not_installed"})
+    assert (status, body) == (404, {"error": "app_not_installed"})  # nosec B101
 
 
 async def test_token_creation_failure_never_leaks_the_body(env, jwks, gh, signer):
@@ -131,8 +131,8 @@ async def test_token_creation_failure_never_leaks_the_body(env, jwks, gh, signer
     status, body = await broker.handle_token(
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert (status, body) == (500, {"error": "github_token_create_failed"})
-    assert "do-not-leak" not in json.dumps(body)
+    assert (status, body) == (500, {"error": "github_token_create_failed"})  # nosec B101
+    assert "do-not-leak" not in json.dumps(body)  # nosec B101
 
 
 @pytest.mark.parametrize(
@@ -150,9 +150,9 @@ async def test_verification_failures_are_401_with_a_reason(
     status, body = await broker.handle_token(
         {"oidcToken": mutate(signer), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert status == 401
-    assert body["error"] == "invalid_oidc_token"
-    assert body["reason"] == expected_reason
+    assert status == 401  # nosec B101
+    assert body["error"] == "invalid_oidc_token"  # nosec B101
+    assert body["reason"] == expected_reason  # nosec B101
 
 
 async def test_retrieval_fault_is_503_not_401(env, jwks, gh, signer):
@@ -161,8 +161,8 @@ async def test_retrieval_fault_is_503_not_401(env, jwks, gh, signer):
     status, body = await broker.handle_token(
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert status == 503
-    assert body == {"error": "oidc_key_fetch_failed", "reason": "jwks_unavailable"}
+    assert status == 503  # nosec B101
+    assert body == {"error": "oidc_key_fetch_failed", "reason": "jwks_unavailable"}  # nosec B101
 
 
 async def test_unknown_kid_is_401_not_503(env, jwks, gh, signer):
@@ -171,8 +171,8 @@ async def test_unknown_kid_is_401_not_503(env, jwks, gh, signer):
     status, body = await broker.handle_token(
         {"oidcToken": unknown.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert status == 401
-    assert body["reason"] == "kid_not_found"
+    assert status == 401  # nosec B101
+    assert body["reason"] == "kid_not_found"  # nosec B101
 
 
 async def test_missing_config_is_503_not_500(env, jwks, gh, signer, monkeypatch):
@@ -180,4 +180,4 @@ async def test_missing_config_is_503_not_500(env, jwks, gh, signer, monkeypatch)
     status, body = await broker.handle_token(
         {"oidcToken": signer.mint(), "owner": "octo-org", "repo": "octo-repo"}
     )
-    assert (status, body) == (503, {"error": "config_unavailable"})
+    assert (status, body) == (503, {"error": "config_unavailable"})  # nosec B101

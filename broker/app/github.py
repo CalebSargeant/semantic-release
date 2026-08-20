@@ -55,15 +55,6 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
-def graphql_url(api_base: str) -> str:
-    """github.com serves GraphQL at /graphql; GHE serves REST at <host>/api/v3 and
-    GraphQL at <host>/api/graphql."""
-    rest_suffix = "/api/v3"
-    if api_base.endswith(rest_suffix):
-        return f"{api_base[: -len(rest_suffix)]}/api/graphql"
-    return f"{api_base}/graphql"
-
-
 async def find_installation_id(
     client: httpx.AsyncClient, token: str, owner: str, repo: str, api_base: str
 ) -> int:
@@ -111,60 +102,3 @@ async def mint_installation_token(
     if not isinstance(body, dict) or not isinstance(body.get("token"), str):
         raise GitHubError(500, "github_token_create_failed")
     return {"token": body["token"], "expires_at": body.get("expires_at")}
-
-
-async def create_signed_commit(
-    client: httpx.AsyncClient,
-    token: str,
-    api_base: str,
-    *,
-    repository: str,
-    branch: str,
-    expected_head_oid: str,
-    message: str,
-    additions: list[dict[str, str]],
-    deletions: list[dict[str, str]],
-) -> dict[str, Any]:
-    """Create a commit via GraphQL ``createCommitOnBranch``.
-
-    Commits made this way are signed by GitHub and attributed to the App, which is
-    the entire reason this endpoint exists — a runner cannot produce either.
-    ``expectedHeadOid`` makes it a compare-and-swap: a racing push fails the mutation
-    rather than silently rewriting someone else's work.
-    """
-    mutation = """
-    mutation ($input: CreateCommitOnBranchInput!) {
-      createCommitOnBranch(input: $input) {
-        commit { oid url }
-      }
-    }
-    """
-    variables = {
-        "input": {
-            "branch": {
-                "repositoryNameWithOwner": repository,
-                "branchName": branch,
-            },
-            "expectedHeadOid": expected_head_oid,
-            "message": {"headline": message},
-            "fileChanges": {"additions": additions, "deletions": deletions},
-        }
-    }
-    response = await client.post(
-        graphql_url(api_base),
-        headers=_headers(token),
-        json={"query": mutation, "variables": variables},
-    )
-    if response.status_code >= 400:
-        raise GitHubError(502, "github_sign_failed")
-    body = response.json()
-    if body.get("errors"):
-        raise GitHubError(502, "github_sign_failed")
-    commit = (
-        body.get("data", {}).get("createCommitOnBranch", {}).get("commit")
-        if isinstance(body, dict)
-        else None
-    )
-    if not isinstance(commit, dict) or not commit.get("oid"):
-        raise GitHubError(502, "github_sign_failed")
-    return commit

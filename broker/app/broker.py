@@ -118,7 +118,7 @@ def _unverified_issuer(token: str, trusted: list[str]) -> str:
     import jwt as _jwt
 
     try:
-        claimed = _jwt.decode(token, options={"verify_signature": False}).get("iss")
+        claimed = _jwt.decode(token, options={"verify_signature": False}).get("iss")  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
     except Exception:
         claimed = None
     return claimed if claimed in trusted else trusted[0]

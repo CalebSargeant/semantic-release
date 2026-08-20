@@ -117,6 +117,10 @@ class BrokerConfig:
         object.__setattr__(self, "ghe_private_key", _normalize_pem(self.ghe_private_key))
         object.__setattr__(self, "ghe_oidc_issuer", _normalize_base_url(self.ghe_oidc_issuer))
         object.__setattr__(self, "ghe_api_base", _normalize_base_url(self.ghe_api_base))
+        try:
+            json.loads(self.token_permissions_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"TOKEN_PERMISSIONS_JSON is not valid JSON: {exc}") from exc
 
     def audiences(self) -> list[str]:
         return parse_audience(self.oidc_audience)

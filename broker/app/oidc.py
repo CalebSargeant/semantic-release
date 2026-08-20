@@ -271,7 +271,7 @@ def log_verify_failure(
     claims: dict[str, Any] = {"decodable": "false"}
     try:
         header = jwt.get_unverified_header(token)
-        payload = jwt.decode(token, options={"verify_signature": False})
+        payload = jwt.decode(token, options={"verify_signature": False})  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
         claims = {
             "decodable": "true",
             "header_kid": log_field(header.get("kid")),
@@ -282,7 +282,7 @@ def log_verify_failure(
             "claim_iat": log_field(payload.get("iat")),
             "claim_exp": log_field(payload.get("exp")),
         }
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     line: dict[str, Any] = {
@@ -321,7 +321,7 @@ async def verify_token(
     # Leave it None on failure; the pinned default still applies and verification
     # fails honestly below rather than here.
     with contextlib.suppress(jwt.PyJWTError):
-        unverified_issuer = jwt.decode(token, options={"verify_signature": False}).get("iss")
+        unverified_issuer = jwt.decode(token, options={"verify_signature": False}).get("iss")  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
 
     # An unverified `iss` may only *select* a key set, and only from the trust list.
     # It is then pinned below, so a forged issuer can never reach a foreign key.

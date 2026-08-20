@@ -47,7 +47,7 @@ def client(service: str) -> Any:
 
 
 def _field_name(parameter_name: str) -> str:
-    """``/chargate/prod/private-key`` -> ``private_key``.
+    """``/diatreme/prod/private-key`` -> ``private_key``.
 
     The basename with hyphens turned into underscores, so parameter names read
     naturally in the console and still land on ``BrokerConfig`` field names.
