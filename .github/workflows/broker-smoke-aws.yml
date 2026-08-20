@@ -32,7 +32,11 @@ jobs:
     steps:
       - name: Mint an OIDC token and exchange it at the AWS broker
         env:
-          BROKER: https://broker-diatreme.magmamoose.com
+          # BOTH hostnames. api.diatreme is the one frozen into every published action version
+          # as the default token-broker-url, so it is the one that actually carries consumer
+          # traffic; broker-diatreme is the first-level name and the shipped fallback. A smoke
+          # test that only covers the new name would miss a break in the one that matters.
+          BROKERS: "https://api.diatreme.magmamoose.com https://broker-diatreme.magmamoose.com"
           AUDIENCE: diatreme
         run: |
           set -euo pipefail
@@ -45,6 +49,7 @@ jobs:
           echo "  claims: $(echo "${oidc}" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{iss,aud,repository,exp}' || echo '(undecodable)')"
           echo "::endgroup::"
 
+          for BROKER in ${BROKERS}; do
           echo "::group::exchange at ${BROKER}"
           body="$(mktemp)"
           status="$(curl -sS -o "${body}" -w '%{http_code}' -X POST \
@@ -75,4 +80,7 @@ jobs:
           [ "${who}" = "MagmaMoose/diatreme" ] || { echo "::error::token did not authenticate"; exit 1; }
           echo "::endgroup::"
 
-          echo "AWS broker end-to-end: PASS"
+          echo "  ${BROKER}: PASS"
+          done
+
+          echo "AWS broker end-to-end: PASS on every hostname"
