@@ -1,0 +1,70 @@
+# End-to-end proof that the AWS broker mints a real token.
+#
+# Everything up to now has been probed with SYNTHETIC tokens — signed by a throwaway key, so
+# the broker can only ever reject them. That proves routing, config, JWKS retrieval and the
+# error ladder, but it cannot prove the one thing that matters: that a genuine GitHub Actions
+# OIDC token comes back as a usable installation token. Only a real runner can mint one.
+#
+# Temporary. Delete once the cutover is done and the normal release path exercises this.
+name: Broker smoke (AWS)
+
+on:
+  push:
+    branches: [test/broker/aws-end-to-end]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The whole point: without this the runner cannot mint an OIDC token at all.
+  id-token: write
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint an OIDC token and exchange it at the AWS broker
+        env:
+          BROKER: https://broker-diatreme.magmamoose.com
+          AUDIENCE: diatreme
+        run: |
+          set -euo pipefail
+
+          echo "::group::mint OIDC token"
+          oidc="$(curl -fsS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -er '.value')"
+          # Claims only, never the token itself.
+          echo "  claims: $(echo "${oidc}" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{iss,aud,repository,exp}' || echo '(undecodable)')"
+          echo "::endgroup::"
+
+          echo "::group::exchange at ${BROKER}"
+          body="$(mktemp)"
+          status="$(curl -sS -o "${body}" -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -n --arg t "${oidc}" \
+              '{oidcToken:$t, owner:"MagmaMoose", repo:"diatreme"}')" \
+            "${BROKER}/token")"
+          echo "  HTTP ${status}"
+          echo "::endgroup::"
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::AWS broker returned ${status}: $(jq -c '{error,reason}' "${body}" 2>/dev/null || cat "${body}")"
+            exit 1
+          fi
+
+          token="$(jq -er '.token' "${body}")"
+          echo "::add-mask::${token}"
+          echo "  repository : $(jq -r '.repository' "${body}")"
+          echo "  expires_at : $(jq -r '.expires_at' "${body}")"
+          echo "  token shape: ${#token} chars, prefix $(echo "${token}" | cut -c1-4)"
+
+          echo "::group::prove the minted token actually works"
+          # A token that mints but cannot act is not a working broker. Use it.
+          who="$(curl -fsS -H "Authorization: token ${token}" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/MagmaMoose/diatreme | jq -r '.full_name')"
+          echo "  authenticated against: ${who}"
+          [ "${who}" = "MagmaMoose/diatreme" ] || { echo "::error::token did not authenticate"; exit 1; }
+          echo "::endgroup::"
+
+          echo "AWS broker end-to-end: PASS"
