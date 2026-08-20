@@ -1,19 +1,23 @@
 # Architecture map
 
-Two independent surfaces in one repo, talking over HTTP (neither imports the other):
+Two independent surfaces, talking over HTTP. Neither imports the other.
 
-- **Composite action**: `action.yml` (~2740 lines, 83 inputs, 44 steps) + `scripts/*.sh`.
-  Published to the GitHub Marketplace (`uses: MagmaMoose/diatreme@v2`). Runs on the
-  runner. Modes: `ci` (build/push `pr-<N>` image, branch-naming gate, optional
-  Trivy scan → SBOM/findings sinks), `release` (versioning → GitHub Release → image
-  promotion → promotion PRs), `enable-auto-merge`. `action.yml` is thin glue; real
-  logic lives in `scripts/` (bash) and is bats-tested.
-- **Cloudflare Worker**: `worker/src/index.ts` (TypeScript, `export default { fetch }`,
-  only dep `jose`). Hosted GitHub App backend at `api.diatreme.magmamoose.com`.
-  Endpoints: `/token` (OIDC→installation-token broker), `/sign` (App/bot-attributed
-  signed commits), `/releases` (KV-cached aggregate), `/webhook` (push auto-update).
+- **Composite action** — `action.yml` (~2740 lines, ~83 inputs, ~44 steps) + `scripts/*.sh`.
+  Marketplace-published, runs on the runner. Modes: `ci`, `release`, `enable-auto-merge`.
+  Thin glue; logic is bash in `scripts/`, bats-tested.
+- **Hosted broker** — the GitHub-App backend called for `auth-mode: public-app`. `/token`
+  (OIDC → App installation token), `/sign`, `/releases`, `/webhook`. GHE opt-in via `GHE_*`.
 
-The action calls the worker at `/token` (public-app auth) and `/sign`. GitHub
-Enterprise (ghe.com/GHES) is opt-in in the worker via `GHE_*` env.
+## Where the broker actually runs (changed 2026-08-20)
 
-Full detail: read `PROJECT_INDEX.json` (modules/callgraph) and `AGENTS.md` (rules).
+`worker/` (TypeScript, Cloudflare) is the code of record on `main`, **but it no longer
+serves any hostname.** `api.diatreme.magmamoose.com` and `broker-diatreme.magmamoose.com`
+both resolve to an AWS Lambda broker behind API Gateway. A Python port is in flight; until
+it merges `worker/` is what to read, what CI validates, and the rollback.
+
+**An edit to `worker/` does not change production.** See `.claude/INFRA_NOTES.md`.
+
+Diatreme **fails hard** — the client exits non-zero on any broker fault, so a broken broker
+is a red X on every consumer's release.
+
+Detail: `PROJECT_INDEX.json` (modules, callgraph), `AGENTS.md` (rules).

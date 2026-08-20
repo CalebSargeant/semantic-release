@@ -1,113 +1,123 @@
 {
-  "generated": "2026-07-22T08:53:20Z",
-  "summary": "Diatreme is a release/deployment orchestrator with two independent surfaces in one repo that communicate over HTTP. Surface 1: a GitHub Marketplace composite action (action.yml + scripts/*.sh) that runs semantic versioning, GitHub Releases, Docker image build/promote, image scanning + SBOM/finding routing, and promotion-PR automation. Surface 2: a Cloudflare Worker (worker/) that is the hosted GitHub App backend — an OIDC->installation-token broker and an App/bot-attributed commit/tag signer. Neither surface imports the other.",
+  "generated": "2026-08-20T09:20:00Z",
+  "summary": "Diatreme is a release/deployment orchestrator published to the GitHub Marketplace as a composite action, plus a hosted GitHub-App backend that brokers OIDC tokens for it. The action runs on the runner (bash, bats-tested); the broker runs as a service and is called over HTTP. Neither imports the other. Consumers pin the action by SHA, so input names, defaults and broker wire responses are frozen API surface.",
   "entrypoints": [
-    "action.yml:runs (composite, 44 steps; modes: ci | release | enable-auto-merge)",
-    "worker/src/index.ts:default.fetch -> handleRequest (router for /token, /sign, /releases, /webhook)"
+    "action.yml:runs.steps",
+    "worker/src/index.ts:default.fetch",
+    "scripts/resolve-auth-token.sh:main"
   ],
   "modules": {
     "action": {
       "path": "action.yml",
-      "purpose": "The published composite action: 83 inputs, 10 outputs, ~2740 lines of inline bash orchestration that shells out to scripts/*.sh. mode=ci builds/pushes pr-<N> images (+ optional scan/SBOM); mode=release does versioning, GitHub Release, image promotion, promotion PRs; mode=enable-auto-merge flips native auto-merge on a PR.",
-      "exports": ["outputs: version, tag, is-prerelease, released, prerelease-identifier, resolved-environment, package-published, image-scanned, image-findings, resolved-image-name"],
-      "depends_on": ["scripts/*", "worker (HTTP: /token, /sign)"]
+      "purpose": "Marketplace composite action: ~83 inputs, ~44 steps, thin glue only. Modes: ci (build/push pr-<N> image, branch-naming gate, optional Trivy scan), release (versioning -> GitHub Release -> image promotion -> promotion PRs), enable-auto-merge.",
+      "exports": ["inputs", "outputs", "runs.steps"],
+      "depends_on": ["auth", "versioning", "image", "sbom-sinks", "packaging", "pr-automation"]
     },
     "auth": {
-      "path": "scripts/resolve-auth-token.sh, scripts/request-public-app-token.sh",
-      "purpose": "Centralized auth selection (auth-mode: public-app | github-token | app). request-public-app-token.sh exchanges the Actions OIDC token for a short-lived App installation token by calling the worker's /token broker.",
-      "exports": ["resolved token for downstream git/gh/registry auth"],
-      "depends_on": ["worker POST /token", "OIDC id-token: write"]
+      "path": "scripts/resolve-auth-token.sh",
+      "purpose": "Chooses the token for git/release ops across auth-modes (public-app, private-app, github-token, auto). The public-app path calls the hosted broker.",
+      "exports": ["token", "source", "registry-token"],
+      "depends_on": ["broker-client"]
+    },
+    "broker-client": {
+      "path": "scripts/request-public-app-token.sh",
+      "purpose": "Exchanges the runner's Actions OIDC token for a repo-scoped App installation token at the hosted broker. Falls back to a secondary broker on connection failure or 5xx, never on 4xx.",
+      "exports": ["token", "expires-at", "repository"],
+      "depends_on": []
     },
     "versioning": {
-      "path": "scripts/detect-versioning-tool.sh, scripts/run-python-semantic-release.sh, scripts/semantic-release-deps.sh, scripts/extract-semrel-plugins.mjs, scripts/force-bump-version.sh, scripts/push-release-tag.sh",
-      "purpose": "Versioning backends and release-tag push. detect-versioning-tool.sh resolves the tool from repo markers when versioning-tool=auto (two-tier: release config wins, then ecosystem manifest). run-python-semantic-release.sh drives the pinned python-semantic-release CLI. force-bump-version.sh forces the next bump. semantic-release-deps.sh + extract-semrel-plugins.mjs install/resolve semantic-release (npm) plugins.",
-      "exports": ["resolved version + tag", "next-version bump decision"],
-      "depends_on": ["pyproject.toml (psr config)", "scripts/psr-requirements.txt (pinned CLI)"]
+      "path": "scripts/detect-versioning-tool.sh",
+      "purpose": "Two-tier autodetect of the versioning backend (semantic-release, python-semantic-release, GitVersion, release-please), then delegates. versioning-tool: auto is the default.",
+      "exports": ["tool", "version", "tag"],
+      "depends_on": []
     },
     "image": {
-      "path": "scripts/resolve-image-name.sh, scripts/scan-image.sh, scripts/verify-promote-source.sh",
-      "purpose": "Docker image lifecycle. resolve-image-name.sh derives the image name (auto-detect or explicit). scan-image.sh runs Trivy on the assembled pr-<N> image. verify-promote-source.sh checks provenance labels (stamped by mode=ci) against the release commit's git tree before promoting; stale/unverifiable images are rebuilt instead of promoted.",
-      "exports": ["resolved-image-name", "image-scanned, image-findings", "promote-vs-rebuild decision"],
-      "depends_on": ["Trivy", "Docker Buildx/Bake"]
+      "path": "scripts/resolve-image-name.sh",
+      "purpose": "Image naming, build/push, and promotion. verify-promote-source.sh checks a pr-<N> image's provenance labels against the release commit's tree before promoting; stale images are rebuilt, not promoted.",
+      "exports": ["image", "tags"],
+      "depends_on": []
     },
     "sbom-sinks": {
-      "path": "scripts/upload-sbom-dependency-track.sh, scripts/upload-scan-defectdojo.sh",
-      "purpose": "Visibility-first, failure-isolated reporting sinks: CycloneDX SBOM -> Dependency-Track; optional findings -> DefectDojo. A scanner that cannot run is a build error; a sink that fails does not fail the build unless image-scan-gate.",
-      "exports": ["uploaded SBOM / findings (non-blocking)"],
-      "depends_on": ["scripts/scan-image.sh output", "Dependency-Track API", "DefectDojo API"]
+      "path": "scripts/upload-sbom-dependency-track.sh",
+      "purpose": "Visibility-first scan reporting: CycloneDX SBOM to Dependency-Track, optional findings to DefectDojo. Sinks are failure-isolated; a scanner that cannot run is a build error, a finding is not.",
+      "exports": [],
+      "depends_on": []
     },
     "packaging": {
       "path": "scripts/publish-package.sh",
-      "purpose": "Publishes language packages (nuget, npm, maven, gradle, rubygems, container, pip) to GitHub Packages or public registries, on github.com and GitHub Enterprise.",
-      "exports": ["package-published"],
-      "depends_on": ["setup-* toolchains via action.yml", "registry credentials"]
+      "purpose": "Publishes built artifacts across seven package ecosystems. The largest single script; JSON/branching heavy.",
+      "exports": [],
+      "depends_on": []
     },
     "pr-automation": {
-      "path": "scripts/build-promotion-pr-body.sh, scripts/enable-auto-merge.sh, scripts/check-branch-naming.sh, scripts/append-github-projects.sh, scripts/move-github-projects.sh, scripts/append-clickup-tickets.sh",
-      "purpose": "Promotion-PR body assembly, native auto-merge enablement, branch-naming gate (mode=ci), and aggregation of GitHub Projects items / ClickUp tickets into release notes + moving Projects cards on release.",
-      "exports": ["promotion PR body", "auto-merge enabled", "branch-naming pass/fail"],
-      "depends_on": ["gh CLI", "GitHub Projects / ClickUp APIs"]
+      "path": "scripts/build-promotion-pr-body.sh",
+      "purpose": "Promotion PR bodies, auto-merge enablement, branch-naming gate, and GitHub Projects/ClickUp linkage.",
+      "exports": [],
+      "depends_on": []
     },
     "worker": {
       "path": "worker/src/index.ts",
-      "purpose": "Cloudflare Worker GitHub App backend. /token: verify Actions OIDC (issuer-pinned via jose) -> mint short-lived App installation token (github.com or opt-in GHE tenant). /sign: mint installation token -> createCommitOnBranch (GitHub-signed, App/bot-attributed). /releases: Bearer-gated aggregate of latest releases across installations (KV-cached). /webhook: HMAC-verified push -> fast-forward open PRs (opt-in AUTO_UPDATE_BRANCHES).",
-      "exports": ["default.fetch (ExportedHandler)", "handleRequest, BrokerEnv (test surface)"],
-      "depends_on": ["jose", "GitHub REST + GraphQL", "KV binding COPILOT_QUOTA_KV (legacy name, caches /releases)"]
+      "purpose": "Cloudflare Worker implementation of the broker (TypeScript, only runtime dep jose). Endpoints: /token, /sign, /releases, /webhook. NOTE: as of 2026-08-20 it no longer serves any hostname - see .claude/ARCHITECTURE_MAP.md - but it remains the code of record on main until the Python/Lambda broker lands.",
+      "exports": ["default.fetch", "handleRequest", "verifyOidcToken", "parseAudience"],
+      "depends_on": []
+    },
+    "worker-tests": {
+      "path": "worker/test/index.test.ts",
+      "purpose": "vitest suites for the broker wire contract. jwks-rotation.test.ts guards the key-rotation and snapshot behaviour that issues #147 and #150 produced.",
+      "exports": [],
+      "depends_on": ["worker"]
+    },
+    "action-tests": {
+      "path": "tests/bats",
+      "purpose": "bats suites for every scripts/*.sh. The wire contract of the broker client is asserted here, including that the fallback fires on 5xx and never on 4xx.",
+      "exports": [],
+      "depends_on": ["auth", "broker-client", "versioning", "image", "sbom-sinks", "packaging"]
     },
     "workflows": {
-      "path": ".github/workflows/",
-      "purpose": "ci.yaml validates both surfaces (actionlint, shellcheck, bats, psr pin smoke-test; worker typecheck+test). release.yaml dogfoods `uses: ./` to release the action and moves the floating major tag. deploy-worker.yaml ships worker/ to Cloudflare and injects the KV namespace id. security.yml runs the org Chargate gate.",
-      "exports": ["CI gates, action release, worker deploy"],
-      "depends_on": ["action.yml", "worker/", "scripts/request-public-app-token.sh"]
-    },
-    "tests": {
-      "path": "tests/bats/*.bats, worker/test/index.test.ts",
-      "purpose": "19 bats suites cover the shell scripts + action wiring (action-input-defaults, action-script-refs, detect-versioning-tool, force-bump, docker-promotion, verify-promote-source, resolve-*, publish-package, etc.). worker/test/index.test.ts (vitest, ~785 lines) covers the worker endpoints.",
+      "path": ".github/workflows",
+      "purpose": "ci.yaml validates both surfaces; release.yaml publishes the action and moves floating major tags; deploy-worker.yaml deploys the Worker; broker-smoke-aws.yml mints a real token weekly against the hosted broker.",
       "exports": [],
-      "depends_on": ["bats", "shellcheck", "actionlint", "vitest"]
+      "depends_on": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Published MkDocs (Material) human documentation. Distinct from .claude/*.md, which is terse agent context and is not published.",
+      "exports": [],
+      "depends_on": []
     }
   },
   "callgraph_highlights": [
     {
-      "caller": "action.yml mode=release",
-      "calls": ["scripts/resolve-auth-token.sh", "scripts/request-public-app-token.sh -> worker POST /token", "scripts/detect-versioning-tool.sh", "scripts/run-python-semantic-release.sh", "scripts/push-release-tag.sh"],
-      "note": "Auth -> resolve versioning backend -> version -> push tag. Backend may instead be gitversion / release-please / semantic-release-npm."
+      "caller": "action.yml (mode: release, auth-mode: public-app)",
+      "calls": ["scripts/resolve-auth-token.sh", "scripts/request-public-app-token.sh"],
+      "note": "The credential path. request-public-app-token.sh mints an OIDC token on the runner and exchanges it at the broker. It exits 1 on any non-200, so a broker fault is a red X on every consumer's release - diatreme fails hard where sibling brokers fail soft."
     },
     {
-      "caller": "action.yml mode=release (promotion)",
-      "calls": ["scripts/verify-promote-source.sh", "scripts/build-promotion-pr-body.sh", "scripts/publish-package.sh"],
-      "note": "Provenance-verify the pr-<N> image before promoting; rebuild from the release checkout if stale. Then assemble the promotion PR body."
+      "caller": "worker/src/index.ts:handleRequest",
+      "calls": ["verifyOidcToken", "findInstallationId", "createInstallationToken"],
+      "note": "OIDC verify -> repository claim match -> allowlist -> mint. Issuer is pinned before verification so a forged iss cannot select a foreign key set."
     },
     {
-      "caller": "action.yml mode=ci",
-      "calls": ["scripts/check-branch-naming.sh", "scripts/resolve-image-name.sh", "docker bake pr-<N>", "scripts/scan-image.sh", "scripts/upload-sbom-dependency-track.sh", "scripts/upload-scan-defectdojo.sh"],
-      "note": "Build+push pr-<N> image, then non-blocking scan -> SBOM/findings sinks (failure-isolated)."
+      "caller": "action.yml (mode: ci)",
+      "calls": ["scripts/check-branch-naming.sh", "scripts/resolve-image-name.sh", "scripts/scan-image.sh", "scripts/upload-sbom-dependency-track.sh"],
+      "note": "Build/scan path. Gates are 1:1 with the build; sinks are many:1 and failure-isolated."
     },
     {
-      "caller": "worker handleRequest -> handleTokenRequest",
-      "calls": ["verifyOidcToken (jose jwtVerify, issuer-pinned)", "findInstallationId", "createInstallationToken"],
-      "note": "OIDC repo claim must equal owner/repo; ALLOWED_REPOSITORIES enforced; GHE issuer switches App + apiBase."
-    },
-    {
-      "caller": "worker handleSignRequest",
-      "calls": ["mintInstallationToken", "createSignedCommitOnBranch (GraphQL createCommitOnBranch)"],
-      "note": "Bearer PROCESS_TRIGGER_SECRET gated; commit is GitHub-signed and App/bot-attributed."
-    },
-    {
-      "caller": "worker handleWebhookRequest -> handlePushEvent",
-      "calls": ["verifyWebhookSignature (HMAC)", "updateOpenPullRequestsForBase -> updatePullRequestBranch"],
-      "note": "Opt-in AUTO_UPDATE_BRANCHES; only push events act, all else acked as no-op."
+      "caller": "action.yml (mode: release, promotion)",
+      "calls": ["scripts/verify-promote-source.sh", "scripts/build-promotion-pr-body.sh"],
+      "note": "Provenance is verified against the release commit's tree before an image is promoted rather than rebuilt."
     }
   ],
   "hotspots": [
     "action.yml",
-    "scripts/resolve-auth-token.sh",
-    "scripts/detect-versioning-tool.sh",
-    "scripts/publish-package.sh",
-    "scripts/verify-promote-source.sh",
-    "worker/src/index.ts",
     "README.md",
+    "worker/src/index.ts",
+    "worker/test/index.test.ts",
     "CHANGELOG.md",
-    ".github/workflows/ci.yaml"
+    "scripts/request-public-app-token.sh",
+    "worker/wrangler.jsonc",
+    "AGENTS.md",
+    ".github/workflows/ci.yaml",
+    ".github/workflows/release.yaml"
   ]
 }

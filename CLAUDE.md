@@ -1,10 +1,11 @@
 # Diatreme
 
-Release/deployment orchestrator with two independent surfaces in one repo: a
-GitHub Marketplace **composite action** (`action.yml` + `scripts/*.sh`, bash,
-bats-tested) and a **Cloudflare Worker** GitHub-App backend (`worker/`, TypeScript,
-vitest). They talk over HTTP; neither imports the other. Most users only touch the
-action. Full contributor rules live in `AGENTS.md` (read it before non-trivial edits).
+Release/deployment orchestrator. Two surfaces, talking over HTTP, neither importing
+the other: a Marketplace **composite action** (`action.yml` + `scripts/*.sh`, bash,
+bats) and the **hosted GitHub-App broker** it calls (`worker/`, TypeScript, vitest).
+Consumers pin by SHA, so action inputs and broker wire responses are frozen API
+surface — changing one breaks repos nobody can reach. `AGENTS.md` is canonical for
+contributor rules; edit it and this file together.
 
 @.claude/QUICK_START.md
 @.claude/ARCHITECTURE_MAP.md
@@ -14,25 +15,28 @@ action. Full contributor rules live in `AGENTS.md` (read it before non-trivial e
 
 - **Before locating unfamiliar code, read `./PROJECT_INDEX.json`** (modules,
   callgraph, hotspots) instead of grepping blind.
-- `AGENTS.md` = full editing rules & local-validation commands. `README.md` =
-  Marketplace user guide. `worker/README.md` = worker endpoints/config.
-- Load `.claude/decisions/` (ADRs) and `.claude/sessions/` (summaries) ONLY when
-  the task relates to them, never by default.
+- `AGENTS.md` = editing rules + local validation. `README.md` = Marketplace guide.
+  `worker/README.md` = broker endpoints/config.
+- Cloudflare, AWS, DNS or a hostname: read `.claude/INFRA_NOTES.md` first.
+- `.claude/*.md` = terse agent context, unpublished. `./docs` = human docs, published.
+- Load `.claude/decisions/` and `.claude/sessions/` ONLY when the task relates to
+  them, never by default.
 
 ## [tooling]
 
 - Prefer targeted line-range reads over whole files; use `PROJECT_INDEX.json` to
-  find the location. `action.yml` is ~2740 lines, never read it whole.
+  find the location. Never read `action.yml` whole.
 - grep/find/glob: return matching paths and matched lines only.
-- Commands that can flood output: pipe through `head`/`tail`/`grep` or redirect to
-  `.claude/last_output.txt` and read ranges. Don't paste thousands of lines.
+- Flooding commands: pipe through `head`/`tail`/`grep`, or redirect to
+  `.claude/last_output.txt` and read ranges. Never paste thousands of lines.
 - After a successful write/edit, trust it; don't re-read just to "verify".
 
 ## [maintenance]
 
-- Bug that took >1h: append to `.claude/COMMON_MISTAKES.md`.
-- Architectural decision: run `/adr`.
+- Bug that took >1h: append to `.claude/COMMON_MISTAKES.md` (infra/DNS/TLS ones to
+  `.claude/INFRA_NOTES.md`).
+- Architectural decision: run `/adr` (writes to `.claude/decisions/`).
 - Public behaviour/API/config/setup changed: run `/update-docs`.
 - `PROJECT_INDEX.json` stale (new module, big refactor): regenerate the affected
-  modules section only.
+  modules section only, and update `generated`.
 - Keep this file under ~500 tokens; push detail into on-demand `.claude/` files.

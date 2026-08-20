@@ -31,6 +31,7 @@ site/
 .claude/*
 !.claude/ARCHITECTURE_MAP.md
 !.claude/COMMON_MISTAKES.md
+!.claude/INFRA_NOTES.md
 !.claude/QUICK_START.md
 !.claude/settings.json
 !.claude/decisions/
