@@ -5,12 +5,20 @@
 # error ladder, but it cannot prove the one thing that matters: that a genuine GitHub Actions
 # OIDC token comes back as a usable installation token. Only a real runner can mint one.
 #
-# Temporary. Delete once the cutover is done and the normal release path exercises this.
+# KEPT, not temporary. Until the cutover completes, the release path still runs through
+# Cloudflare, so nothing else on this repo would notice the AWS broker breaking. Weekly is
+# enough to catch a regression (an expired App key, a revoked installation, an IAM or SSM
+# change) long before a release depends on it.
+#
+# It costs one Lambda invocation and two GitHub API calls a week — irrelevant against the
+# always-free allowance, and cheap insurance for the endpoint every consumer's release will
+# soon depend on.
 name: Broker smoke (AWS)
 
 on:
-  push:
-    branches: [test/broker/aws-end-to-end]
+  schedule:
+    # Mondays 06:00 UTC — a failure lands at the start of a working week, not during one.
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
