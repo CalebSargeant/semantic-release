@@ -41,3 +41,10 @@ site/
 # Session summaries are local running notes — track only the template.
 .claude/sessions/*
 !.claude/sessions/TEMPLATE.md
+
+# Python broker (broker/)
+broker/dist/
+broker/.venv/
+broker/**/__pycache__/
+broker/.pytest_cache/
+broker/.ruff_cache/
