@@ -90,7 +90,7 @@ async def test_happy_path_mints_a_repo_scoped_token(env, jwks, gh, signer):
     )
 
     assert status == 200  # nosec B101
-    assert body == {  # nosec B101
+    assert body == {  # nosec B101, B105
         "token": "ghs_minted",  # nosec B105
         "expires_at": "2026-01-01T00:00:00Z",
         "repository": "octo-org/octo-repo",
