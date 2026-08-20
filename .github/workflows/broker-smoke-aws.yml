@@ -32,7 +32,11 @@ jobs:
     steps:
       - name: Mint an OIDC token and exchange it at the AWS broker
         env:
-          BROKER: https://broker-diatreme.magmamoose.com
+          # BOTH hostnames. api.diatreme is the one frozen into every published action version
+          # as the default token-broker-url, so it is the one that actually carries consumer
+          # traffic; broker-diatreme is the first-level name and the shipped fallback. A smoke
+          # test that only covers the new name would miss a break in the one that matters.
+          BROKERS: "https://api.diatreme.magmamoose.com https://broker-diatreme.magmamoose.com"
           AUDIENCE: diatreme
         run: |
           set -euo pipefail
@@ -46,6 +50,7 @@ jobs:
           echo "  claims: $(echo "${oidc}" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{iss,aud,repository,exp}' || echo '(undecodable)')"
           echo "::endgroup::"
 
+          for BROKER in ${BROKERS}; do
           echo "::group::exchange at ${BROKER}"
           body="$(mktemp)"
           status="$(curl -sS -o "${body}" -w '%{http_code}' -X POST \
@@ -68,12 +73,19 @@ jobs:
           echo "  token shape: ${#token} chars, prefix $(echo "${token}" | cut -c1-4)"
 
           echo "::group::prove the minted token actually works"
-          # A token that mints but cannot act is not a working broker. Use it.
-          who="$(curl -fsS -H "Authorization: token ${token}" \
+          # POST /git/blobs is atomic, touches no ref, and requires contents:write — a token
+          # minted with wrong scopes or a misconfigured TOKEN_PERMISSIONS on the Lambda side
+          # cannot create a blob and will fail here. Blobs unreachable from any ref are GC'd.
+          blob="$(curl -fsS -X POST \
+            -H "Authorization: token ${token}" \
             -H 'Accept: application/vnd.github+json' \
-            https://api.github.com/repos/MagmaMoose/diatreme | jq -r '.full_name')"
-          echo "  authenticated against: ${who}"
-          [ "${who}" = "MagmaMoose/diatreme" ] || { echo "::error::token did not authenticate"; exit 1; }
+            -H 'Content-Type: application/json' \
+            --data '{"content":"smoke","encoding":"utf-8"}' \
+            "https://api.github.com/repos/MagmaMoose/diatreme/git/blobs" | jq -er '.sha')"
+          echo "  write-verified sha: ${blob}"
           echo "::endgroup::"
 
-          echo "AWS broker end-to-end: PASS"
+          echo "  ${BROKER}: PASS"
+          done
+
+          echo "AWS broker end-to-end: PASS on every hostname"

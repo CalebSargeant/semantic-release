@@ -1,19 +1,36 @@
 # Architecture
 
+<!-- sources: action.yml, scripts, worker/src/index.ts, .github/workflows -->
+
 Diatreme is two independent surfaces in one repo. They talk over HTTP and share no
 code. The action calls the worker's broker endpoints; the worker never calls the
 action.
 
+```mermaid
+flowchart LR
+    subgraph runner["GitHub Actions runner"]
+        A["action.yml<br/>mode: ci / release / enable-auto-merge"]
+        S["scripts/*.sh"]
+        A --> S
+    end
+    subgraph broker["Hosted broker"]
+        T["POST /token<br/>OIDC to App token"]
+        G["POST /sign<br/>App-attributed commit"]
+        R["GET /releases<br/>aggregate"]
+        W["POST /webhook<br/>push auto-update"]
+    end
+    S -->|"HTTPS, sync"| T
+    S -->|"HTTPS, sync"| G
+    GH["GitHub REST + GraphQL"]
+    T -->|"HTTPS, sync"| GH
+    G -->|"HTTPS, sync"| GH
+    R -->|"HTTPS, sync"| GH
+    GH -.->|"webhook delivery, async"| W
 ```
-GitHub Actions runner                         Cloudflare
-┌──────────────────────────────┐              ┌────────────────────────────┐
-│ action.yml (composite)       │  POST /token │ worker/src/index.ts        │
-│  ├─ mode: ci                 │─────────────▶│  /token   OIDC→App token   │
-│  ├─ mode: release            │  POST /sign  │  /sign    signed commit    │
-│  └─ mode: enable-auto-merge  │─────────────▶│  /releases  aggregate      │
-│  scripts/*.sh do the work    │              │  /webhook   push auto-update│
-└──────────────────────────────┘              └────────────────────────────┘
-```
+
+The action calls the broker. The broker never calls the action. Every call is
+synchronous and the action fails hard on any fault, so a broker outage is a red
+X on the release rather than a silent skip.
 
 ## The composite action
 
@@ -37,17 +54,23 @@ in `scripts/*.sh`, which are `bats`-tested. Three modes:
 detects from repository markers): `semantic-release-python`, `semantic-release-npm`,
 `gitversion`, `release-please`.
 
-## The worker
+## The broker
 
 `worker/src/index.ts` is a single-file Cloudflare Worker (`export default { fetch }`)
 whose only runtime dependency is [`jose`](https://github.com/panva/jose). It exists
 so callers don't have to register and run their own GitHub App.
 
+!!! warning "`worker/` is the code of record, not the running deployment"
+    Both broker hostnames currently answer from AWS Lambda behind API Gateway.
+    `worker/` is what this repository builds, tests and can roll back to, but
+    editing it does not change what consumers hit. See
+    [Deployment](operations/deployment.md).
+
 | Endpoint | Purpose | Auth |
 | --- | --- | --- |
 | `POST /token` | Exchange a GitHub Actions OIDC token for a short-lived App installation token. | OIDC (`id-token: write`) |
 | `POST /sign` | Create a GitHub-signed, App/bot-attributed commit via `createCommitOnBranch`. | `Bearer PROCESS_TRIGGER_SECRET` |
-| `GET /releases` | Aggregated latest-release history across installations (KV-cached). | `Bearer PROCESS_TRIGGER_SECRET` |
+| `GET /releases` | Aggregated latest-release history across installations, cached. Caps are reported via `truncated`, never applied silently. | `Bearer PROCESS_TRIGGER_SECRET` |
 | Webhook `push` | Fast-forward open PRs targeting the pushed branch (opt-in). | HMAC (`GITHUB_WEBHOOK_SECRET`) |
 
 OIDC verification pins the issuer before selecting its JWKS, so a forged `iss` can't
@@ -55,6 +78,31 @@ select a foreign key. **GitHub Enterprise** (ghe.com / GHES) is opt-in via the
 `GHE_*` environment: a GHE token is verified against that tenant's issuer and minted
 via the GHE App against the GHE REST/GraphQL base.
 
+### Failure modes at the boundary
+
+| Boundary | Fails how | Result |
+| --- | --- | --- |
+| Action to broker | Connection refused, DNS failure, or 5xx | The action retries once against the fallback hostname, then fails the step. A 4xx is never retried. |
+| Broker to issuer JWKS | Timeout, non-200, unparseable body | `503 oidc_key_fetch_failed`, unless a last-known-good snapshot under 24 hours old can rescue the request. |
+| Broker to GitHub REST | 404 on installation lookup | `404 app_not_installed`. Anything else unusable becomes a 500. |
+
+The full table is in [Errors](reference/errors.md).
+
+## Deliberate tradeoffs
+
+**One hostname is a single point of failure, so the fallback ships inside the
+action.** A broker hostname losing egress would block releases in every
+repository pinned to every published version, and no change shipped later can
+redirect those pins. The secondary hostname travels with the action itself.
+
+**Frozen wire contract.** Consumers pin by SHA, so action input names, defaults
+and behaviour, and the broker's response bodies, are append-only. That
+constrains every change, and it's the price of being pinnable.
+
+**Fail hard, not soft.** A broker fault could be swallowed and the release
+allowed to continue unsigned or unversioned. Diatreme exits non-zero instead. A
+loud failure is cheaper than a wrong release.
+
 !!! note "Deeper map for contributors"
-    `PROJECT_INDEX.json` at the repo root has the module/callgraph breakdown, and
-    `AGENTS.md` has the repository boundary and editing rules.
+    `PROJECT_INDEX.json` at the repo root has the module and callgraph
+    breakdown, and `AGENTS.md` has the repository boundary and editing rules.

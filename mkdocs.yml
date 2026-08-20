@@ -1,7 +1,7 @@
 site_name: Diatreme
 site_description: >-
-  Release/deployment orchestration — a GitHub Marketplace composite action plus
-  the Cloudflare Worker GitHub App backend that supports it.
+  Release and deployment orchestration: a GitHub Marketplace composite action
+  plus the hosted GitHub App broker that backs it.
 site_url: https://magmamoose.github.io/diatreme/
 repo_url: https://github.com/MagmaMoose/diatreme
 repo_name: MagmaMoose/diatreme
@@ -32,14 +32,31 @@ theme:
 
 markdown_extensions:
   - admonition
-  - pymdownx.superfences
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - toc:
       permalink: true
 
 nav:
   - Home: index.md
-  - Architecture: architecture.md
   - Setup: setup.md
   - Using the action: action.md
-  - Worker: worker.md
+  - Architecture: architecture.md
+  - Broker: worker.md
+  - Reference:
+      - Broker API: reference/broker-api.md
+      - Broker configuration: reference/configuration.md
+      - Errors: reference/errors.md
+      - Limits: reference/limits.md
+  - Operations:
+      - Deployment: operations/deployment.md
+  - Security: security.md
+  - Glossary: glossary.md
   - Contributing: contributing.md

@@ -6,9 +6,11 @@ in one repository that communicate over HTTP, neither imports the other:
 - **Composite action** (`action.yml` + `scripts/`), published to the GitHub
   Marketplace. Runs semantic versioning, GitHub Releases, Docker image build and
   promotion, image scanning with SBOM/finding routing, and promotion-PR automation.
-- **Cloudflare Worker** (`worker/`), the hosted GitHub App backend at
-  `api.diatreme.magmamoose.com`. An OIDC → installation-token broker and an
-  App/bot-attributed commit/tag signer. Most users never touch it directly.
+- **Hosted broker**, the GitHub App backend at `api.diatreme.magmamoose.com`.
+  An OIDC to installation-token broker and an App-attributed commit and tag
+  signer. Most users never touch it directly. `worker/` in this repository is
+  its TypeScript implementation; see [Deployment](operations/deployment.md) for
+  what actually serves that hostname.
 
 Install the action:
 
@@ -22,6 +24,8 @@ Install the action:
     - New here? Start with **[Setup](setup.md)**.
     - Want the big picture? See **[Architecture](architecture.md)**.
     - Configuring a pipeline? See **[Using the action](action.md)**.
+    - Hit a red X? Go straight to **[Errors](reference/errors.md)**.
+    - Running your own broker? See **[Broker configuration](reference/configuration.md)**.
     - The full, exhaustive input/output reference lives in the
       [repository README](https://github.com/MagmaMoose/diatreme#readme).
 
@@ -30,7 +34,7 @@ Install the action:
 | Surface | Path | Toolchain | Ships to |
 | --- | --- | --- | --- |
 | Composite action | `action.yml` + `scripts/*.sh` | Bash, `actionlint`, `shellcheck`, `bats` | GitHub Marketplace |
-| Cloudflare Worker | `worker/` | TypeScript, `wrangler`, `vitest` | Cloudflare |
+| Broker | `worker/` | TypeScript, `wrangler`, `vitest` | Cloudflare, with the live deployment on AWS |
 
 ## Related
 

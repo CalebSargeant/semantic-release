@@ -14,3 +14,20 @@ GHE_GITHUB_APP_ID="99999"
 GHE_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 # Optional — skips the per-repo installation lookup (the GHE App secret carries it):
 GHE_GITHUB_APP_INSTALLATION_ID="123"
+
+# --- Optional: narrow who can mint, and with what ---
+# Comma-separated owner/name allowlist for /token. Unset = every repo the App is on.
+ALLOWED_REPOSITORIES="MagmaMoose/diatreme"
+# Permissions stamped on minted tokens. JSON, or comma-separated key=value.
+# Unset = contents:write, pull_requests:write.
+TOKEN_PERMISSIONS="contents=write,pull_requests=write"
+
+# --- Optional: gates the /sign and /releases endpoints ---
+# Unset = both return 503 (sign_disabled / releases_disabled).
+PROCESS_TRIGGER_SECRET="replace-me"
+
+# --- Optional: /webhook push auto-update ---
+# Unset GITHUB_WEBHOOK_SECRET = /webhook returns 503 webhook_disabled.
+# AUTO_UPDATE_BRANCHES is enabled only by 1/true/yes/on.
+GITHUB_WEBHOOK_SECRET="replace-me"
+AUTO_UPDATE_BRANCHES="false"
