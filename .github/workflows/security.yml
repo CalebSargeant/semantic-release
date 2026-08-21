@@ -20,6 +20,12 @@ permissions:
   # metadata via GET /actions/runs/{id}; without actions:read that 403s with
   # "Resource not accessible by integration" and the SARIF upload errors.
   actions: read
+  # OIDC exchange at Chargate's token broker, so its PR comments are authored by
+  # Chargate[bot] rather than github-actions[bot]. WITHOUT THIS the action fails soft —
+  # `request-app-token.sh` emits an empty token and exits 0 — so the only symptom is a
+  # byline, and nothing anywhere goes red.
+  # kics-scan ignore-line
+  id-token: write
 
 jobs:
   chargate:
