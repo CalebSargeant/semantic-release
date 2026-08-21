@@ -1,16 +1,25 @@
 import {
   SignJWT,
+  createLocalJWKSet,
   createRemoteJWKSet,
+  customFetch,
   decodeJwt,
+  decodeProtectedHeader,
   importPKCS8,
   jwtVerify,
-  type JWTPayload
+  type FetchImplementation,
+  type JWTPayload,
+  type RemoteJWKSet
 } from "jose";
 
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL =
   "https://token.actions.githubusercontent.com/.well-known/jwks";
 const GITHUB_API_VERSION = "2022-11-28";
+// Our own tag for "the JWKS subrequest itself failed". jose passes such rejections
+// through unchanged and workerd does not use a distinguishable error class, so
+// jwksFetch stamps this on and classifyOidcError reads it back.
+const JWKS_FETCH_FAILED_CODE = "ERR_JWKS_FETCH_FAILED";
 const DEFAULT_AUDIENCE = "diatreme";
 // Legacy audience accepted during the release-runner → diatreme migration so
 // OIDC tokens minted by older pinned action versions still verify.
@@ -33,25 +42,115 @@ function normalizeBaseUrl(value: string): string {
   return trimmed.slice(0, end);
 }
 
-const remoteJwks = createRemoteJWKSet(new URL(GITHUB_OIDC_JWKS_URL));
+// jose issues the JWKS subrequest with no cache directives, and GitHub serves its
+// key set with a long max-age — so on Workers the response can come back from the
+// colo cache. A cached body makes a signing-key rotation invisible to this
+// isolate, which is how a *fresh* runner token ends up failing to verify.
+//
+// Two kinds of fetch reach this endpoint and they want opposite policies:
+//   - jose's own reloads. These are unthrottled (one per request that misses a
+//     `kid`) and are NOT deduplicated on Workers — reload() deliberately clears
+//     its in-flight promise there, because workerd forbids awaiting another
+//     request's I/O. So N concurrent junk tokens mean N subrequests unless the
+//     colo cache collapses them. Give them a short TTL: it bounds an
+//     unauthenticated caller's amplification against GitHub.
+//   - the explicit rotation-recovery reload in verifyOidcToken.
+//
+// Both now bypass the cache unconditionally. Production evidence (#147): the
+// Worker was getting a non-200 from GitHub's JWKS endpoint, which is served
+// `public, max-age=3600, must-revalidate` — so any colo that cached a bad response
+// kept serving it for an hour while other colos stayed healthy, matching exactly
+// the "one repo fails, another succeeds, persists across fresh tokens" report.
+// Keeping the cache out of this path removes that failure mode entirely.
+//
+// The cost is that the colo cache no longer collapses concurrent identical
+// subrequests: jose's reloads are unthrottled and it disables in-flight dedupe on
+// Workers, so a burst of unknown-`kid` tokens spaced beyond its 30s cooldown can
+// still amplify. Real but modest, and tracked separately — correctness during a
+// live outage beats a theoretical amplification vector.
+const jwksFetch: FetchImplementation = (url, options) =>
+  fetch(url, { ...options, cache: "no-store" })
+    .then((response) => {
+      if (response.status !== 200) {
+        // jose's own non-200 error is a bare JOSEError carrying fixed text, so the
+        // status never reaches the logs — exactly what left #147 undiagnosable for
+        // hours. Carry the status and the headers that explain it.
+        throw Object.assign(new Error("jwks fetch returned non-200"), {
+          code: JWKS_FETCH_FAILED_CODE,
+          jwksStatus: response.status,
+          jwksContentType: response.headers.get("content-type") ?? undefined,
+          jwksLocation: response.headers.get("location") ?? undefined,
+          jwksCfRay: response.headers.get("cf-ray") ?? undefined
+        });
+      }
+      return response;
+    })
+    .catch((cause: unknown) => {
+      // Our own tagged errors (including the non-200 above) pass straight through.
+      if ((cause as { code?: unknown } | null)?.code === JWKS_FETCH_FAILED_CODE) {
+        throw cause;
+      }
+      // Let jose map its own AbortSignal.timeout rejection to JWKSTimeout.
+      if ((cause as Error | null)?.name === "TimeoutError") throw cause;
+      // workerd rejects a failed subrequest with a plain Error ("Network connection
+      // lost.") carrying no code — never a TypeError — so the fault has to be tagged
+      // here rather than sniffed from the error class downstream. Build a fresh
+      // Error: assigning onto the original can throw (DOMException.code is a getter).
+      throw Object.assign(new Error("jwks fetch failed"), {
+        code: JWKS_FETCH_FAILED_CODE,
+        cause
+      });
+    });
+
+const JWKS_OPTIONS = {
+  [customFetch]: jwksFetch,
+  cacheMaxAge: 300_000, // 5 min (jose default 10 min)
+  timeoutDuration: 5_000
+  // cooldownDuration is left at jose's 30s default on purpose: shortening it only
+  // widens the window in which jose's *unthrottled* reload fires. Rotation
+  // recovery comes from the throttled explicit reload instead.
+} as const;
+
+const remoteJwks = createRemoteJWKSet(new URL(GITHUB_OIDC_JWKS_URL), JWKS_OPTIONS);
 
 // GitHub Enterprise (ghe.com data-residency / GHES) support is opt-in via
 // GHE_OIDC_ISSUER + GHE_GITHUB_APP_* env. A GHE tenant mints Actions OIDC tokens
 // from its own issuer (e.g. https://token.actions.<tenant>.ghe.com) with a
 // distinct JWKS, and exposes a distinct REST API — so both verification and
 // token-minting must switch on the token's issuer. JWKS sets are cached per
-// issuer (jose dedupes the network fetch behind each set).
-const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>([
+// issuer (note jose does NOT dedupe concurrent fetches on Workers — see the cache
+// policy on jwksFetch above).
+const jwksByIssuer = new Map<string, RemoteJWKSet>([
   [GITHUB_OIDC_ISSUER, remoteJwks]
 ]);
-function jwksForIssuer(issuer: string): ReturnType<typeof createRemoteJWKSet> {
+function jwksForIssuer(issuer: string): RemoteJWKSet {
   let jwks = jwksByIssuer.get(issuer);
   if (!jwks) {
     // Actions OIDC issuers publish their keys at <issuer>/.well-known/jwks.
-    jwks = createRemoteJWKSet(new URL(`${normalizeBaseUrl(issuer)}/.well-known/jwks`));
+    jwks = createRemoteJWKSet(
+      new URL(`${normalizeBaseUrl(issuer)}/.well-known/jwks`),
+      JWKS_OPTIONS
+    );
     jwksByIssuer.set(issuer, jwks);
   }
   return jwks;
+}
+
+// `reload()` deliberately bypasses jose's cooldown, so an unauthenticated caller
+// spraying tokens with unknown `kid`s could turn one request into one GitHub
+// subrequest each. This bounds the *explicit* reload below to one per issuer per
+// interval — it does not gate jose's own internal reload, which runs first and is
+// bounded instead by its cooldown and by the colo TTL on jwksFetch. The key is
+// drawn from the trusted-issuer list, never from caller input, so this map cannot
+// grow unboundedly.
+const FORCED_RELOAD_MIN_INTERVAL_MS = 5_000;
+const lastForcedReload = new Map<string, number>();
+function mayForceReload(issuer: string, nowMs: number): boolean {
+  if (nowMs - (lastForcedReload.get(issuer) ?? 0) < FORCED_RELOAD_MIN_INTERVAL_MS) {
+    return false;
+  }
+  lastForcedReload.set(issuer, nowMs);
+  return true;
 }
 
 type PermissionLevel = "read" | "write";
@@ -73,6 +172,9 @@ export type BrokerEnv = Env & {
   GHE_GITHUB_APP_INSTALLATION_ID?: string; // set to skip the per-repo lookup
   // KV namespace used to cache the /releases aggregate.
   COPILOT_QUOTA_KV?: KVNamespace;
+  // Last-known-good JWKS snapshots, so a Worker that cannot reach an issuer's
+  // JWKS endpoint can still verify tokens instead of failing every release.
+  DIATREME_JWKS_CACHE?: KVNamespace;
   // /webhook push → auto-update open PRs targeting the pushed branch (HMAC-
   // verified against this secret).
   GITHUB_WEBHOOK_SECRET?: string;
@@ -100,7 +202,8 @@ interface Dependencies {
   verifyOidcToken: (
     token: string,
     audience: string | string[],
-    trustedIssuers?: string[]
+    trustedIssuers?: string[],
+    jwksCache?: KVNamespace
   ) => Promise<VerifiedOidcPayload>;
   createGitHubAppJwt: (
     appId: string,
@@ -119,7 +222,74 @@ class HttpError extends Error {
   }
 }
 
-class OidcVerificationError extends Error {}
+// Coarse, fixed enum describing *why* verification failed. Surfaced to the caller
+// as `reason` and logged; it deliberately carries no token content, no jose
+// message text (which can embed claim values) and no broker configuration.
+type OidcFailureReason =
+  | "malformed_token"
+  | "kid_not_found"
+  | "key_ambiguous"
+  | "signature_invalid"
+  | "audience_mismatch"
+  | "issuer_mismatch"
+  | "token_expired"
+  | "token_not_yet_valid"
+  | "claim_invalid"
+  | "alg_unsupported"
+  | "jwks_unavailable"
+  | "unknown";
+
+class OidcVerificationError extends Error {
+  constructor(readonly reason: OidcFailureReason) {
+    super(reason);
+  }
+}
+
+// Failing to retrieve GitHub's key set is OUR unavailability, not a bad token —
+// reporting it as 401 is what made this class of incident unfalsifiable from the
+// caller's side.
+const JWKS_INFRA_REASONS: ReadonlySet<OidcFailureReason> = new Set([
+  "jwks_unavailable"
+]);
+
+// Classify on jose's `code`, never on `instanceof JOSEError` — every jose error
+// extends it, so that would report a forged token as "GitHub is down".
+// ERR_JOSE_GENERIC is only ever thrown by jose's JWKS fetch (non-200 response, or
+// a body that will not parse as JSON), so it belongs with the retrieval faults.
+function classifyOidcError(error: unknown): OidcFailureReason {
+  const code = (error as { code?: unknown } | null)?.code;
+  const claim = (error as { claim?: unknown } | null)?.claim;
+  switch (code) {
+    case "ERR_JWKS_NO_MATCHING_KEY":
+      return "kid_not_found";
+    case "ERR_JWKS_MULTIPLE_MATCHING_KEYS":
+      return "key_ambiguous";
+    case "ERR_JWS_SIGNATURE_VERIFICATION_FAILED":
+      return "signature_invalid";
+    case "ERR_JWT_EXPIRED":
+      return "token_expired";
+    case "ERR_JWT_CLAIM_VALIDATION_FAILED":
+      if (claim === "aud") return "audience_mismatch";
+      if (claim === "iss") return "issuer_mismatch";
+      if (claim === "nbf") return "token_not_yet_valid";
+      return "claim_invalid";
+    case "ERR_JWT_INVALID":
+    case "ERR_JWS_INVALID":
+      return "malformed_token";
+    case "ERR_JOSE_NOT_SUPPORTED":
+    case "ERR_JOSE_ALG_NOT_ALLOWED":
+      return "alg_unsupported";
+    case JWKS_FETCH_FAILED_CODE:
+    case "ERR_JWKS_TIMEOUT":
+    case "ERR_JWKS_INVALID":
+    case "ERR_JOSE_GENERIC": // jose's base class — any untyped JOSEError lands here, not exclusively the fetch path
+      return "jwks_unavailable";
+    default:
+      // A raw TypeError from the JWKS subrequest (DNS/TLS/connection reset) has
+      // no jose code at all.
+      return error instanceof TypeError ? "jwks_unavailable" : "unknown";
+  }
+}
 
 const defaultDependencies: Dependencies = {
   fetch,
@@ -164,7 +334,9 @@ export async function handleRequest(
     }
 
     if (error instanceof OidcVerificationError) {
-      return jsonError(401, "invalid_oidc_token");
+      return JWKS_INFRA_REASONS.has(error.reason)
+        ? jsonError(503, "oidc_key_fetch_failed", error.reason)
+        : jsonError(401, "invalid_oidc_token", error.reason);
     }
 
     return jsonError(500, "internal_error");
@@ -184,7 +356,7 @@ async function handleTokenRequest(
   const repository = `${body.owner}/${body.repo}`;
   assertRepositoryParts(body.owner, body.repo);
 
-  const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
+  const audience = parseAudience(env.OIDC_AUDIENCE);
   const gheIssuer = env.GHE_OIDC_ISSUER ? normalizeBaseUrl(env.GHE_OIDC_ISSUER) : "";
   const trustedIssuers = gheIssuer
     ? [GITHUB_OIDC_ISSUER, gheIssuer]
@@ -193,7 +365,8 @@ async function handleTokenRequest(
     body.oidcToken,
     audience,
     dependencies,
-    trustedIssuers
+    trustedIssuers,
+    env.DIATREME_JWKS_CACHE
   );
   if (oidcPayload.repository !== repository) {
     return jsonError(403, "repo_mismatch");
@@ -413,16 +586,185 @@ async function readTokenRequest(request: Request): Promise<TokenRequest> {
   };
 }
 
+// A deployer-supplied OIDC_AUDIENCE is trimmed and comma-split, mirroring
+// ALLOWED_REPOSITORIES. Without this a whitespace-only value is truthy and
+// silently replaces the accept-list with an audience nothing can ever match —
+// a global, permanent 401 with no way to see why.
+export function parseAudience(configured: string | undefined): string[] {
+  const parsed = (configured ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
+}
+
 async function verifyOidc(
   token: string,
   audience: string | string[],
   deps: Dependencies,
-  trustedIssuers?: string[]
+  trustedIssuers?: string[],
+  jwksCache?: KVNamespace
 ): Promise<VerifiedOidcPayload> {
   try {
-    return await deps.verifyOidcToken(token, audience, trustedIssuers);
+    return await deps.verifyOidcToken(token, audience, trustedIssuers, jwksCache);
+  } catch (error) {
+    const reason = classifyOidcError(error);
+    logOidcFailure(token, reason, error, audience, trustedIssuers);
+    throw new OidcVerificationError(reason);
+  }
+}
+
+// Truncate every attacker-controlled string so a hostile token cannot flood or
+// line-inject the log stream.
+function logField(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return typeof text === "string" ? text.slice(0, 128) : undefined;
+}
+
+// One structured line per verification failure, so the next occurrence is settled
+// from `wrangler tail` instead of guesswork. NEVER logs the token (or any slice of
+// it) or jose's message, which can embed claim values.
+function logOidcFailure(
+  token: string,
+  reason: OidcFailureReason,
+  error: unknown,
+  audience: string | string[],
+  trustedIssuers?: string[]
+): void {
+  let claims: Record<string, string | undefined> = { decodable: "false" };
+  try {
+    const header = decodeProtectedHeader(token);
+    const payload = decodeJwt(token);
+    claims = {
+      decodable: "true",
+      headerKid: logField(header.kid),
+      headerAlg: logField(header.alg),
+      claimIss: logField(payload.iss),
+      claimAud: logField(payload.aud),
+      claimRepository: logField((payload as VerifiedOidcPayload).repository),
+      claimIat: logField(payload.iat),
+      claimExp: logField(payload.exp)
+    };
   } catch {
-    throw new OidcVerificationError();
+    // Deliberately swallowed: an undecodable token must not mask the real error.
+  }
+
+  console.warn({
+    event: "oidc_verify_failed",
+    reason,
+    errName: logField((error as Error | null)?.name),
+    errCode: logField((error as { code?: unknown } | null)?.code),
+    // Present only for a JWKS retrieval fault; names the actual upstream status.
+    jwksStatus: logField((error as { jwksStatus?: unknown } | null)?.jwksStatus),
+    jwksContentType: logField(
+      (error as { jwksContentType?: unknown } | null)?.jwksContentType
+    ),
+    jwksLocation: logField((error as { jwksLocation?: unknown } | null)?.jwksLocation),
+    jwksCfRay: logField((error as { jwksCfRay?: unknown } | null)?.jwksCfRay),
+    expectedAudience: Array.isArray(audience) ? audience.join(",") : audience,
+    trustedIssuers: (trustedIssuers ?? [GITHUB_OIDC_ISSUER]).join(","),
+    nowEpoch: Math.floor(Date.now() / 1000),
+    ...claims
+  });
+}
+
+// ─── Last-known-good JWKS ────────────────────────────────────────────────────
+// A Worker that cannot reach an issuer's JWKS endpoint would otherwise fail every
+// token it is asked to verify — which is exactly how #147 blocked releases for
+// hours. Every successful verification snapshots the key set to KV; a retrieval
+// fault then falls back to that snapshot rather than rejecting genuine tokens.
+//
+// The security position: the snapshot only ever supplies KEYS. The retried
+// jwtVerify still checks the signature, the pinned issuer, the audience and the
+// expiry, so a stale set cannot admit a token that a fresh set would reject —
+// it can only admit one signed by a key that has since been retired. Bounded by
+// JWKS_SNAPSHOT_MAX_AGE_MS, and every stale verification logs loudly.
+const JWKS_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const JWKS_SNAPSHOT_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+interface JwksSnapshot {
+  jwks: { keys: unknown[] };
+  uat: number;
+}
+
+function jwksSnapshotKey(issuer: string): string {
+  return `jwks:${issuer}`;
+}
+
+// Best-effort: a KV write must never fail a verification that already succeeded.
+async function snapshotJwks(
+  jwksCache: KVNamespace | undefined,
+  issuer: string,
+  jwks: RemoteJWKSet
+): Promise<void> {
+  if (!jwksCache) return;
+  try {
+    const current = jwks.jwks();
+    if (!current || !Array.isArray(current.keys) || current.keys.length === 0) return;
+    await jwksCache.put(
+      jwksSnapshotKey(issuer),
+      JSON.stringify({ jwks: current, uat: Date.now() } satisfies JwksSnapshot),
+      { expirationTtl: JWKS_SNAPSHOT_TTL_SECONDS }
+    );
+  } catch (error) {
+    console.warn({
+      event: "jwks_snapshot_write_failed",
+      issuer,
+      errName: (error as Error | null)?.name
+    });
+  }
+}
+
+// Returns the verified payload when the snapshot rescues this token, or undefined
+// when there is no usable snapshot — in which case the caller rethrows the
+// original retrieval error. A token that fails against the snapshot for any OTHER
+// reason (bad signature, wrong audience) is also returned as undefined, so the
+// caller surfaces the retrieval fault rather than a misleading claim error.
+async function verifyFromSnapshot(
+  jwksCache: KVNamespace | undefined,
+  issuer: string,
+  token: string,
+  audience: string | string[],
+  cause: unknown
+): Promise<VerifiedOidcPayload | undefined> {
+  if (!jwksCache) return undefined;
+  let snapshot: JwksSnapshot | null = null;
+  try {
+    snapshot = await jwksCache.get<JwksSnapshot>(jwksSnapshotKey(issuer), "json");
+  } catch {
+    return undefined;
+  }
+  if (!snapshot || !Array.isArray(snapshot.jwks?.keys) || typeof snapshot.uat !== "number") {
+    return undefined;
+  }
+
+  const ageMs = Date.now() - snapshot.uat;
+  if (ageMs < 0 || ageMs > JWKS_SNAPSHOT_MAX_AGE_MS) {
+    console.warn({
+      event: "jwks_snapshot_too_old",
+      issuer,
+      ageSeconds: Math.floor(ageMs / 1000),
+      maxAgeSeconds: Math.floor(JWKS_SNAPSHOT_MAX_AGE_MS / 1000)
+    });
+    return undefined;
+  }
+
+  try {
+    const local = createLocalJWKSet(snapshot.jwks as { keys: Record<string, unknown>[] });
+    const { payload } = await jwtVerify(token, local, { issuer, audience });
+    // Loud on purpose: this is a degraded mode, and it must never pass unnoticed.
+    console.warn({
+      event: "oidc_verified_from_stale_jwks",
+      issuer,
+      snapshotAgeSeconds: Math.floor(ageMs / 1000),
+      retrievalErrCode: (cause as { code?: unknown } | null)?.code,
+      retrievalJwksStatus: (cause as { jwksStatus?: unknown } | null)?.jwksStatus,
+      repository: (payload as VerifiedOidcPayload).repository
+    });
+    return payload;
+  } catch {
+    return undefined;
   }
 }
 
@@ -431,7 +773,8 @@ async function verifyOidc(
 export async function verifyOidcToken(
   token: string,
   audience: string | string[],
-  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER]
+  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER],
+  jwksCache?: KVNamespace
 ): Promise<VerifiedOidcPayload> {
   // github.com and each GHE tenant sign with different keys, so pick the JWKS by
   // the token's (still-unverified) issuer — but only when it's on the trust list,
@@ -441,11 +784,51 @@ export async function verifyOidcToken(
     claimedIssuer && trustedIssuers.includes(claimedIssuer)
       ? claimedIssuer
       : GITHUB_OIDC_ISSUER;
-  const { payload } = await jwtVerify(token, jwksForIssuer(issuer), {
-    issuer,
-    audience
-  });
-  return payload;
+  const jwks = jwksForIssuer(issuer);
+  try {
+    const { payload } = await jwtVerify(token, jwks, { issuer, audience });
+    await snapshotJwks(jwksCache, issuer, jwks);
+    return payload;
+  } catch (error) {
+    // A JWKS RETRIEVAL fault is the one failure a last-known-good snapshot can
+    // legitimately cover: the keys we would have fetched are almost certainly the
+    // keys we already hold, and the alternative is failing every release. Never
+    // fall back on kid_not_found — there the fetch worked and the key genuinely is
+    // not published, so a stale set is strictly worse than an honest failure.
+    if (classifyOidcError(error) === "jwks_unavailable") {
+      const recovered = await verifyFromSnapshot(
+        jwksCache,
+        issuer,
+        token,
+        audience,
+        error
+      );
+      if (recovered) return recovered;
+      throw error;
+    }
+    // jose refetches the key set on a `kid` miss only once its cooldown has lapsed
+    // (30s), and its own freshness refetch arms that cooldown in the same call — so
+    // a miss inside that window is terminal for this request. Force one reload and
+    // retry rather than making a genuine runner token wait the cooldown out.
+    //
+    // Forced even when jose did reload itself: that reload rides the colo cache
+    // (see jwksFetch), so it can miss a rotation that a cache-bypassing fetch
+    // sees. One extra subrequest per throttle interval is the right price.
+    //
+    // This is strictly a key-*availability* retry, not a relaxation: the retried
+    // jwtVerify re-checks signature, the pinned issuer, audience and expiry, and
+    // only ERR_JWKS_NO_MATCHING_KEY reaches it — a bad signature or a failed claim
+    // still throws immediately.
+    if (
+      (error as { code?: unknown } | null)?.code !== "ERR_JWKS_NO_MATCHING_KEY" ||
+      !mayForceReload(issuer, Date.now())
+    ) {
+      throw error;
+    }
+    await jwks.reload();
+    const { payload } = await jwtVerify(token, jwks, { issuer, audience });
+    return payload;
+  }
 }
 
 async function createGitHubAppJwt(
@@ -773,8 +1156,8 @@ function json(body: Record<string, unknown>, status: number): Response {
   });
 }
 
-function jsonError(status: number, error: string): Response {
-  return json({ error }, status);
+function jsonError(status: number, error: string, reason?: string): Response {
+  return json(reason ? { error, reason } : { error }, status);
 }
 
 function asString(value: unknown): string | undefined {

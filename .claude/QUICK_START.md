@@ -20,7 +20,7 @@ wrangler dev             # run locally against .dev.vars
 
 **Docs (repo root):**
 ```bash
-pip install mkdocs-material   # one-time (build/serve dep)
-mkdocs serve                  # preview at :8000
-mkdocs build                  # render to ./site (gitignored)
+pip install -r docs/requirements.txt   # one-time (mkdocs-material)
+mkdocs serve                           # preview at :8000
+mkdocs build --strict                  # as CI runs it; renders ./site (gitignored)
 ```

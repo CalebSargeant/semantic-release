@@ -2,6 +2,7 @@
 set -euo pipefail
 
 broker_url="${TOKEN_BROKER_URL:-https://api.diatreme.magmamoose.com}"
+fallback_broker_url="${TOKEN_BROKER_FALLBACK_URL:-}"
 audience="${OIDC_AUDIENCE:-diatreme}"
 request_url="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
 request_token="${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
@@ -53,19 +54,47 @@ payload="$(
 body_file="$(mktemp)"
 trap 'rm -f "${body_file}"' EXIT
 
-status="$(
+# A single broker hostname losing egress blocks releases in every repository pinned
+# to every published version, and no change we ship can redirect those pins. So the
+# fallback travels with the action. Retried ONLY when the primary is unreachable
+# (curl exit != 0) or answers 5xx; a 4xx is a decision about this token, not an
+# outage, and must not be re-asked of a second broker.
+call_broker() {
+  local url="$1"
   curl -sS \
     -o "${body_file}" \
     -w '%{http_code}' \
     -X POST \
     -H 'Content-Type: application/json' \
     --data "${payload}" \
-    "${broker_url%/}/token"
-)"
+    "${url%/}/token"
+}
+
+broker_used="${broker_url}"
+if ! status="$(call_broker "${broker_url}")"; then
+  status="000"
+fi
+
+if [[ -n "${fallback_broker_url}" && "${fallback_broker_url}" != "${broker_url}" ]] \
+  && [[ "${status}" == "000" || "${status}" =~ ^5 ]]; then
+  echo "::warning::Token broker ${broker_url} returned ${status}; trying fallback ${fallback_broker_url}."
+  broker_used="${fallback_broker_url}"
+  if ! status="$(call_broker "${fallback_broker_url}")"; then
+    status="000"
+  fi
+fi
 
 if [[ "${status}" != "200" ]]; then
   error_code="$(jq -r '.error // "token_broker_error"' "${body_file}" 2>/dev/null || echo "token_broker_error")"
-  echo "::error::Token broker request failed with HTTP ${status}: ${error_code}"
+  # The broker returns a coarse `reason` alongside `error` (e.g. kid_not_found,
+  # audience_mismatch, token_expired, jwks_unavailable). Surface it so a failure
+  # is diagnosable from the run log alone.
+  reason="$(jq -r '.reason // ""' "${body_file}" 2>/dev/null || echo "")"
+  if [[ -n "${reason}" ]]; then
+    echo "::error::Token broker request failed with HTTP ${status}: ${error_code} (${reason}) [${broker_used}]"
+  else
+    echo "::error::Token broker request failed with HTTP ${status}: ${error_code} [${broker_used}]"
+  fi
   exit 1
 fi
 

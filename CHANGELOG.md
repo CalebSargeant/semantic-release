@@ -9,6 +9,89 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **Broker fallback URL (`token-broker-fallback-url`).** A broker hostname losing
+  egress blocks releases in every repository pinned to every published version, and
+  no change we ship can redirect those pins — so the fallback has to travel with the
+  action. `scripts/request-public-app-token.sh` now retries against a secondary
+  broker when the primary is unreachable or answers 5xx. Deliberately **not** on
+  4xx: a rejected token is an answer, not an outage, and must not be re-asked of a
+  second broker. Defaults to `https://broker-diatreme.magmamoose.com`; set to an
+  empty string to disable. The failure message now also names which broker was used.
+
+### Security
+
+- **Closed two public front doors on the Worker.** `workers_dev` and `preview_urls`
+  were both `true`, each exposing a live token minter — inheriting production
+  secrets — on a hostname outside any rules bound to the custom domain. Both are now
+  `false`; the custom domain is the only intended door.
+- **Purged secrets for removed features.** `DISPATCH_AGENT_CF_ACCESS_CLIENT_ID`,
+  `DISPATCH_AGENT_CF_ACCESS_SECRET`, `DISPATCH_AGENT_TOKEN`, `DISPATCH_AGENT_URL`,
+  `TRIAGE_LLM_API_KEY`, `TRIAGE_LLM_MODEL` and `TRIAGE_LLM_PROVIDER` were still set
+  on the production Worker long after the Copilot/triage code was removed — live
+  credentials for code that no longer exists. Deleted.
+
+- **Last-known-good JWKS fallback for `/token`.** When an issuer's JWKS endpoint is
+  unreachable, the broker now verifies against the last key set it successfully
+  fetched (stored per issuer in the `DIATREME_JWKS_CACHE` KV namespace) instead of
+  rejecting every genuine runner token — the failure mode that blocked releases for
+  hours in [#147](https://github.com/MagmaMoose/diatreme/issues/147). The snapshot
+  supplies **keys only**: the retried verification still enforces the signature, the
+  pinned issuer, the audience and expiry, so a stale set cannot admit a token a fresh
+  set would reject. It is used **only** for a retrieval fault (`jwks_unavailable`),
+  never for `kid_not_found` — where the fetch worked and the key genuinely is not
+  published, a stale set would be strictly worse than an honest failure. Snapshots
+  older than 24h are refused, and every degraded verification logs
+  `oidc_verified_from_stale_jwks`. With no KV binding the broker behaves exactly as
+  before.
+
+### Fixed
+
+- **Token broker: name the upstream status when GitHub's JWKS endpoint misbehaves,
+  and keep the Cloudflare cache out of that path.** Production logs for
+  [#147](https://github.com/MagmaMoose/diatreme/issues/147) showed
+  `reason: jwks_unavailable` with `errCode: ERR_JOSE_GENERIC` — jose collapses any
+  non-200 JWKS response (and any unparseable body) into a bare `JOSEError` whose
+  fixed text discards the status that explains it. `jwksFetch` now intercepts a
+  non-200 itself and carries `jwksStatus`, `jwksContentType`, `jwksLocation` and
+  `jwksCfRay` into the `oidc_verify_failed` log line. Every JWKS fetch now bypasses
+  the colo cache unconditionally: GitHub serves that endpoint
+  `public, max-age=3600, must-revalidate`, so a colo that cached a bad response
+  kept serving it for an hour while other colos stayed healthy — precisely the
+  "one repo fails, another succeeds, persists across fresh tokens" report. This
+  gives up the cache's collapsing of concurrent identical subrequests; that
+  amplification vector is tracked separately.
+
+- **Token broker: a GitHub signing-key rotation no longer produces permanent
+  `401 invalid_oidc_token`s** ([#147](https://github.com/MagmaMoose/diatreme/issues/147)).
+  `createRemoteJWKSet` refetches on a `kid` miss only once its cooldown has lapsed
+  (30s), and its own freshness refetch arms that cooldown in the same call — so a
+  rotation failed genuine runner tokens for up to that window. Worse, jose issues
+  the JWKS subrequest with no cache directives and GitHub serves its key set with a
+  long `max-age`, so on Workers those refetches could keep coming back from the
+  colo cache — turning that window into a persistent failure while callers routed
+  elsewhere succeeded. `/token` now forces one JWKS reload on a `kid` miss,
+  throttled per issuer and bypassing the cache, and re-runs the *full*
+  verification on retry: signature, pinned issuer, audience and expiry are all
+  re-checked. jose's own (unthrottled, and un-deduplicated on Workers) reloads
+  instead ride a short 30s colo TTL, so a burst of unknown-`kid` tokens cannot be
+  amplified into one GitHub subrequest each.
+- **OIDC failures are now diagnosable.** Verification failures used to be
+  swallowed by a bare `catch` and collapsed into one opaque 401 with nothing
+  logged. Each failure now carries a coarse `reason` in the response body
+  (`kid_not_found`, `audience_mismatch`, `token_expired`, `signature_invalid`, …)
+  and emits one structured `oidc_verify_failed` log line — never including the
+  token or jose's message. `scripts/request-public-app-token.sh` prints the
+  reason alongside the existing error string.
+- **A JWKS retrieval fault is reported as `503 oidc_key_fetch_failed`**, not as an
+  invalid token. Reporting broker/upstream unavailability as "your token is bad"
+  is what made this class of incident unfalsifiable from the caller's side.
+- **`OIDC_AUDIENCE` is trimmed and comma-split.** A whitespace-only value was
+  truthy and silently replaced the accepted-audience list with one nothing could
+  ever match — a global, permanent 401. Blank values now fall back to the
+  defaults (`diatreme`, legacy `release-runner`).
+
 ### Removed
 
 - **Scoped Diatreme to release/deployment orchestration only.** Removed the

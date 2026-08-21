@@ -44,3 +44,24 @@ npm ci && npm run check   # typecheck + vitest + wrangler dry-run
   major tag.
 - `deploy-worker.yaml`: deploys `worker/` to Cloudflare.
 - `security.yml`: the org Chargate security gate.
+- `docs.yml`: builds this site with `mkdocs build --strict` and publishes it to
+  GitHub Pages on pushes to `main` touching `docs/**` or `mkdocs.yml`.
+- `broker-smoke-aws.yml`: weekly end-to-end proof that both broker hostnames
+  turn a real OIDC token into a working installation token.
+
+Note that `docs.yml` only runs on `main`. A docs change that breaks a link
+passes pull-request CI and fails after merge, so run `mkdocs build --strict`
+locally before opening the PR.
+
+## Where to put documentation
+
+Two surfaces, kept apart on purpose:
+
+- `./docs` is the published human site. Reference and architecture pages carry
+  a `sources` HTML comment under the H1 listing the files they document, so
+  staleness can be detected mechanically. Keep the nav in `mkdocs.yml` in sync
+  with the pages.
+- `.claude/*.md` is terse agent context, not published.
+
+`README.md` owns the exhaustive input and output tables. Pages under `./docs`
+link to it rather than copying it, so the two can't drift.

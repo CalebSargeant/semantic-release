@@ -6,8 +6,11 @@
   "compatibility_flags": [
     "nodejs_compat_v2"
   ],
-  "workers_dev": true,
-  "preview_urls": true,
+  // Both OFF deliberately. Each is a publicly reachable front door to a live token
+  // minter, inheriting production secrets, and sitting outside whatever rules are
+  // bound to the custom domain. The custom domain is the only intended door.
+  "workers_dev": false,
+  "preview_urls": false,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
@@ -24,6 +27,12 @@
   //   GHE_GITHUB_APP_ID
   //   GHE_GITHUB_APP_PRIVATE_KEY
   //   GHE_GITHUB_APP_INSTALLATION_ID  (optional — skips the per-repo lookup)
+  //
+  // KV namespace holding last-known-good JWKS snapshots, so the broker can still
+  // verify tokens when an issuer's JWKS endpoint is unreachable (see #147).
+  //   wrangler kv namespace create DIATREME_JWKS_CACHE
+  // Bound from the DIATREME_JWKS_CACHE_ID Actions variable at deploy time.
+  // Without it the broker simply has no fallback; nothing else changes.
   //
   // KV namespace caching the GET /releases aggregate.
   //   wrangler kv namespace create COPILOT_QUOTA_KV

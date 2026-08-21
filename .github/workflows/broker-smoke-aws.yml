@@ -1,0 +1,91 @@
+# End-to-end proof that the AWS broker mints a real token.
+#
+# Everything up to now has been probed with SYNTHETIC tokens — signed by a throwaway key, so
+# the broker can only ever reject them. That proves routing, config, JWKS retrieval and the
+# error ladder, but it cannot prove the one thing that matters: that a genuine GitHub Actions
+# OIDC token comes back as a usable installation token. Only a real runner can mint one.
+#
+# KEPT, not temporary. Until the cutover completes, the release path still runs through
+# Cloudflare, so nothing else on this repo would notice the AWS broker breaking. Weekly is
+# enough to catch a regression (an expired App key, a revoked installation, an IAM or SSM
+# change) long before a release depends on it.
+#
+# It costs one Lambda invocation and two GitHub API calls a week — irrelevant against the
+# always-free allowance, and cheap insurance for the endpoint every consumer's release will
+# soon depend on.
+name: Broker smoke (AWS)
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — a failure lands at the start of a working week, not during one.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The whole point: without this the runner cannot mint an OIDC token at all.
+  id-token: write
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint an OIDC token and exchange it at the AWS broker
+        env:
+          # BOTH hostnames. api.diatreme is the one frozen into every published action version
+          # as the default token-broker-url, so it is the one that actually carries consumer
+          # traffic; broker-diatreme is the first-level name and the shipped fallback. A smoke
+          # test that only covers the new name would miss a break in the one that matters.
+          BROKERS: "https://api.diatreme.magmamoose.com https://broker-diatreme.magmamoose.com"
+          AUDIENCE: diatreme
+        run: |
+          set -euo pipefail
+
+          echo "::group::mint OIDC token"
+          oidc="$(curl -fsS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -er '.value')"
+          echo "::add-mask::${oidc}" # nosemgrep: yaml.github-actions.security.audit.unsafe-add-mask-workflow-command.unsafe-add-mask-workflow-command
+          # Claims only, never the token itself.
+          echo "  claims: $(echo "${oidc}" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{iss,aud,repository,exp}' || echo '(undecodable)')"
+          echo "::endgroup::"
+
+          for BROKER in ${BROKERS}; do
+          echo "::group::exchange at ${BROKER}"
+          body="$(mktemp)"
+          status="$(curl -sS -o "${body}" -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -n --arg t "${oidc}" \
+              '{oidcToken:$t, owner:"MagmaMoose", repo:"diatreme"}')" \
+            "${BROKER}/token")"
+          echo "  HTTP ${status}"
+          echo "::endgroup::"
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::AWS broker returned ${status}: $(jq -c '{error,reason}' "${body}" 2>/dev/null || cat "${body}")"
+            exit 1
+          fi
+
+          token="$(jq -er '.token' "${body}")"
+          echo "::add-mask::${token}" # nosemgrep: yaml.github-actions.security.audit.unsafe-add-mask-workflow-command.unsafe-add-mask-workflow-command
+          echo "  repository : $(jq -r '.repository' "${body}")"
+          echo "  expires_at : $(jq -r '.expires_at' "${body}")"
+          echo "  token shape: ${#token} chars, prefix $(echo "${token}" | cut -c1-4)"
+
+          echo "::group::prove the minted token actually works"
+          # POST /git/blobs is atomic, touches no ref, and requires contents:write — a token
+          # minted with wrong scopes or a misconfigured TOKEN_PERMISSIONS on the Lambda side
+          # cannot create a blob and will fail here. Blobs unreachable from any ref are GC'd.
+          blob="$(curl -fsS -X POST \
+            -H "Authorization: token ${token}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'Content-Type: application/json' \
+            --data '{"content":"smoke","encoding":"utf-8"}' \
+            "https://api.github.com/repos/MagmaMoose/diatreme/git/blobs" | jq -er '.sha')"
+          echo "  write-verified sha: ${blob}"
+          echo "::endgroup::"
+
+          echo "  ${BROKER}: PASS"
+          done
+
+          echo "AWS broker end-to-end: PASS on every hostname"
