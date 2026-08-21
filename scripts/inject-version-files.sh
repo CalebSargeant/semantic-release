@@ -226,7 +226,7 @@ UPDATED_COUNT="${#CHANGED[@]}"
 # concurrent commits from automation outside such a group.
 BRANCH="${GITHUB_REF_NAME}"
 REMOTE_URL=$(git remote get-url origin)
-AUTHED_URL=$(echo "${REMOTE_URL}" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")
+AUTHED_URL="${REMOTE_URL/https:\/\//https://x-access-token:${GITHUB_TOKEN}@}"
 MAX_ATTEMPTS=5
 
 for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
@@ -258,7 +258,7 @@ for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
   # Anything else (auth failure, ruleset block, etc.) — don't keep
   # banging on the door; surface it as a warning and move on so
   # the rest of the release flow still completes.
-  echo "::warning::Could not push ${LABEL} commit: $(cat /tmp/push.err | head -3). Continuing release."
+  echo "::warning::Could not push ${LABEL} commit: $(sed -E 's#x-access-token:[^@]*@#x-access-token:***@#g' /tmp/push.err | head -3). Continuing release."
   exit 0
 done
 

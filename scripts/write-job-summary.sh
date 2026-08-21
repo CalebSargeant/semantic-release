@@ -106,7 +106,7 @@ emit() { LINES+=("$1"); }
 # value gets an omitted row rather than a blank pair of backticks.
 tick() {
   [ -n "$1" ] || return 0
-  printf '`%s`' "$1"
+  printf "\`%s\`" "$1"
 }
 
 # One `**Label:** `value`` fact appended to the headline. Silent when empty.
@@ -183,7 +183,7 @@ status_line() {
       ref="${TAG:-${VERSION:-—}}"
       if [ "${RELEASED}" = "true" ]; then
         if [ -n "${ENVIRONMENT}" ]; then
-          printf '✅ Released %s to `%s`.' "$(tick "${ref}")" "${ENVIRONMENT}"
+          printf "✅ Released %s to \`%s\`." "$(tick "${ref}")" "${ENVIRONMENT}"
         else
           printf '✅ Released %s.' "$(tick "${ref}")"
         fi
@@ -200,10 +200,10 @@ status_line() {
       if [ "${BUILD_OUTCOME}" = "failure" ]; then
         printf '> ❌ **Run did not complete** — the image build failed. See the failing step above.'
       elif [ "${BUILD_OUTCOME}" = "success" ] && [ -n "${IMAGE_REF}" ]; then
-        printf '✅ Pushed `%s`.' "${IMAGE_REF}"
+        printf "✅ Pushed \`%s\`." "${IMAGE_REF}"
       elif [ -n "${IMAGE_REF}" ]; then
         # Cancelled, skipped, or an outcome that was never wired through.
-        printf '📋 No image was pushed for `%s`.' "${IMAGE_REF}"
+        printf "📋 No image was pushed for \`%s\`." "${IMAGE_REF}"
       else
         printf '📋 Versioning-only run — no image built.'
       fi
@@ -218,7 +218,7 @@ status_line() {
       elif [ "${AUTO_MERGE_OUTCOME}" != "success" ]; then
         printf '📋 Auto-merge was not enabled on %s.' "${target}"
       elif [ -n "${AUTO_MERGE_METHOD}" ]; then
-        printf '✅ Auto-merge (`%s`) enabled on %s.' "${AUTO_MERGE_METHOD}" "${target}"
+        printf "✅ Auto-merge (\`%s\`) enabled on %s." "${AUTO_MERGE_METHOD}" "${target}"
       else
         printf '✅ Auto-merge enabled on %s.' "${target}"
       fi
