@@ -358,6 +358,36 @@ inputs:
     required: false
     default: ''
 
+  image-skip-existing:
+    description: |
+      Skip re-publishing an image whose release tag ALREADY POINTS AT the exact
+      manifest this run was about to publish. Lets a partially-failed
+      multi-target promote resume without redoing the targets that landed, and
+      makes a re-run of a completed promote a no-op.
+
+      The test is identity, not existence. A tag is a mutable pointer that any
+      holder of `packages: write` on the registry can create, so "a tag with
+      that name is there" is no evidence this pipeline put it there — skipping
+      on that alone would let an image Diatreme never built be released, signed
+      and attested. The gate therefore compares manifest digests, runs only
+      AFTER the provenance check on the promote source, and on a stable release
+      additionally requires `:latest` to resolve to the same digest (otherwise
+      an interrupted promote that wrote the version tag but not `:latest` would
+      be recorded as done while `:latest` still served the previous release).
+
+      Anything unproven — a registry error, an unreadable manifest, a digest
+      that differs — falls through and does the work.
+
+      It cannot short-circuit the fresh-build fallback: a rebuild's digest is
+      not knowable in advance, so a release whose source image failed
+      provenance verification is rebuilt on every run. That is a real limit of
+      the gate, not an oversight.
+
+      Off by default: re-cutting the same version deliberately (a force-pushed
+      tag) must still republish.
+    required: false
+    default: 'false'
+
   # ── Image scanning & SBOM (mode: ci) ──────────────────────────────────────
   # Scan the assembled pr-<N> image and route results to their sinks: a
   # CycloneDX SBOM to Dependency-Track (component CVEs), and optional findings
@@ -814,6 +844,38 @@ inputs:
     required: false
     default: '@last'
 
+  allowed-release-actors:
+    description: |
+      Restrict who may cut a release at or after `allowed-release-actors-from`.
+      Comma-separated GitHub logins, and/or teams as `@org/team-slug` (or
+      `@team-slug`, which resolves against this repository's owner). A JSON
+      array is also accepted. Matching is case-insensitive.
+
+      Empty (the default) leaves releases unrestricted — the gate is inert
+      until you populate it.
+
+      Unlike `admin-required-from` this applies on every trigger, not only
+      `workflow_dispatch`, and it names people rather than asking for the much
+      broader repo-admin grant. The two are independent; both are enforced when
+      both are set.
+
+      Include any bot login that merges promotion PRs on your behalf, or the
+      release those merges trigger will be refused.
+
+      Team lookups need the token to be able to read org team membership.
+      Listing only plain logins needs no extra permission. A membership lookup
+      that cannot be completed denies the release rather than allowing it.
+    required: false
+    default: ''
+
+  allowed-release-actors-from:
+    description: |
+      First environment (by position in `environments`) at which
+      `allowed-release-actors` is enforced. `@last` resolves to the final
+      entry, i.e. production only. Same semantics as `admin-required-from`.
+    required: false
+    default: '@last'
+
   # ── Common release options ────────────────────────────────────────────────
   working-directory:
     description: |
@@ -891,6 +953,19 @@ inputs:
       - JSON: persist the version into `appsettings.json` for a .NET app.
       - YAML: update `appVersion` in a Helm `Chart.yaml` so the chart tracks
         the released image tag automatically.
+
+      Accepts one path, or several: separate them with newlines (preferred) or
+      commas. Each entry may be a glob — `*` and `**` are expanded against the
+      workspace — so a monorepo can sync every workspace manifest in one entry:
+
+        version-file: |
+          package.json
+          packages/*/package.json
+
+      All matched files are updated and committed together. A path that does
+      not exist, a glob that matches nothing, or a file the path expression
+      cannot be applied to is warned about and skipped; it never fails the
+      release.
 
       File format is detected from the extension: `.yaml`/`.yml` files are
       processed with `yq`; all other files are processed with `jq`.
@@ -1045,6 +1120,18 @@ outputs:
       config, or the repository name on the no-bake Dockerfile path. Empty when
       none applies (versioning-only runs).
     value: ${{ steps.resolve-image.outputs.image_name }}
+  images-promoted:
+    description: 'Number of release image(s) retagged from a provenance-verified source image.'
+    value: ${{ steps.promote-images.outputs.promoted_count }}
+  images-skipped:
+    description: 'Number of release image(s) already present in the registry and skipped via image-skip-existing.'
+    value: ${{ steps.promote-images.outputs.skipped_count }}
+  images-rebuilt:
+    description: 'Number of release image(s) built fresh because provenance was unverified or the retag failed.'
+    value: ${{ steps.promote-images.outputs.rebuilt_count }}
+  version-files-updated:
+    description: 'Number of tracked files the released version was injected into and committed.'
+    value: ${{ steps.version-file-inject.outputs.updated_count }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEPS
@@ -1211,6 +1298,7 @@ runs:
         password: ${{ inputs.registry-password || steps.auth.outputs.registry-token }}
 
     - name: Build and push pr-<N>
+      id: build-pr-image
       if: inputs.mode == 'ci' && steps.resolve-image.outputs.image_name != ''
       shell: bash
       env:
@@ -1547,6 +1635,31 @@ runs:
           exit 1
         fi
         echo "✓ ${ACTOR} is a repo admin on ${OWNER}/${REPO} — manual release to '${CURRENT_ENV}' allowed."
+
+    # The guardrail above answers "is this person a repo admin", and only on a
+    # manual dispatch. Neither half is what most teams mean by "who may ship to
+    # production": repo admin also hands over settings, secrets and branch
+    # protection, and a push or a merged promotion PR walks straight past a
+    # workflow_dispatch-only check. This gate names principals instead, on every
+    # trigger. It runs BEFORE `Resolve versioning tool` so a refusal happens
+    # while nothing has been cut — no tag, no Release, no image.
+    - name: Release actor allowlist
+      if: inputs.mode == 'release' && inputs.allowed-release-actors != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.auth.outputs.token }}
+        # Both, not just github.actor: a re-run inherits the original run's
+        # actor, so checking that alone would let anyone with write access
+        # re-run an allowed person's failed release and cut production
+        # themselves. triggering_actor is who pressed re-run.
+        ACTOR: ${{ github.actor }}
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        OWNER: ${{ github.repository_owner }}
+        ALLOWED_ACTORS: ${{ inputs.allowed-release-actors }}
+        THRESHOLD: ${{ inputs.allowed-release-actors-from }}
+        CURRENT_ENV: ${{ steps.detect-env.outputs.environment }}
+        ENVIRONMENTS: ${{ inputs.environments }}
+      run: "${GITHUB_ACTION_PATH}/scripts/check-release-actor.sh"
 
     # Resolve the concrete versioning tool once, up front, so every tool step
     # below (and the normalize step) gates on a single detected value rather
@@ -1981,7 +2094,7 @@ runs:
         echo "Tool: ${TOOL} | Version: ${VERSION} | Tag: ${TAG} | Released: ${RELEASED}"
 
     # ═════════════════════════════════════════════════════════════════════════
-    # RELEASE MODE — Persist version into a tracked file (any tool)
+    # RELEASE MODE — Persist version into tracked file(s) (any tool)
     # ═════════════════════════════════════════════════════════════════════════
     #
     # Common in .NET deployments (e.g. appsettings.json) and Helm charts
@@ -1989,6 +2102,12 @@ runs:
     # its own version. JSON files are processed with jq; YAML files (.yaml/
     # .yml) are processed with yq. Works with every versioning tool and runs
     # only when a release was created.
+    #
+    # `version-file` takes several paths and globs, and everything it matches
+    # moves in ONE commit: a repository that carries the same version in more
+    # than one manifest is either consistent at the new version or untouched.
+    # Half-updated manifests drift silently, and the one that lies is the one
+    # somebody eventually trusts.
     #
     # The push uses the resolved release auth token, so it bypasses branch
     # protection rulesets when the Diatreme App (or your private app)
@@ -2010,116 +2129,7 @@ runs:
         INPUT_GITVERSION_APPSETTINGS_FILE: ${{ inputs.gitversion-appsettings-file }}
         INPUT_GITVERSION_APPSETTINGS_VERSION_PATH: ${{ inputs.gitversion-appsettings-version-path }}
         NORMALIZE_VERSION: ${{ steps.normalize.outputs.version }}
-      run: |
-        set -euo pipefail
-
-        # Prefer the new generic input. Fall back to the deprecated gitversion-prefixed
-        # alias so existing callers keep working.
-        FILE="${INPUT_VERSION_FILE}"
-        JSON_PATH="${INPUT_VERSION_FILE_JSON_PATH}"
-        YAML_PATH="${INPUT_VERSION_FILE_YAML_PATH}"
-        if [ -z "${FILE}" ]; then
-          FILE="${INPUT_GITVERSION_APPSETTINGS_FILE}"
-          if [ -n "${INPUT_GITVERSION_APPSETTINGS_VERSION_PATH}" ]; then
-            JSON_PATH="${INPUT_GITVERSION_APPSETTINGS_VERSION_PATH}"
-          fi
-          echo "::notice::gitversion-appsettings-file is deprecated; use version-file."
-        fi
-
-        VERSION="${NORMALIZE_VERSION}"
-
-        if [ ! -f "${FILE}" ]; then
-          echo "::warning::version-file '${FILE}' not found — skipping injection."
-          exit 0
-        fi
-        if [ -z "${VERSION}" ]; then
-          echo "::warning::No version resolved — skipping injection."
-          exit 0
-        fi
-
-        # Detect file format by extension: .yaml/.yml → yq; anything else → jq.
-        # Tolerate a bad path expression or unexpected content rather than
-        # failing the release — version-file is opt-in plumbing and
-        # mis-configuring it should warn, not block the publish.
-        TMP=$(mktemp)
-        if [[ "${FILE}" =~ \.(yaml|yml)$ ]]; then
-          # Pass VERSION via env so it isn't interpolated into the expression.
-          if ! _INJECT_VERSION="${VERSION}" yq "${YAML_PATH} = strenv(_INJECT_VERSION)" "${FILE}" > "${TMP}" 2>/tmp/yq.err; then
-            echo "::warning::Failed to inject version into ${FILE} at path '${YAML_PATH}': $(cat /tmp/yq.err 2>/dev/null | head -1). Skipping."
-            rm -f "${TMP}"
-            exit 0
-          fi
-          USED_PATH="${YAML_PATH}"
-        else
-          if ! jq --arg v "${VERSION}" "${JSON_PATH} = \$v" "${FILE}" > "${TMP}" 2>/tmp/jq.err; then
-            echo "::warning::Failed to inject version into ${FILE} at path '${JSON_PATH}': $(cat /tmp/jq.err 2>/dev/null | head -1). Skipping."
-            rm -f "${TMP}"
-            exit 0
-          fi
-          USED_PATH="${JSON_PATH}"
-        fi
-        if ! mv "${TMP}" "${FILE}"; then
-          echo "::warning::Failed to write ${FILE} after injection — skipping."
-          exit 0
-        fi
-        echo "Injected version ${VERSION} into ${FILE} at ${USED_PATH}"
-
-        git config user.name  "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add "${FILE}"
-        if git diff --cached --quiet; then
-          echo "No changes to commit — file already at ${VERSION}."
-          exit 0
-        fi
-
-        git commit -m "chore(release): persist version ${VERSION} in $(basename "${FILE}") [skip ci]"
-
-        # Concurrency-safe push loop: another run on the same branch may
-        # land a commit (Flux image bump, parallel release run, etc.)
-        # between our fetch and our push. We rebase, push, and on
-        # rejection re-fetch and retry up to MAX_ATTEMPTS times with
-        # short backoff. Callers that need workflow-level serialization
-        # should add their own `concurrency:` group; this loop covers
-        # concurrent commits from automation outside such a group.
-        BRANCH="${GITHUB_REF_NAME}"
-        REMOTE_URL=$(git remote get-url origin)
-        AUTHED_URL=$(echo "${REMOTE_URL}" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")
-        MAX_ATTEMPTS=5
-
-        for attempt in $(seq 1 ${MAX_ATTEMPTS}); do
-          git fetch origin "${BRANCH}" 2>&1 | tail -3 || true
-          if ! git rebase "origin/${BRANCH}"; then
-            git rebase --abort 2>/dev/null || true
-            if [ "${attempt}" -eq "${MAX_ATTEMPTS}" ]; then
-              echo "::warning::Could not rebase ${FILE} commit onto latest ${BRANCH} after ${MAX_ATTEMPTS} attempts; skipping push."
-              exit 0
-            fi
-            sleep $((attempt * 2))
-            continue
-          fi
-
-          if git push "${AUTHED_URL}" "HEAD:${BRANCH}" 2>/tmp/push.err; then
-            echo "Pushed ${FILE} update for ${VERSION} to ${BRANCH} on attempt ${attempt}/${MAX_ATTEMPTS}."
-            exit 0
-          fi
-
-          # Common race: another run pushed between our fetch and push.
-          # Re-fetch and retry. Stop early if the failure is non-recoverable
-          # (e.g. branch protection rejection without bypass).
-          if grep -qiE "non-fast-forward|fetch first|stale" /tmp/push.err; then
-            echo "Push attempt ${attempt}/${MAX_ATTEMPTS} lost a race; will rebase + retry"
-            sleep $((attempt * 2))
-            continue
-          fi
-
-          # Anything else (auth failure, ruleset block, etc.) — don't keep
-          # banging on the door; surface it as a warning and move on so
-          # the rest of the release flow still completes.
-          echo "::warning::Could not push ${FILE} commit: $(cat /tmp/push.err | head -3). Continuing release."
-          exit 0
-        done
-
-        echo "::warning::Exhausted ${MAX_ATTEMPTS} push attempts for ${FILE} on ${BRANCH}; skipping push."
+      run: "${GITHUB_ACTION_PATH}/scripts/inject-version-files.sh"
 
     # ═════════════════════════════════════════════════════════════════════════
     # RELEASE MODE — Docker image promotion
@@ -2144,6 +2154,7 @@ runs:
         password: ${{ inputs.registry-password || steps.auth.outputs.registry-token }}
 
     - name: Promote images
+      id: promote-images
       if: inputs.mode == 'release' && steps.resolve-image.outputs.image_name != '' && steps.normalize.outputs.released == 'true'
       shell: bash
       env:
@@ -2165,6 +2176,7 @@ runs:
         INPUT_BAKE_FILE: ${{ steps.resolve-image.outputs.bake_file }}
         INPUT_BAKE_TARGET: ${{ inputs.bake_target }}
         INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
+        INPUT_IMAGE_SKIP_EXISTING: ${{ inputs.image-skip-existing }}
         REPO_FULL: ${{ github.repository }}
       run: |
         set -euo pipefail
@@ -2273,6 +2285,12 @@ runs:
           fi
         fi
 
+        # Per-image outcomes are tallied through a FILE, not a variable: the
+        # loop below is the right-hand side of a pipe, so its body runs in a
+        # subshell and every assignment made in it dies with that subshell.
+        COUNTS_FILE=$(mktemp)
+        export COUNTS_FILE
+
         # Promote each image
         echo "${IMAGES}" | jq -c '.[]' | while IFS= read -r item; do
           TARGET=$(echo "${item}" | jq -r '.target')
@@ -2296,6 +2314,61 @@ runs:
             if ! SOURCE="${IMAGE}:${SOURCE_TAG_SUFFIX}" RELEASE_COMMIT="${RELEASE_COMMIT}" REPO_FULL="${REPO_FULL}" \
                  "${GITHUB_ACTION_PATH}/scripts/verify-promote-source.sh"; then
               VERIFIED="false"
+            fi
+          fi
+
+          # Opt-in skip gate, deliberately placed AFTER the provenance check and
+          # gated on it: a re-run of a promote that already landed should not
+          # redo it, but "a tag with that name exists" is not evidence that it
+          # did. A tag is a mutable pointer, and every holder of `packages:
+          # write` on the registry can create one — skipping on mere existence
+          # would let an image this pipeline never built be released, signed and
+          # attested, and would bypass the staleness gate directly above.
+          #
+          # So the gate skips only on identity: the release tag must already
+          # resolve to the same manifest digest as the source we were about to
+          # retag, and on a stable release `:latest` must resolve there too —
+          # otherwise an interrupted promote that wrote the version tag but not
+          # `:latest` would be recorded as done while `:latest` still served the
+          # previous release. Anything unproven falls through and does the work.
+          #
+          # It follows that the gate cannot short-circuit the fresh-build
+          # fallback below: a rebuild's digest is not knowable in advance. That
+          # is a real limit, not an oversight, and it is documented as one.
+          if [ "${INPUT_IMAGE_SKIP_EXISTING:-false}" = "true" ] \
+             && [ -n "${SOURCE_TAG_SUFFIX}" ] && [ "${VERIFIED}" == "true" ]; then
+            DIGEST_TMP=$(mktemp)
+            EXISTING_DIGEST=""
+            SOURCE_DIGEST=""
+            LATEST_MATCHES="true"
+
+            if IMAGE_REF="${NEW_TAG}" DIGEST_FILE="${DIGEST_TMP}" \
+               "${GITHUB_ACTION_PATH}/scripts/probe-image-tag.sh"; then
+              EXISTING_DIGEST=$(cat "${DIGEST_TMP}")
+            fi
+            if [ -n "${EXISTING_DIGEST}" ] \
+               && IMAGE_REF="${IMAGE}:${SOURCE_TAG_SUFFIX}" DIGEST_FILE="${DIGEST_TMP}" \
+                  "${GITHUB_ACTION_PATH}/scripts/probe-image-tag.sh"; then
+              SOURCE_DIGEST=$(cat "${DIGEST_TMP}")
+            fi
+            if [ -n "${EXISTING_DIGEST}" ] && [ "${IS_PRERELEASE}" == "false" ]; then
+              LATEST_MATCHES="false"
+              if IMAGE_REF="${IMAGE}:latest" DIGEST_FILE="${DIGEST_TMP}" \
+                 "${GITHUB_ACTION_PATH}/scripts/probe-image-tag.sh" \
+                 && [ "$(cat "${DIGEST_TMP}")" == "${EXISTING_DIGEST}" ]; then
+                LATEST_MATCHES="true"
+              fi
+            fi
+            rm -f "${DIGEST_TMP}"
+
+            if [ -n "${EXISTING_DIGEST}" ] && [ "${EXISTING_DIGEST}" == "${SOURCE_DIGEST}" ] \
+               && [ "${LATEST_MATCHES}" == "true" ]; then
+              echo "${NEW_TAG} already resolves to ${EXISTING_DIGEST}, the manifest this run would publish — skipping promote (image-skip-existing)."
+              echo skipped >> "${COUNTS_FILE}"
+              continue
+            fi
+            if [ -n "${EXISTING_DIGEST}" ] && [ "${LATEST_MATCHES}" != "true" ]; then
+              echo "${NEW_TAG} is already published but ${IMAGE}:latest points elsewhere — promoting anyway so :latest is repaired."
             fi
           fi
 
@@ -2351,6 +2424,7 @@ runs:
                 echo "Promoted ${SOURCE} → ${NEW_TAG} via ${RETAG_METHOD}"
               fi
               PROMOTED="true"
+              echo promoted >> "${COUNTS_FILE}"
             else
               echo "::warning::retag of ${SOURCE} → ${NEW_TAG} failed (last method: ${RETAG_METHOD}); falling back to fresh build."
             fi
@@ -2394,8 +2468,26 @@ runs:
                 --set "${TARGET}.cache-to=type=gha,mode=max,scope=buildkit-${TARGET}" \
                 --push
             fi
+            # Tallied once the build has actually landed, so the count reports
+            # images that were rebuilt rather than images we set out to rebuild.
+            echo rebuilt >> "${COUNTS_FILE}"
           fi
         done
+
+        # `grep -c` exits 1 when it matches nothing, which `set -e` would treat
+        # as a failed promote step — on the very run where every image was
+        # skipped or every one was rebuilt. It still prints the 0.
+        PROMOTED_COUNT=$(grep -c '^promoted$' "${COUNTS_FILE}" || true)
+        SKIPPED_COUNT=$(grep -c '^skipped$' "${COUNTS_FILE}" || true)
+        REBUILT_COUNT=$(grep -c '^rebuilt$' "${COUNTS_FILE}" || true)
+        rm -f "${COUNTS_FILE}"
+
+        echo "Promote: ${PROMOTED_COUNT} promoted, ${SKIPPED_COUNT} skipped, ${REBUILT_COUNT} rebuilt."
+        {
+          echo "promoted_count=${PROMOTED_COUNT}"
+          echo "skipped_count=${SKIPPED_COUNT}"
+          echo "rebuilt_count=${REBUILT_COUNT}"
+        } >> "$GITHUB_OUTPUT"
 
     # ═════════════════════════════════════════════════════════════════════════
     # RELEASE MODE — sign the released image(s) + SLSA build provenance (opt-in)
@@ -2897,6 +2989,7 @@ runs:
     # still mergeable manually.
 
     - name: Enable auto-merge
+      id: enable-auto-merge
       if: inputs.mode == 'enable-auto-merge'
       shell: bash
       env:
@@ -2906,3 +2999,55 @@ runs:
         PR_NUMBER: ${{ inputs.pr-number }}
         MERGE_METHOD: ${{ inputs.auto-merge-method }}
       run: "${GITHUB_ACTION_PATH}/scripts/enable-auto-merge.sh"
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # ALL MODES — report what the run resolved, where a human will see it
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Everything above writes its decisions to the step log and nowhere else,
+    # spread over ~40 steps most of which are skipped. "What did this release
+    # actually ship?" should not be a scrolling exercise. The job summary is the
+    # one surface GitHub renders at the top of the run page.
+    #
+    # `if: always()` because a failed run is exactly when the question is asked:
+    # whatever was resolved before the failure is still worth showing, and the
+    # reporter cannot fail or change the job's conclusion.
+    #
+    # Every value below is optional to the script — a step that never ran hands
+    # it an empty string, and an empty value drops its row rather than rendering
+    # a blank one. `released` in particular is passed through UNCHANGED: empty
+    # means the run never reached normalisation, which the summary reports as an
+    # incomplete run, not as "nothing to release".
+    - name: Write job summary
+      if: always()
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        # Outcomes, not inputs. This step runs under `if: always()`, so the
+        # facts it was handed are just as present on a run that died as on
+        # one that worked — printing a success line from them alone would
+        # have the summary assert a push, or an enabled auto-merge, that
+        # never happened. `release` mode already keys off `released`.
+        BUILD_OUTCOME: ${{ steps.build-pr-image.outcome }}
+        AUTO_MERGE_OUTCOME: ${{ steps.enable-auto-merge.outcome }}
+        VERSION: ${{ steps.normalize.outputs.version || steps.version-override.outputs.version }}
+        TAG: ${{ steps.normalize.outputs.tag || steps.version-override.outputs.tag }}
+        ENVIRONMENT: ${{ steps.detect-env.outputs.environment }}
+        IS_PRERELEASE: ${{ steps.detect-env.outputs.is_prerelease }}
+        RELEASED: ${{ steps.normalize.outputs.released }}
+        VERSIONING_TOOL: ${{ steps.resolve-tool.outputs.tool }}
+        REGISTRY: ${{ inputs.registry }}
+        OWNER: ${{ github.repository_owner }}
+        IMAGE_NAME: ${{ steps.resolve-image.outputs.image_name }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+        IMAGES_PROMOTED: ${{ steps.promote-images.outputs.promoted_count }}
+        IMAGES_SKIPPED: ${{ steps.promote-images.outputs.skipped_count }}
+        IMAGES_REBUILT: ${{ steps.promote-images.outputs.rebuilt_count }}
+        VERSION_FILES_UPDATED: ${{ steps.version-file-inject.outputs.updated_count }}
+        PACKAGE_PUBLISHED: ${{ steps.publish-package.outputs.published }}
+        IMAGE_SCANNED: ${{ steps.scan-image.outputs.scanned }}
+        IMAGE_FINDINGS: ${{ steps.scan-image.outputs.image-findings }}
+        IMAGE_SCAN_SEVERITY: ${{ inputs.image-scan-severity }}
+        IMAGES_SIGNED: ${{ steps.sign-image.outputs.signed_count }}
+        AUTO_MERGE_METHOD: ${{ inputs.auto-merge-method }}
+      run: "${GITHUB_ACTION_PATH}/scripts/write-job-summary.sh"

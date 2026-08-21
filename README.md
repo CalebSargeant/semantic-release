@@ -825,6 +825,7 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `registry-password` | `''` | Explicit registry login password or token. |
 | `platforms` | `''` (empty) | Platforms override, e.g. `linux/amd64,linux/arm64`. Empty defers to the repo's `docker-bake.hcl` `PLATFORMS` default (does not override it). On the no-bake Dockerfile path, empty builds single-arch (builder default); set this to produce a multi-arch manifest. |
 | `build-github-token` | `''` | Docker Bake secret `github_token` for private package installs. |
+| `image-skip-existing` | `false` | Skip re-publishing a release image whose tag already resolves to the exact manifest this run would publish (digest comparison, after the provenance check; `:latest` must match too on a stable release). Anything unproven still promotes. See [Skipping images that are already published](https://magmamoose.github.io/diatreme/action/#skipping-images-that-are-already-published). |
 | `image-scan` | `false` | Scan the assembled `pr-<N>` image in `mode: ci` and emit SBOM + findings. Opt-in. Requires a resolved image name (explicit `image_name` or bake-detected). |
 | `image-scan-severity` | `CRITICAL,HIGH` | Trivy severity filter for findings and the gate. The SBOM still inventories all components. |
 | `image-scan-scanners` | `vuln,secret,misconfig` | Trivy scanners for the findings report. |
@@ -865,12 +866,14 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `github-projects-target-status` | `Released` | Target Projects v2 status. |
 | `github-projects-move-on-environments` | `@last` | Environments where Projects movement runs. |
 | `admin-required-from` | `@last` | Environments where manual production releases require repo admin. |
+| `allowed-release-actors` | `''` | Logins and/or `@org/team-slug` teams allowed to cut a release, comma- or newline-separated. Empty leaves releases unrestricted. |
+| `allowed-release-actors-from` | `@last` | Environments where `allowed-release-actors` is enforced; same semantics as `admin-required-from`. |
 | `working-directory` | `.` | Repository subdirectory where versioning runs. |
 | `create-release` | `true` | Create GitHub Release when the backend supports it. |
 | `changelog` | `true` | Let supported backends update changelogs. |
 | `force-bump` | `''` | Force the bump level (`patch`/`minor`/`major`) instead of deriving it from commits (semantic-release-python, semantic-release-npm, gitversion; ignored by release-please). |
 | `version-override` | `''` | Create this exact version instead of deriving one. |
-| `version-file` | `''` | Tracked file to update with the released version. |
+| `version-file` | `''` | Tracked file(s) to update with the released version. Accepts several newline- or comma-separated paths, each of which may be a glob; every match is committed together. |
 | `version-file-json-path` | `.Application.Version` | JSON path for version-file injection. |
 | `version-file-yaml-path` | `.appVersion` | YAML path for version-file injection. |
 | `aggregate-clickup-tickets` | `false` | Append ClickUp ticket links from the release range. |
@@ -898,6 +901,10 @@ All inputs are optional unless noted. Defaults match `action.yml`.
 | `image-findings` | Count of image-scan findings at/above `image-scan-severity` across all scanned images. |
 | `image-signed` | Number of released image(s) cosign-signed (`mode: release` with `image-sign`). |
 | `resolved-image-name` | The base image name used for image workflows, explicit `image_name`, the value auto-detected from Docker Bake, or the repository name on the no-bake Dockerfile path. Empty on versioning-only runs. |
+| `images-promoted` | Number of release image(s) retagged from a provenance-verified source image. |
+| `images-skipped` | Number of release image(s) already published at the digest this run would have promoted, and so skipped via `image-skip-existing`. |
+| `images-rebuilt` | Number of release image(s) built fresh because provenance was unverified or the retag failed. |
+| `version-files-updated` | Number of tracked files the released version was injected into and committed. |
 
 ## The Diatreme Worker
 
