@@ -20,6 +20,99 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   second broker. Defaults to `https://broker-diatreme.magmamoose.com`; set to an
   empty string to disable. The failure message now also names which broker was used.
 
+- **Registry skip gate for image promotion (`image-skip-existing`).** Re-running a
+  release whose images were already published repeats the whole promote — and,
+  whenever the provenance check on the `pr-<N>` source image no longer passes, a
+  full fresh build on top of it — producing nothing the registry does not already
+  hold. A multi-target promote that died half way is the sharper case: the re-run
+  redoes every target that already landed before it reaches the one that did not,
+  so the longer the matrix the more of the re-run is waste. Diatreme can now skip
+  a target whose release tag **already resolves to the exact manifest it was
+  about to publish**. Identity, not existence: a tag is a mutable pointer that
+  any holder of `packages: write` can create, so skipping on "a tag with that
+  name is there" would let an image Diatreme never built be released, signed and
+  attested, and would bypass the provenance check that exists to prevent
+  precisely that. The gate therefore runs *after* provenance verification and
+  compares manifest digests, and on a stable release also requires `:latest` to
+  resolve to the same digest — otherwise an interrupted promote that wrote the
+  version tag but not `:latest` would be recorded as done while `:latest` still
+  served the previous release. The probe reads the manifest rather than pulling
+  (`docker buildx imagetools inspect --format '{{.Manifest.Digest}}'`), so it
+  transfers no layers and answers for a manifest list exactly as for a single
+  image. Anything unproven — absence, a registry outage, an expired credential,
+  a reply that is not a digest — means promote it. It cannot short-circuit the
+  fresh-build fallback, since a rebuild's digest is not knowable in advance. Off by
+  default, because re-cutting a version deliberately must still republish. New
+  input: `image-skip-existing` (default `false`); new helper
+  `scripts/probe-image-tag.sh`. The promote step now also tallies its per-image
+  outcomes, exposed as the new outputs `images-promoted`, `images-skipped` and
+  `images-rebuilt`.
+
+- **A job summary on every run (`$GITHUB_STEP_SUMMARY`).** A run
+  decides a great deal on the consumer's behalf — which environment the branch
+  maps to, which versioning backend answered, what version and tag came out of it,
+  whether each image was promoted or rebuilt, what the scanner counted — and wrote
+  every one of those answers to the step log and nowhere else. Spread over ~40
+  steps, most of them skipped, "what did this release actually ship?" was a
+  scrolling exercise. Diatreme now renders those facts as Markdown into
+  `$GITHUB_STEP_SUMMARY`: a headline identifying the run, a `| Metric | Value |`
+  table carrying only the rows that have a value, and one status line. It is a
+  reporter, not a gate — it runs `if: always()`, so a failed run still shows what
+  it managed to resolve before it died, which is exactly when the summary earns
+  its keep; every value is optional, and it always exits 0 rather than turn a
+  green run red (or mask a red one) in order to report on it. The heading is the
+  fixed `## Diatreme: Release Orchestration` — the `<Tool>: <Discipline>` shape
+  the sibling tools in this pipeline emit — so a run page carrying several of them
+  reads as one report rather than three dialects. No input and no opt-in: it is
+  always on, and a runner that provides no summary file makes it a silent no-op.
+  New helper: `scripts/write-job-summary.sh`.
+
+- **Release-actor allowlist (`allowed-release-actors`).** Who may ship to
+  production was whatever the workflow token happened to permit — in practice,
+  anyone who can push to or merge into the release branch. The existing
+  `admin-required-from` guardrail is a poor substitute for a release-manager list:
+  it fires only on `workflow_dispatch`, so a push or a merged promotion PR walks
+  straight past it, and the thing it demands — repo admin — also hands over
+  settings, secrets and branch protection. Diatreme now takes a list of named
+  principals instead: GitHub logins and/or teams (`@org/team-slug`, or
+  `@team-slug` resolved against this repository's owner), comma- and/or
+  newline-separated or as a JSON array, matched case-insensitively. The gate is
+  trigger-agnostic, independent of `admin-required-from` (both are enforced when
+  both are set), and runs before the versioning tool is resolved, so a refusal
+  happens while nothing has been cut — no tag, no Release, no image. It fails
+  closed: the only "no" it trusts is a clean 404 from the team-membership API, and
+  a missing scope, a rate limit or a 5xx denies the release rather than allowing
+  it, because an allowlist that quietly opens itself during an outage is worse
+  than no allowlist at all. Both `github.actor` and `github.triggering_actor`
+  must clear the list, because a re-run inherits the *original* run's actor —
+  checking only that would let anyone with write access re-run an allowed
+  person's failed release and cut production themselves, with the log recording
+  a clean pass. Remember to include any bot login that merges promotion PRs on
+  your behalf. New inputs: `allowed-release-actors` (default
+  empty, which leaves releases unrestricted) and `allowed-release-actors-from`
+  (default `@last` — production only). New helper:
+  `scripts/check-release-actor.sh`.
+
+- **Multi-manifest version sync (`version-file`).** A repository that ships
+  several deliverables carries the same version in several manifests, and
+  `version-file` could name exactly one of them. Updating that one and leaving the
+  rest to drift is worse than updating none: the drift is silent, and the manifest
+  that lies is the one somebody eventually trusts. `version-file` now accepts
+  several paths — newline-separated (preferred) or comma-separated — and each
+  entry may be a glob (`*`, `**`), so `packages/*/package.json` syncs every
+  workspace manifest in one entry. Everything matched moves in a **single**
+  commit rather than one commit per file. A path that does not exist, a glob
+  that matches nothing, and a file the path expression cannot be applied to are
+  warned about and skipped, never fatal — the tag is pushed and the Release
+  published before this runs, so a mistyped path must not turn a successful
+  release red. Note the consequence: skipping is per file, so a bad entry leaves
+  that manifest at the old version while its siblings move, and the only signal
+  is a `::warning::` in the log. One path behaves exactly as it does today, down to a byte-identical
+  commit message, so existing repos see no change. The step's body moved out of
+  `action.yml` into `scripts/inject-version-files.sh`, carrying its
+  fetch/rebase/push retry loop over unchanged. New output:
+  `version-files-updated`.
+
 ### Security
 
 - **Closed two public front doors on the Worker.** `workers_dev` and `preview_urls`
