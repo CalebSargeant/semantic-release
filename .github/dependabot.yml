@@ -1,9 +1,17 @@
+# `cooldown` holds a newly published version back for 7 days before Dependabot will
+# propose it, so a compromised or yanked release has a window to be caught and pulled
+# before it reaches a PR. GitHub already applies 3 days implicitly; 7 is the hardened
+# value, and it has to be repeated per `package-ecosystem` — there is no file-level key.
+# Version updates only: GitHub exempts security updates, so an advisory fix still opens
+# its PR immediately.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ['*']
@@ -16,6 +24,8 @@ updates:
     directory: /worker
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       worker:
         patterns: ['*']
@@ -33,6 +43,8 @@ updates:
     directory: /scripts
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     # CI smoke-tests the pinned CLI (see `Smoke-test the pinned
     # python-semantic-release` in ci.yaml), so a bump that renames or drops a
     # `version` flag fails the PR rather than a consumer's release run. A major
