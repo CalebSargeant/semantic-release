@@ -25,9 +25,24 @@ permissions:
 ```
 
 It also needs the hosted **[Diatreme GitHub App](https://github.com/apps/diatreme)**
-installed on the repository. See the
+installed on the repository. Without it the first run fails with
+`404 app_not_installed`, which is the most common first-run failure. See the
 [repository README](https://github.com/MagmaMoose/diatreme#readme) for the full
 per-mode permission matrix and alternative auth modes (`github-token`, `app`).
+
+Add `attestations: write` as well if you turn on
+[image signing](action.md#signing-images-and-provenance).
+
+### Verify it worked
+
+The release job's **Request public GitHub App token** step should end with:
+
+```text
+Received short-lived public GitHub App token for <owner>/<repo>.
+```
+
+If it doesn't, the message names the HTTP status, an `error` code and often a
+`reason`. Look it up in [Errors](reference/errors.md).
 
 ## Local development
 
@@ -68,7 +83,10 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` (gitignored) for local sec
 ## Build these docs
 
 ```bash
-pip install mkdocs-material
-mkdocs serve   # preview at http://127.0.0.1:8000
-mkdocs build   # render to ./site (gitignored)
+pip install -r docs/requirements.txt
+mkdocs serve            # preview at http://127.0.0.1:8000
+mkdocs build --strict   # render to ./site (gitignored)
 ```
+
+`--strict` is what CI runs, so a broken internal link fails the build here the
+same way it fails the publish.

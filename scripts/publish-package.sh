@@ -14,7 +14,7 @@
 # prerelease versions, prod runs publish stable versions, all on `released`.
 #
 # Required env:
-#   ECOSYSTEM   - nuget | pip | npm | maven | gradle | rubygems | container
+#   ECOSYSTEM   - nuget | pip | npm | maven | gradle | rubygems | container | s3
 #   VERSION     - semver to publish (e.g. 1.2.3 or 1.2.3-rc.1)
 #   TOKEN       - auth token / API key for the feed (not required for pip when
 #                 PYPI_TRUSTED_PUBLISHING=true — a token is minted via OIDC)
@@ -22,6 +22,10 @@
 # Optional env:
 #   FEED_URL              - feed/registry URL. Defaults per-ecosystem (GitHub
 #                           Packages NuGet for OWNER / PyPI / npmjs.org).
+#                           REQUIRED for s3, as s3://bucket[/prefix].
+#   AWS_ROLE_TO_ASSUME    - role the caller's OIDC step assumed. REQUIRED for s3;
+#                           only verified here, so a missing credentials step
+#                           fails with a sentence rather than a 403 at upload.
 #   PACKAGE_PATH          - project file or directory to pack/build/publish.
 #                           Defaults to WORKING_DIRECTORY, then '.'.
 #   WORKING_DIRECTORY     - base directory (the action's working-directory).
@@ -427,13 +431,87 @@ XML
     docker push "${IMAGE_REF}"
     ;;
 
+  s3)
+    # A built artifact to an S3 object store, under a VERSION-SCOPED, IMMUTABLE key.
+    #
+    # Unlike the language ecosystems above, there is no pack step: the artifact is whatever
+    # PACKAGE_PATH points at, already built by the caller. That is the point — a Lambda zip, a
+    # signed binary, a firmware image and a tarball are all the same thing to a bucket, and
+    # inventing a pack convention per artifact type is how this stops being reusable.
+    #
+    # AUTH IS OIDC, never a long-lived key, matching PYPI_TRUSTED_PUBLISHING above:
+    # AWS_ROLE_TO_ASSUME is assumed from the workflow's own GitHub identity, so the publishing
+    # repo holds no AWS credential at all and the role's trust policy is what decides who may
+    # publish. Needs `id-token: write` on the job.
+    #
+    # IDEMPOTENT BY REFUSAL, which is deliberately stricter than the others. nuget skips
+    # duplicates and docker overwrites a mutable tag; here an existing key means the version
+    # was already published, and silently overwriting it would swap the bytes under a version
+    # someone has already reviewed and pinned. A re-run is a no-op that reports success.
+    : "${FEED_URL:?FEED_URL is required for s3 publishing (e.g. s3://my-bucket/edge)}"
+    : "${AWS_ROLE_TO_ASSUME:?AWS_ROLE_TO_ASSUME is required for s3 publishing}"
+
+    ARTIFACT="${TARGET:-${BASE_DIR}}"
+    if [ ! -f "${ARTIFACT}" ]; then
+      echo "::error::s3: package-path must be the built artifact FILE. Not a file: ${ARTIFACT}"
+      exit 1
+    fi
+
+    DEST="${FEED_URL#s3://}"; DEST="${DEST%/}"
+    S3_BUCKET="${DEST%%/*}"
+    S3_PREFIX=""
+    [ "${DEST}" != "${S3_BUCKET}" ] && S3_PREFIX="${DEST#*/}/"
+    # Derive the extension from the basename only: a path like `build.out/myapp` would
+    # otherwise strip to `out/myapp`, embedding a slash in the key. Omit the extension
+    # entirely for extensionless artifacts (binaries, firmware images).
+    BASENAME="${ARTIFACT##*/}"
+    if [ "${BASENAME}" = "${BASENAME%.*}" ]; then
+      S3_KEY="${S3_PREFIX}${VERSION}"
+    else
+      S3_KEY="${S3_PREFIX}${VERSION}.${BASENAME##*.}"
+    fi
+
+    echo "aws sts assume-role-with-web-identity → ${AWS_ROLE_TO_ASSUME}"
+    # `aws-actions/configure-aws-credentials` in the caller's workflow is the supported path
+    # and leaves the session in the environment; this only verifies it happened, so that a
+    # missing OIDC step fails here with a sentence rather than at the upload with a 403.
+    if ! aws sts get-caller-identity >/dev/null 2>&1; then
+      echo "::error::s3: no usable AWS session. Add aws-actions/configure-aws-credentials with"
+      echo "::error::  role-to-assume: ${AWS_ROLE_TO_ASSUME}"
+      echo "::error::before this action, and give the job 'id-token: write'."
+      exit 1
+    fi
+
+    if HEAD_ERR=$(aws s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" 2>&1); then
+      echo "s3://${S3_BUCKET}/${S3_KEY} already published — nothing to do."
+      emit_published "false"
+      exit 0
+    elif echo "${HEAD_ERR}" | grep -qiE "403|AccessDenied|Forbidden"; then
+      echo "::error::s3: AccessDenied on s3:head-object for ${S3_KEY}."
+      echo "::error::  The role must include s3:GetObject (or s3:ListBucket) alongside"
+      echo "::error::  s3:PutObject so immutability can be verified before writing."
+      echo "::error::  See the IAM permissions section in README."
+      exit 1
+    fi
+
+    echo "aws s3api put-object → s3://${S3_BUCKET}/${S3_KEY}"
+    # SHA256 checksum so a consumer can verify the object without downloading it, and so a
+    # caller can compare digests to decide whether anything changed.
+    aws s3api put-object \
+      --bucket "${S3_BUCKET}" \
+      --key "${S3_KEY}" \
+      --body "${ARTIFACT}" \
+      --checksum-algorithm SHA256 \
+      >/dev/null
+    ;;
+
   '')
-    echo "::error::publish-package is true but package-ecosystem is empty. Set package-ecosystem to nuget, pip, npm, maven, gradle, rubygems, or container."
+    echo "::error::publish-package is true but package-ecosystem is empty. Set package-ecosystem to nuget, pip, npm, maven, gradle, rubygems, container, or s3."
     exit 1
     ;;
 
   *)
-    echo "::error::Unsupported package-ecosystem '${ECOSYSTEM}'. Use nuget, pip, npm, maven, gradle, rubygems, or container."
+    echo "::error::Unsupported package-ecosystem '${ECOSYSTEM}'. Use nuget, pip, npm, maven, gradle, rubygems, container, or s3."
     exit 1
     ;;
 esac
