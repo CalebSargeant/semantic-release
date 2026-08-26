@@ -22,6 +22,12 @@
   Don't reintroduce either.
 - **Never commit** secrets, `.dev.vars`, or caches (`node_modules/`, `.wrangler/`,
   `coverage/`, `site/`, `broker/.venv/`).
+- **Pinning psr is not pinning psr's dependencies.** `scripts/psr-requirements.txt`
+  pins the CLI exactly, but pip resolved its transitive deps fresh on every release
+  run: GitPython 3.1.60 deleted `Actor.name_email_regex`, psr 10.6.1 reads it to
+  validate `commit_author`, and every consumer release broke with no Diatreme change.
+  Pin the offending dep there too. Note `--version` / `--help` never load a config,
+  so the CI smoke test now resolves a real version in a throwaway repo.
 - After editing `scripts/`, run `shellcheck -S warning scripts/*.sh` and `actionlint`.
 
 Broker internals, infrastructure, DNS and TLS: `.claude/INFRA_NOTES.md`.

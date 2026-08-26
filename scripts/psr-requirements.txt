@@ -8,7 +8,23 @@
 # ecosystem, so the pin would silently rot. The `pip` entry in
 # .github/dependabot.yml points at this directory.
 #
-# Keep this an exact `==` pin with no other requirements: psr writes consumers'
-# changelogs, tags and version files, so a range would make releases
-# irreproducible. tests/bats/run-python-semantic-release.bats enforces both.
+# Keep every line an exact `==` pin: psr writes consumers' changelogs, tags and
+# version files, so a range would make releases irreproducible — and an
+# unpinned *transitive* dependency has already broken every consumer release
+# once, see the gitpython note below. tests/bats/run-python-semantic-release.bats
+# enforces the `==` form and that psr itself is pinned.
 python-semantic-release==10.6.1
+
+# TEMPORARY. Drop this line once psr no longer reads the attribute below, and
+# let psr's own `gitpython~=3.0` range resolve it again.
+#
+# GitPython 3.1.60 (tagged 2026-08-25 18:30Z) deleted `Actor.name_email_regex`
+# while fixing a ReDoS advisory in author parsing. psr 10.6.1 reads that
+# attribute in cli/config.py to validate `commit_author`, so every
+# `semantic-release version` run dies during config load with:
+#   type object 'Actor' has no attribute 'name_email_regex'
+# Nothing in this repo changed: psr declares `gitpython~=3.0`, so the next fresh
+# venv resolved 3.1.60 and the breakage reached consumers on its own
+# (platform1-systems/admin-frontend run 32964328237, 2026-08-26).
+# Upstream: python-semantic-release issue #1476, fix PR #1477 (unreleased).
+gitpython==3.1.59
