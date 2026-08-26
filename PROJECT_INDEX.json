@@ -1,9 +1,9 @@
 {
-  "generated": "2026-08-21T19:14:02Z",
+  "generated": "2026-08-26T00:00:00Z",
   "summary": "Diatreme is a release/deployment orchestrator published to the GitHub Marketplace as a composite action, plus a hosted GitHub-App backend that brokers OIDC tokens for it. The action runs on the runner (bash, bats-tested); the broker runs as a service and is called over HTTP. Neither imports the other. Consumers pin the action by SHA, so input names, defaults and broker wire responses are frozen API surface.",
   "entrypoints": [
     "action.yml:runs.steps",
-    "worker/src/index.ts:default.fetch",
+    "broker/app/lambda_handler.py:handler",
     "scripts/resolve-auth-token.sh:main"
   ],
   "modules": {
@@ -61,9 +61,21 @@
       "exports": [],
       "depends_on": []
     },
+    "broker": {
+      "path": "broker/app",
+      "purpose": "Python/Lambda broker — the active production implementation. Framework-free (status, body) decision functions in broker.py; AWS Lambda + API Gateway adapter in lambda_handler.py; FastAPI shell in main.py for local dev only (excluded from the Lambda zip). Endpoints: POST /token (OIDC → App installation token), GET /healthz, GET /readyz. Serves both api.diatreme.magmamoose.com and broker-diatreme.magmamoose.com. Config via SSM Parameter Store in production, env vars locally. JWKS snapshots in DynamoDB rescue verifications when GitHub's JWKS endpoint is unreachable. GHE support: a second optional App identity triggered by the token's verified issuer.",
+      "exports": ["handle_token", "handle_healthz", "handle_readyz"],
+      "depends_on": []
+    },
+    "broker-tests": {
+      "path": "broker/tests",
+      "purpose": "pytest suites for the Lambda broker. test_token.py covers the full mint ladder; test_lambda_handler.py covers routing and marshalling; test_jwks_snapshot.py and test_oidc_jwks.py guard the JWKS rescue and key-rotation behaviour from issues #147 and #150; test_oidc_logging.py asserts that retrieval faults never surface as 401.",
+      "exports": [],
+      "depends_on": ["broker"]
+    },
     "worker": {
       "path": "worker/src/index.ts",
-      "purpose": "Cloudflare Worker implementation of the broker (TypeScript, only runtime dep jose). Endpoints: /token, /sign, /releases, /webhook. NOTE: as of 2026-08-20 it no longer serves any hostname - see .claude/ARCHITECTURE_MAP.md - but it remains the code of record on main until the Python/Lambda broker lands.",
+      "purpose": "Cloudflare Worker implementation of the broker (TypeScript, only runtime dep jose). Endpoints: /token, /sign, /releases, /webhook. Retired as of 2026-08-20 — no longer serves any hostname; the Python/Lambda broker (broker/) is now the active implementation. Remains in the repo as code of record; its CI job still validates the TypeScript and its vitest suites still guard wire-contract behaviour from issues #147 and #150.",
       "exports": ["default.fetch", "handleRequest", "verifyOidcToken", "parseAudience"],
       "depends_on": []
     },
@@ -81,7 +93,7 @@
     },
     "workflows": {
       "path": ".github/workflows",
-      "purpose": "ci.yaml validates both surfaces; release.yaml publishes the action and moves floating major tags; deploy-worker.yaml deploys the Worker; broker-smoke-aws.yml mints a real token weekly against the hosted broker.",
+      "purpose": "ci.yaml validates the action surface and the (retired) Worker; release.yaml publishes the action and moves floating major tags; deploy-worker.yaml deploys the legacy Cloudflare Worker (kept but not serving traffic); broker-smoke-aws.yml mints a real OIDC token weekly against both broker hostnames on AWS Lambda.",
       "exports": [],
       "depends_on": []
     },
@@ -99,9 +111,14 @@
       "note": "The credential path. request-public-app-token.sh mints an OIDC token on the runner and exchanges it at the broker. It exits 1 on any non-200, so a broker fault is a red X on every consumer's release - diatreme fails hard where sibling brokers fail soft."
     },
     {
-      "caller": "worker/src/index.ts:handleRequest",
+      "caller": "broker/app/broker.py:handle_token",
+      "calls": ["_verify_with_snapshot_rescue", "github.find_installation_id", "github.mint_installation_token"],
+      "note": "OIDC verify (with DynamoDB snapshot rescue on retrieval fault) -> repository claim match -> allowlist -> mint. Issuer pinned before verification; a JWKS retrieval fault is 503, never 401."
+    },
+    {
+      "caller": "worker/src/index.ts:handleRequest (retired)",
       "calls": ["verifyOidcToken", "findInstallationId", "createInstallationToken"],
-      "note": "OIDC verify -> repository claim match -> allowlist -> mint. Issuer is pinned before verification so a forged iss cannot select a foreign key set."
+      "note": "Legacy Worker path — no longer serves any hostname. Kept for test coverage; see broker/ for the active implementation."
     },
     {
       "caller": "action.yml (mode: ci)",
@@ -117,11 +134,11 @@
   "hotspots": [
     "action.yml",
     "README.md",
-    "worker/src/index.ts",
-    "worker/test/index.test.ts",
+    "broker/app/broker.py",
+    "broker/app/config.py",
+    "broker/app/lambda_handler.py",
     "CHANGELOG.md",
     "scripts/request-public-app-token.sh",
-    "worker/wrangler.jsonc",
     "AGENTS.md",
     ".github/workflows/ci.yaml",
     ".github/workflows/release.yaml"
