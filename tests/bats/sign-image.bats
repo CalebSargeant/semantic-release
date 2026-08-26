@@ -148,12 +148,16 @@ run_signed() {
   grep -Eq "sign-image.sh" "${ACTION_YML}"
 }
 
+# The invariant is the *form* of the pin — a 40-hex commit SHA, never a
+# floating tag — not one particular digest. Asserting a literal digest turns
+# every legitimate Dependabot bump into a red suite: #160 bumped
+# attest-build-provenance and left CI failing on main for four days.
 @test "action.yml SHA-pins the cosign installer" {
-  grep -Fq "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6" "${ACTION_YML}"
+  grep -Eq "sigstore/cosign-installer@[0-9a-f]{40}" "${ACTION_YML}"
 }
 
 @test "action.yml SHA-pins the attest-build-provenance action" {
-  grep -Fq "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373" "${ACTION_YML}"
+  grep -Eq "actions/attest-build-provenance@[0-9a-f]{40}" "${ACTION_YML}"
 }
 
 @test "action.yml exposes the image-sign input and image-signed output" {

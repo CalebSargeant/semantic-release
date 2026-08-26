@@ -75,6 +75,32 @@ jobs:
           fi
           echo "pinned CLI accepts every flag run-python-semantic-release.sh passes"
 
+          # `--version` and `version --help` never read a config, so they cannot
+          # see a psr/dependency combination that dies loading one. That is
+          # exactly how GitPython 3.1.60 reached consumers: it dropped
+          # `Actor.name_email_regex`, psr's `commit_author` validation read it,
+          # and every release run failed while this step stayed green. Resolve a
+          # version in a throwaway repo so the config path runs here too.
+          repo="${RUNNER_TEMP}/psr-smoke-repo"
+          rm -rf "${repo}"
+          mkdir -p "${repo}"
+          git -C "${repo}" init -q -b main
+          git -C "${repo}" config user.name psr-smoke
+          git -C "${repo}" config user.email psr-smoke@example.invalid
+          # psr resolves the hvcs from `origin`; nothing is fetched or pushed.
+          git -C "${repo}" remote add origin https://github.com/example/example.git
+          printf '[tool.semantic_release]\n' > "${repo}/pyproject.toml"
+          git -C "${repo}" add -A
+          git -C "${repo}" commit -qm 'feat: initial commit'
+          version="$(cd "${repo}" && "${venv}/bin/semantic-release" version --print)"
+          # Any semver will do; the point is that config load and version
+          # resolution completed, not which number psr's defaults produce.
+          if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+' <<<"${version}"; then
+            echo "::error::pinned python-semantic-release printed no version: '${version}'"
+            exit 1
+          fi
+          echo "pinned CLI loads a config and resolves a version"
+
   worker:
     name: Validate worker
     runs-on: ubuntu-latest

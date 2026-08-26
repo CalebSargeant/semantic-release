@@ -425,14 +425,25 @@ python-semantic-release==10.6.1
   [[ "$output" == *"psr-requirements.txt"* ]]
 }
 
-@test "the requirements file pins python-semantic-release to an exact version" {
-  # An exact `==` pin, and nothing else: psr writes consumers' changelogs, tags
-  # and version files, so a range would make releases irreproducible.
+@test "every requirement is an exact pin, python-semantic-release included" {
+  # `==` on every line: psr writes consumers' changelogs, tags and version
+  # files, so a range would make releases irreproducible. The rule covers the
+  # whole file, not just psr, because the file may also carry a pin for one of
+  # psr's own dependencies — an unpinned transitive dep is what broke every
+  # consumer release when GitPython 3.1.60 dropped `Actor.name_email_regex`.
   [ -f "${REQUIREMENTS_FILE}" ]
   run grep -vE '^[[:space:]]*(#|$)' "${REQUIREMENTS_FILE}"
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
-  [[ "${lines[0]}" =~ ^python-semantic-release==[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  [ "${#lines[@]}" -ge 1 ]
+
+  local line psr_pins=0
+  for line in "${lines[@]}"; do
+    [[ "${line}" =~ ^[A-Za-z0-9._-]+==[0-9]+\.[0-9]+\.[0-9]+$ ]]
+    if [[ "${line}" == python-semantic-release==* ]]; then
+      psr_pins=$((psr_pins + 1))
+    fi
+  done
+  [ "${psr_pins}" -eq 1 ]
 }
 
 @test "action.yml carries no hand-maintained version pin for psr" {
