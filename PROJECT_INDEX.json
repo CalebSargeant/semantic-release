@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-21T19:14:02Z",
+  "generated": "2026-08-27T05:00:00Z",
   "summary": "Diatreme is a release/deployment orchestrator published to the GitHub Marketplace as a composite action, plus a hosted GitHub-App backend that brokers OIDC tokens for it. The action runs on the runner (bash, bats-tested); the broker runs as a service and is called over HTTP. Neither imports the other. Consumers pin the action by SHA, so input names, defaults and broker wire responses are frozen API surface.",
   "entrypoints": [
     "action.yml:runs.steps",
@@ -61,9 +61,21 @@
       "exports": [],
       "depends_on": []
     },
+    "broker": {
+      "path": "broker/app",
+      "purpose": "Python AWS Lambda implementation of the GitHub App token broker (PyJWT + httpx). Runs on AWS Lambda behind API Gateway serving both broker hostnames in eu-west-1. Endpoints: POST /token (OIDC to installation token), GET /healthz, GET /readyz. Secrets/config via SSM Parameter Store; JWKS caching in DynamoDB. Built and deployed via broker/scripts/build_lambda_zip.py.",
+      "exports": ["handle_token", "broker.Broker", "config.Config"],
+      "depends_on": []
+    },
+    "broker-tests": {
+      "path": "broker/tests",
+      "purpose": "pytest suites for the broker with async support via pytest-asyncio. Covers OIDC verification, GitHub API interaction, JWKS caching, and the Lambda handler adapter.",
+      "exports": [],
+      "depends_on": ["broker"]
+    },
     "worker": {
       "path": "worker/src/index.ts",
-      "purpose": "Cloudflare Worker implementation of the broker (TypeScript, only runtime dep jose). Endpoints: /token, /sign, /releases, /webhook. NOTE: as of 2026-08-20 it no longer serves any hostname - see .claude/ARCHITECTURE_MAP.md - but it remains the code of record on main until the Python/Lambda broker lands.",
+      "purpose": "Cloudflare Worker implementation of the broker (TypeScript, only runtime dep jose). Endpoints: /token, /sign, /releases, /webhook. Code of record in the repository and rollback target, but not serving any hostname as of 2026-08-20. The production broker is the Python/Lambda implementation in broker/.",
       "exports": ["default.fetch", "handleRequest", "verifyOidcToken", "parseAudience"],
       "depends_on": []
     },
