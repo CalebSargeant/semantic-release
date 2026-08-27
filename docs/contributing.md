@@ -39,15 +39,17 @@ npm ci && npm run check   # typecheck + vitest + wrangler dry-run
 ## CI gates
 
 - `ci.yaml`: validates both surfaces (actionlint, shellcheck, bats, a
-  python-semantic-release pin smoke-test; worker typecheck + tests).
+  python-semantic-release pin smoke-test; worker typecheck + tests; broker tests).
 - `release.yaml`: dogfoods `uses: ./` to release the action and moves the floating
   major tag.
-- `deploy-worker.yaml`: deploys `worker/` to Cloudflare.
+- `deploy-worker.yaml`: validates and deploys `worker/` to Cloudflare as the
+  rollback target (not currently serving).
 - `security.yml`: the org Chargate security gate.
 - `docs.yml`: builds this site with `mkdocs build --strict` and publishes it to
   GitHub Pages on pushes to `main` touching `docs/**` or `mkdocs.yml`.
 - `broker-smoke-aws.yml`: weekly end-to-end proof that both broker hostnames
-  turn a real OIDC token into a working installation token.
+  (served by the Python/Lambda broker) turn a real OIDC token into a working
+  installation token.
 
 Note that `docs.yml` only runs on `main`. A docs change that breaks a link
 passes pull-request CI and fails after merge, so run `mkdocs build --strict`

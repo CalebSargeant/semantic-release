@@ -34,13 +34,10 @@ dig +short broker-diatreme.magmamoose.com
 ```
 
 !!! warning "Editing `worker/` does not change production"
-    `worker/` is the TypeScript Cloudflare implementation. It's still the code
-    of record in this repository, it's what CI validates, and it's the rollback
-    target. It is not what answers those hostnames. A fix merged to `worker/`
-    deploys to Cloudflare and changes nothing that consumers hit. The Python
-    port that runs on Lambda is tracked in
-    [#145](https://github.com/MagmaMoose/diatreme/issues/145) and isn't in this
-    repository yet.
+    Both broker hostnames answer from AWS Lambda running the Python broker
+    implementation in `broker/`. The TypeScript Cloudflare Worker (`worker/`)
+    remains in the repository as the rollback target, but it is not what
+    consumers hit. See [Architecture](../architecture.md) for more.
 
 ### Rolling back to Cloudflare
 

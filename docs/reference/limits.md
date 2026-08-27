@@ -1,6 +1,6 @@
 # Limits and lifetimes
 
-<!-- sources: worker/src/index.ts -->
+<!-- sources: broker/app, worker/src/index.ts -->
 
 Caps, timeouts and TTLs built into the broker. None of these are configurable
 per request. They're here so you can tell a limit from a bug.
