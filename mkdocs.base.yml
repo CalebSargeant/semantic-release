@@ -1,0 +1,74 @@
+# Shared MkDocs base for every MagmaMoose docs site.
+#
+# Provisioned by Caldrith from MagmaMoose/admin (files/docs/mkdocs.base.yml). Edit it
+# THERE, not here; a local edit is reconciled away on the next run.
+#
+# A repo picks this up by making the FIRST line of its own mkdocs.yml:
+#
+#     INHERIT: mkdocs.base.yml
+#
+# MkDocs then loads this file and merges the repo's mkdocs.yml over it.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE MERGE IS NOT UNIFORM, AND THIS IS THE TRAP.
+#
+#   dicts  merge recursively  -> `theme.name` here survives a repo that only sets
+#                                `theme.palette`
+#   lists  are REPLACED       -> a repo that declares its own `markdown_extensions`
+#                                silently discards EVERY entry below
+#
+# Verified against mkdocs 1.6: base [admonition, tables] + repo [toc] resolves to
+# [toc] plus MkDocs' own defaults. `admonition` is gone, with nothing reported.
+#
+# So a repo must NOT declare `markdown_extensions:` or `plugins:` of its own. Anything
+# it needs belongs here, for everyone. `tremvok docs lint` fails the build on it rather
+# than letting the site render wrong.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A repo still owns: site_name, site_description, site_url, repo_url, repo_name,
+# edit_uri, nav, and its accent colour (via the `docs_accent` template var).
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  # `custom_fences` is what turns a ```mermaid block into a diagram. WITHOUT it
+  # superfences still parses the block happily and renders it as a code listing: no
+  # error, no warning, just the diagram source printed on the page. GitHub renders
+  # ```mermaid natively either way, so a diagram can look perfect in a PR and be a wall
+  # of text on the docs site. nievah shipped exactly that, and its mkdocs.yml carries a
+  # comment about it; declaring it here means no repo has to remember.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.details
+  - tables
+  - attr_list
+  - toc:
+      permalink: true

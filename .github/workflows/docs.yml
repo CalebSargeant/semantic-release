@@ -1,8 +1,21 @@
+# Org MkDocs docs site — build strictly, then publish to GitHub Pages.
+#
+# Provisioned by Caldrith from MagmaMoose/admin (files/workflows/docs.yml). Edit it
+# THERE, not here; a local edit is reconciled away on the next run.
+#
+# Scoped by `only_repos` to the repos that actually publish: a repo without a
+# mkdocs.yml would get a workflow that fails on every push. Publishing is deliberately
+# NOT extended to the private repos. On the Team plan a Pages site built from a private
+# repo is served on the OPEN INTERNET — private publishing needs Enterprise Cloud — so
+# turning this on for nievah/caldrith/dunmir/noctyr would world-publish proprietary
+# internals. Their docs build in CI and are read in-repo until there is a gated host.
+#
+# Prerequisite, once per repo: Settings → Pages → Source = "GitHub Actions".
+#
+# `permissions:` and `environment:` live in THIS file rather than in a shared action on
+# purpose — a composite action cannot declare either, so the Pages deploy can only ever
+# be owned by the calling workflow.
 name: Docs
-
-# Build the MkDocs (Material) site and publish it to GitHub Pages.
-# Prerequisite: Settings → Pages → Source must be set to "GitHub Actions".
-# Serves at https://magmamoose.github.io/diatreme/ (see mkdocs.yml site_url).
 
 on:
   push:
@@ -16,6 +29,8 @@ on:
 permissions:
   contents: read
 
+# One Pages deployment at a time, and never cancel one midway: a cancelled deploy can
+# leave the site serving a half-uploaded artifact.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -26,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # diatreme is not a uv project (no uv.lock, no dependency-groups): it ships bash
+      # scripts and a TS worker, and pins its docs build in docs/requirements.txt.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'

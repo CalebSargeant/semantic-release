@@ -1,0 +1,33 @@
+// Markdown style for MagmaMoose docs.
+//
+// Provisioned by Caldrith from MagmaMoose/admin (files/docs/markdownlint.jsonc).
+// Run by the Tremvok docs action, NOT by MegaLinter: MegaLinter's `security` flavor
+// carries no markdown linter, and MARKDOWN_MARKDOWNLINT emits no SARIF so it could
+// never reach Chargate's net-new gate. Config for a linter that never loads is worse
+// than no config at all.
+{
+  "default": true,
+
+  // Line length: prose is wrapped by hand at ~90, but tables and code blocks cannot be
+  // wrapped without breaking them, and a URL is one token.
+  "MD013": { "line_length": 100, "tables": false, "code_blocks": false, "headings": false },
+
+  // Repeated headings are fine when they are siblings under different parents: every
+  // how-to page legitimately has its own "Usage".
+  "MD024": { "siblings_only": true },
+
+  // Inline HTML, limited to what Material actually needs.
+  "MD033": { "allowed_elements": ["br", "kbd", "sup", "sub", "details", "summary", "img"] },
+
+  // First line must be a top-level heading. This is the one that keeps a docs page from
+  // opening with a stray paragraph and rendering an empty nav entry.
+  "MD041": true,
+
+  // Ordered lists numbered 1. 1. 1. render correctly and diff cleanly when a step is
+  // inserted; enforcing 1. 2. 3. makes every insertion a multi-line diff.
+  "MD029": { "style": "one" },
+
+  // Bare URLs are a real defect in published docs (they escape the theme's link
+  // styling), so this stays on.
+  "MD034": true
+}
