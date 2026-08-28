@@ -221,7 +221,10 @@ teardown() {
 }
 
 @test "action.yml SHA-pins the Trivy installer" {
-  grep -Fq "aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567" "${ACTION_YML}"
+  # A 40-hex SHA, not a floating tag. Deliberately not a literal digest:
+  # Dependabot bumps this, and pinning the test to one digest makes every bump
+  # a red CI run (see the note in tests/bats/sign-image.bats).
+  grep -Eq "aquasecurity/setup-trivy@[0-9a-f]{40}" "${ACTION_YML}"
 }
 
 @test "action.yml exposes the image-scan inputs and outputs" {

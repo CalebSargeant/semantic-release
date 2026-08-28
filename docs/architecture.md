@@ -1,6 +1,6 @@
 # Architecture
 
-<!-- sources: action.yml, scripts, worker/src/index.ts, .github/workflows -->
+<!-- sources: action.yml, scripts, broker/app, worker/src/index.ts, .github/workflows -->
 
 Diatreme is two independent surfaces in one repo. They talk over HTTP and share no
 code. The action calls the worker's broker endpoints; the worker never calls the
@@ -56,15 +56,19 @@ detects from repository markers): `semantic-release-python`, `semantic-release-n
 
 ## The broker
 
-`worker/src/index.ts` is a single-file Cloudflare Worker (`export default { fetch }`)
-whose only runtime dependency is [`jose`](https://github.com/panva/jose). It exists
-so callers don't have to register and run their own GitHub App.
+The broker is a GitHub App token minter: it exchanges an Actions OIDC token for
+a short-lived installation token, so callers don't have to register and run their
+own GitHub App.
 
-!!! warning "`worker/` is the code of record, not the running deployment"
-    Both broker hostnames currently answer from AWS Lambda behind API Gateway.
-    `worker/` is what this repository builds, tests and can roll back to, but
-    editing it does not change what consumers hit. See
-    [Deployment](operations/deployment.md).
+The production broker (`broker/app`) is a Python implementation running on AWS
+Lambda. The repository also contains `worker/src/index.ts`, a Cloudflare Worker
+that serves as the rollback target and code reference, but does not currently
+serve any hostname.
+
+!!! note "Production broker is Python/Lambda"
+    `broker/app` runs on AWS Lambda behind API Gateway in eu-west-1, serving
+    both broker hostnames. The TypeScript Cloudflare Worker (`worker/`) remains
+    the code-of-record reference and rollback target. See [Deployment](operations/deployment.md).
 
 | Endpoint | Purpose | Auth |
 | --- | --- | --- |

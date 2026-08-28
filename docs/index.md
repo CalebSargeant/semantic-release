@@ -34,7 +34,8 @@ Install the action:
 | Surface | Path | Toolchain | Ships to |
 | --- | --- | --- | --- |
 | Composite action | `action.yml` + `scripts/*.sh` | Bash, `actionlint`, `shellcheck`, `bats` | GitHub Marketplace |
-| Broker | `worker/` | TypeScript, `wrangler`, `vitest` | Cloudflare, with the live deployment on AWS |
+| Broker (production) | `broker/` | Python, `pytest`, `boto3` | AWS Lambda, eu-west-1 |
+| Broker (legacy) | `worker/` | TypeScript, `wrangler`, `vitest` | Rollback target (not currently serving) |
 
 ## Related
 
