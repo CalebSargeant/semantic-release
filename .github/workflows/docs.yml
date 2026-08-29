@@ -10,6 +10,11 @@
 # Access gates them properly, and using one target for every repo means one code path
 # rather than a permanent split maintained for a handful of repos.
 #
+# `docs.yml` is the CLOUDFLARE workflow — there is no `target:` input, because the host is
+# what picks the workflow. `docs-github-pages.yml` is the other one, and it needs
+# `pages: write` + `id-token: write` from its caller. Passing an input a reusable workflow
+# does not declare is a startup failure, not a warning.
+#
 # Everything below is one call. Toolchain (uv vs pip), the Pages project name, and project
 # creation on first deploy are all handled inside the action.
 name: Docs
@@ -46,7 +51,6 @@ jobs:
     # The Cloudflare credentials are org secrets available to every repo.
     secrets: inherit
     with:
-      target: cloudflare-pages
       runs-on: ubuntu-latest
       # A pull request builds, lints and checks, but never deploys.
       #
