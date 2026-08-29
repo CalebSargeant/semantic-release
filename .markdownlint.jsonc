@@ -29,5 +29,18 @@
 
   // Bare URLs are a real defect in published docs (they escape the theme's link
   // styling), so this stays on.
-  "MD034": true
+  "MD034": true,
+
+  // OFF, and it has to be. Material's admonitions and content tabs are
+  // INDENTATION-based:
+  //
+  //     !!! warning "Title"
+  //
+  //         The body is indented four spaces.
+  //
+  // MD046 cannot tell that from an indented code block, so every admonition in the
+  // org trips it. Enabling this rule does not make anyone write better markdown; it
+  // makes them stop using the theme's own syntax. Fenced code blocks are still the
+  // convention, they are just not enforced by this rule.
+  "MD046": false
 }
