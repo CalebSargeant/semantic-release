@@ -1,6 +1,8 @@
 # Errors
 
-<!-- sources: broker/app, worker/src/index.ts, scripts/request-public-app-token.sh, scripts/detect-versioning-tool.sh, scripts/build-image-dockerfile.sh -->
+<!-- sources: broker/app, worker/src/index.ts, scripts/request-public-app-token.sh, scripts/detect-
+     versioning-tool.sh, scripts/build-image-dockerfile.sh
+     -->
 
 Every failure a Diatreme run can surface, what causes it, and what to do. The
 action fails hard: any broker fault exits the step non-zero, so a broken broker
