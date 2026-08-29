@@ -1,20 +1,17 @@
-# Org MkDocs docs site — build strictly, then publish to GitHub Pages.
+# Org docs site — build strictly, publish to Cloudflare Pages, verify it serves.
 #
 # Provisioned by Caldrith from MagmaMoose/admin (files/workflows/docs.yml). Edit it
 # THERE, not here; a local edit is reconciled away on the next run.
 #
-# Scoped by `only_repos` to the repos that actually publish: a repo without a
-# mkdocs.yml would get a workflow that fails on every push. Publishing is deliberately
-# NOT extended to the private repos. On the Team plan a Pages site built from a private
-# repo is served on the OPEN INTERNET — private publishing needs Enterprise Cloud — so
-# turning this on for nievah/caldrith/dunmir/noctyr would world-publish proprietary
-# internals. Their docs build in CI and are read in-repo until there is a gated host.
+# Cloudflare rather than GitHub Pages, for one reason that decides it: on the Team plan a
+# Pages site built from a PRIVATE repo is still served on the open internet (private
+# publishing is an Enterprise Cloud feature). Half this fleet is private and two repos are
+# proprietary, so GitHub Pages cannot host them at all without leaking them. Cloudflare
+# Access gates them properly, and using one target for every repo means one code path
+# rather than a permanent split maintained for a handful of repos.
 #
-# Prerequisite, once per repo: Settings → Pages → Source = "GitHub Actions".
-#
-# `permissions:` and `environment:` live in THIS file rather than in a shared action on
-# purpose — a composite action cannot declare either, so the Pages deploy can only ever
-# be owned by the calling workflow.
+# Everything below is one call. Toolchain (uv vs pip), the Pages project name, and project
+# creation on first deploy are all handled inside the action.
 name: Docs
 
 on:
@@ -23,50 +20,39 @@ on:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
+      - 'mkdocs.base.yml'
+      - 'README.md'
+      - '.markdownlint.jsonc'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'mkdocs.base.yml'
+      - 'README.md'
+      - '.markdownlint.jsonc'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# One Pages deployment at a time, and never cancel one midway: a cancelled deploy can
-# leave the site serving a half-uploaded artifact.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
-  build:
-    name: Build site
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # diatreme is not a uv project (no uv.lock, no dependency-groups): it ships bash
-      # scripts and a TS worker, and pins its docs build in docs/requirements.txt.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: pip
-          cache-dependency-path: docs/requirements.txt
-      - name: Install MkDocs
-        run: pip install -r docs/requirements.txt
-      - name: Build (strict — fail on broken links)
-        run: mkdocs build --strict
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: site
-
-  deploy:
-    name: Deploy to Pages
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+  docs:
+    # SHA-pinned like every other managed reference. Caldrith's downgrade guard now
+    # recognises reusable-workflow pins (MagmaMoose/caldrith#86); before that fix it could
+    # not see this shape at all and would have fought Dependabot over it forever.
+    uses: MagmaMoose/tremvok/.github/workflows/docs.yml@8ba466a7754e845805cb72df263aa4d2ee51fe08 # v1.0.0
+    # The Cloudflare credentials are org secrets available to every repo.
+    secrets: inherit
+    with:
+      target: cloudflare-pages
+      runs-on: ubuntu-latest
+      # A pull request builds, lints and checks, but never deploys.
+      #
+      # A private repo additionally does not publish AT ALL until a Cloudflare Access
+      # application covers its project. A Pages project is served on the open internet at
+      # <project>.pages.dev by default: deploying a private repo's docs without Access in
+      # front is the same leak that rules GitHub Pages out, just on a different domain.
+      # `docs_publish` is the flip, per repo, once Access is confirmed.
+      publish: ${{ github.event_name != 'pull_request' }}
