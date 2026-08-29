@@ -23,9 +23,11 @@
   // opening with a stray paragraph and rendering an empty nav entry.
   "MD041": true,
 
-  // Ordered lists numbered 1. 1. 1. render correctly and diff cleanly when a step is
-  // inserted; enforcing 1. 2. 3. makes every insertion a multi-line diff.
-  "MD029": { "style": "one" },
+  // Accept BOTH 1./1./1. and 1./2./3., and flag only a list that mixes them. Picking a
+  // side here was a mistake: `one` diffs better on insertion, `ordered` reads better in
+  // source, and neither changes what a reader sees. Enforcing either one reformats
+  // existing pages across the fleet to settle an argument nobody is having.
+  "MD029": { "style": "one_or_ordered" },
 
   // Bare URLs are a real defect in published docs (they escape the theme's link
   // styling), so this stays on.
