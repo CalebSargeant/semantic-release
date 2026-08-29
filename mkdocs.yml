@@ -50,7 +50,10 @@ nav:
   - Using the action: action.md
   - Architecture: architecture.md
   - Broker: worker.md
+  - How-to:
+      - Releasing several packages: how-to/release-several-packages.md
   - Reference:
+      - Action: reference/action.md
       - Broker API: reference/broker-api.md
       - Broker configuration: reference/configuration.md
       - Errors: reference/errors.md

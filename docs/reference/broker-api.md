@@ -1,6 +1,7 @@
 # Broker API
 
-<!-- sources: broker/app, worker/src/index.ts, worker/README.md, scripts/request-public-app-token.sh -->
+<!-- sources: broker/app, worker/src/index.ts, worker/README.md, scripts/request-public-app-token.sh
+     -->
 
 The broker is the GitHub App backend the action calls when `auth-mode` is
 `public-app`. Four routes, all on the same origin. Anything else returns

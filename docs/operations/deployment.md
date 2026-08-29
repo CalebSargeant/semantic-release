@@ -1,6 +1,9 @@
 # Deployment
 
-<!-- sources: .github/workflows/deploy-worker.yaml, .github/workflows/release.yaml, .github/workflows/docs.yml, .github/workflows/broker-smoke-aws.yml, worker/wrangler.jsonc -->
+<!-- sources: .github/workflows/deploy-worker.yaml, .github/workflows/release.yaml,
+     .github/workflows/docs.yml, .github/workflows/broker-smoke-aws.yml,
+     worker/wrangler.jsonc
+     -->
 
 Three things ship out of this repository on their own schedules: the composite
 action, the broker, and this site.

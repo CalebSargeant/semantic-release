@@ -1,6 +1,8 @@
 # Broker configuration
 
-<!-- sources: broker/app, broker/scripts/build_lambda_zip.py, worker/src/index.ts, worker/wrangler.jsonc, worker/.dev.vars.example, .github/workflows/deploy-worker.yaml -->
+<!-- sources: broker/app, broker/scripts/build_lambda_zip.py, worker/src/index.ts, worker/wrangler.jsonc,
+     worker/.dev.vars.example, .github/workflows/deploy-worker.yaml
+     -->
 
 Everything the broker reads at runtime. You only need this page if you self-host
 a broker or operate the hosted one. Consumers of the action configure nothing

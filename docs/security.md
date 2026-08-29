@@ -1,6 +1,8 @@
 # Security
 
-<!-- sources: SECURITY.md, broker/app, worker/src/index.ts, worker/wrangler.jsonc, scripts/request-public-app-token.sh -->
+<!-- sources: SECURITY.md, broker/app, worker/src/index.ts, worker/wrangler.jsonc, scripts/request-public-
+     app-token.sh
+     -->
 
 Diatreme holds a GitHub App private key and mints short-lived, write-scoped
 installation tokens for other people's repositories. This page describes how it
