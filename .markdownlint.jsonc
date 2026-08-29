@@ -44,5 +44,18 @@
   // org trips it. Enabling this rule does not make anyone write better markdown; it
   // makes them stop using the theme's own syntax. Fenced code blocks are still the
   // convention, they are just not enforced by this rule.
-  "MD046": false
+  "MD046": false,
+
+  // OFF, for the same reason MD029 is relaxed above. `|---|---|` and `| --- | --- |`
+  // render identically; this rule only decides which one the source uses. Turning it on
+  // reformats every existing table in the org to settle a question no reader can see.
+  "MD060": false,
+
+  // OFF, same principle. `_italic_` and `*italic*` render identically, as do `__bold__`
+  // and `**bold**`. These rules pick a source spelling, not an outcome. The rules kept
+  // ON above are the ones where the source and the RENDERED PAGE disagree — a table with
+  // the wrong cell count drops content, a bare URL escapes the theme, inline HTML
+  // vanishes. Those are defects. This is a preference.
+  "MD049": false,
+  "MD050": false
 }
