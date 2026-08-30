@@ -47,16 +47,16 @@ jobs:
     # SHA-pinned like every other managed reference. Caldrith's downgrade guard now
     # recognises reusable-workflow pins (MagmaMoose/caldrith#86); before that fix it could
     # not see this shape at all and would have fought Dependabot over it forever.
-    uses: MagmaMoose/tremvok/.github/workflows/docs.yml@797e8e5e53c5037aeeadbb9e3eff2e18eae275a9 # v1.0.6
+    uses: MagmaMoose/tremvok/.github/workflows/docs.yml@1b49b1659f928ad7cb0c35a76b1e78a2fa16b3b7 # v1.0.7
     # The Cloudflare credentials are org secrets available to every repo.
     secrets: inherit
     with:
       runs-on: ubuntu-latest
       # A pull request builds, lints and checks, but never deploys.
-      #
-      # A private repo additionally does not publish AT ALL until a Cloudflare Access
-      # application covers its project. A Pages project is served on the open internet at
-      # <project>.pages.dev by default: deploying a private repo's docs without Access in
-      # front is the same leak that rules GitHub Pages out, just on a different domain.
-      # `docs_publish` is the flip, per repo, once Access is confirmed.
       publish: ${{ github.event_name != 'pull_request' }}
+      # ENFORCED, not remembered. A Cloudflare Pages project is served on the open
+      # internet at <project>.pages.dev by default, so "the repo is private" gates
+      # nothing. With this set the action asks Cloudflare which Access applications
+      # exist and REFUSES to deploy unless one covers the hostname — so a private repo
+      # cannot publish before it is gated, whatever anyone forgets to configure.
+      require-access: False
