@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-26T00:00:00Z",
+  "generated": "2026-09-02T00:00:00Z",
   "summary": "Diatreme is a release/deployment orchestrator published to the GitHub Marketplace as a composite action, plus a hosted GitHub-App backend that brokers OIDC tokens for it. The action runs on the runner (bash, bats-tested); the broker runs as a service and is called over HTTP. Neither imports the other. Consumers pin the action by SHA, so input names, defaults and broker wire responses are frozen API surface.",
   "entrypoints": [
     "action.yml:runs.steps",
@@ -81,7 +81,7 @@
     },
     "worker-tests": {
       "path": "worker/test/index.test.ts",
-      "purpose": "vitest suites for the broker wire contract. jwks-rotation.test.ts guards the key-rotation and snapshot behaviour that issues #147 and #150 produced.",
+      "purpose": "vitest suites for the broker wire contract. jwks-rotation.test.ts guards the key-rotation and snapshot behaviour that issues #147 and #150 produced. verify-oidc.test.ts directly exercises the real verifyOidcToken with a locally-generated RSA keypair — it tests issuer-pinning and audience rejection paths that the dep-injected broker tests never reach because they stub verifyOidcToken.",
       "exports": [],
       "depends_on": ["worker"]
     },
@@ -93,7 +93,7 @@
     },
     "workflows": {
       "path": ".github/workflows",
-      "purpose": "ci.yaml validates the action surface and the (retired) Worker; release.yaml publishes the action and moves floating major tags; deploy-worker.yaml deploys the legacy Cloudflare Worker (kept but not serving traffic); broker-smoke-aws.yml mints a real OIDC token weekly against both broker hostnames on AWS Lambda.",
+      "purpose": "ci.yaml validates the action surface and the (retired) Worker; release.yaml publishes the action and moves floating major tags; deploy-worker.yaml deploys the legacy Cloudflare Worker (kept but not serving traffic); broker-smoke-aws.yml mints a real OIDC token weekly against both broker hostnames on AWS Lambda; security.yml runs Chargate (MegaLinter-backed) net-new finding gating on PRs only; docs.yml builds MkDocs and publishes to Cloudflare Pages on pushes to main.",
       "exports": [],
       "depends_on": []
     },
