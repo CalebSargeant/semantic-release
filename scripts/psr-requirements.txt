@@ -13,7 +13,7 @@
 # unpinned *transitive* dependency has already broken every consumer release
 # once, see the gitpython note below. tests/bats/run-python-semantic-release.bats
 # enforces the `==` form and that psr itself is pinned.
-python-semantic-release==10.6.1
+python-semantic-release==10.6.2
 
 # TEMPORARY. Drop this line once psr no longer reads the attribute below, and
 # let psr's own `gitpython~=3.0` range resolve it again.
