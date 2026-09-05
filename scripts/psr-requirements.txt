@@ -27,4 +27,4 @@ python-semantic-release==10.6.1
 # venv resolved 3.1.60 and the breakage reached consumers on its own
 # (platform1-systems/admin-frontend run 32964328237, 2026-08-26).
 # Upstream: python-semantic-release issue #1476, fix PR #1477 (unreleased).
-gitpython==3.1.59
+gitpython==3.1.61
